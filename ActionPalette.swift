@@ -18,6 +18,7 @@ struct ActionPalette: View {
         var values: [PaletteAction] = [
             PaletteAction(id: "new", title: "Новая запись", detail: "⌘N", icon: "plus", run: { store.creatingAlias = true }),
             PaletteAction(id: "templates", title: "Шаблоны записей", detail: "Proxmox, UniFi, Wiren Board и свои", icon: "square.stack", run: { store.showingTemplates = true }),
+            PaletteAction(id: "commands", title: "Библиотека команд", detail: "Поиск, описания, свои команды и встроенные заготовки", icon: "books.vertical", run: { store.showingCommandLibrary = true }),
             PaletteAction(id: "backup", title: "Резервное копирование", detail: "Архив и восстановление", icon: "externaldrive", run: { store.showingBackup = true }),
             PaletteAction(id: "availability", title: "Статус доступности", detail: "Выбранные серверы и интервал", icon: "waveform.path.ecg", run: { store.showingAvailability = true }),
             PaletteAction(id: "settings", title: "Настройки", detail: "⌘,", icon: "gearshape", run: { store.showingSettings = true }),
@@ -56,7 +57,7 @@ struct ActionPalette: View {
             }
             if actions.isEmpty { Text("Ничего не найдено").foregroundStyle(.secondary) }
             HStack { Text("↑↓ выбрать · Enter выполнить · Esc закрыть").font(.caption).foregroundStyle(.secondary); Spacer(); Button("Выполнить") { executeSelected() }.disabled(actions.isEmpty) }
-        }.padding(16).frame(width: 700, height: 480)
+        }.padding(16).frame(width: 700, height: 480).dismissOnOutsideClick()
             .background(PaletteKeyObserver(move: move, execute: executeSelected, close: { dismiss() }))
             .onAppear { focused = true; selected = actions.first?.id }
             .onChange(of: query) { _, _ in selected = actions.first?.id }

@@ -7,14 +7,16 @@ struct SavedConsoleCommand: Codable, Identifiable, Equatable {
     var text = ""
     var group = ""
     var shortcut = 0
-    init(id: UUID = UUID(), title: String = "", text: String = "", group: String = "", shortcut: Int = 0) {
-        self.id = id; self.title = title; self.text = text; self.group = group; self.shortcut = shortcut
+    var description = ""
+    init(id: UUID = UUID(), title: String = "", text: String = "", group: String = "", shortcut: Int = 0, description: String = "") {
+        self.id = id; self.title = title; self.text = text; self.group = group; self.shortcut = shortcut; self.description = description
     }
-    enum CodingKeys: String, CodingKey { case id, title, text, group, shortcut }
+    enum CodingKeys: String, CodingKey { case id, title, text, group, shortcut, description }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id); title = try c.decode(String.self, forKey: .title); text = try c.decode(String.self, forKey: .text)
         group = try c.decodeIfPresent(String.self, forKey: .group) ?? ""; shortcut = try c.decodeIfPresent(Int.self, forKey: .shortcut) ?? 0
+        description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
     }
 }
 struct SavedCommandSet: Codable, Equatable {
@@ -25,6 +27,7 @@ struct SavedCommandSet: Codable, Equatable {
         let shortcuts = commands.map(\.shortcut).filter { $0 != 0 }
         guard Set(shortcuts).count == shortcuts.count else { return "Горячие клавиши не должны повторяться." }
         for command in commands {
+            guard command.description.utf8.count <= 4096, !command.description.contains("\0") else { return "Описание команды — до 4 КБ." }
             guard (0...9).contains(command.shortcut), command.group.count <= 40,
                   !command.group.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return "Группа — до 40 символов; клавиша — ⌘⌥1…9." }
             guard !command.title.trimmingCharacters(in: .whitespaces).isEmpty, command.title.utf8.count <= 160,
@@ -55,7 +58,7 @@ struct SavedCommandsRepository {
     func load(_ key: String) throws -> SavedCommandSet {
         let url = file(key)
         guard FileManager.default.fileExists(atPath: url.path) else { return SavedCommandSet() }
-        guard try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0 <= 300_000 else { throw ConfigError.message("Файл команд слишком большой.") }
+        guard try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0 <= 1_000_000 else { throw ConfigError.message("Файл команд слишком большой.") }
         let value = try JSONDecoder().decode(SavedCommandSet.self, from: Data(contentsOf: url))
         if let error = value.validation { throw ConfigError.message(error) }; return value
     }
@@ -63,7 +66,9 @@ struct SavedCommandsRepository {
         if let error = value.validation { throw ConfigError.message(error) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let url = file(key)
-        try JSONEncoder().encode(value).write(to: url, options: .atomic)
+        let data = try JSONEncoder().encode(value)
+        guard data.count <= 1_000_000 else { throw ConfigError.message("Файл команд слишком большой.") }
+        try data.write(to: url, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 }

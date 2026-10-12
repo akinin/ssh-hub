@@ -178,7 +178,12 @@ struct WorkspacePaneView: View {
             VStack(spacing: 14) {
                 Image(systemName: "rectangle.split.2x1").font(.system(size: 30)).foregroundStyle(.secondary)
                 Text(store.workspace.split == .none ? "Выбери запись слева" : "Открой вкладку в этой панели").font(.headline)
-                Text("ПКМ по вкладке → Переместить вправо или вниз").font(.caption).foregroundStyle(.secondary)
+                if store.workspace.split == .none {
+                    Text("Нажми запись в боковой панели, чтобы открыть её.").font(.caption).foregroundStyle(.secondary)
+                    if let entry = store.current { Button("Открыть выбранную запись") { store.showDashboard(entry) } }
+                } else {
+                    Text("Перетащи вкладку сюда или открой запись из боковой панели.").font(.caption).foregroundStyle(.secondary)
+                }
             }.frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Rectangle())
         }
     }

@@ -167,9 +167,10 @@ struct QuickAccessView: View {
                 .buttonStyle(.plain).foregroundStyle(.secondary).help("Файлы сервера · SFTP").accessibilityLabel("SFTP: \(entry.name)") }
             Menu {
                 if entry.canSSH { Button("Копировать команду") { store.copy(entry.command); copied = true } }
+                if entry.canSSH { Button("Во внешнем терминале") { controller.close(); store.connectExternally(entry) } }
                 Button(store.isFavorite(entry) ? "Убрать из избранного" : "В избранное") { store.toggleFavorite(entry) }
                 Button("Показать в приложении") {
-                    store.query = ""; store.groupFilter = "all"; store.selected = entry.id; controller.openMain()
+                    store.query = ""; store.groupFilter = "all"; controller.openMain { store.showDashboard(entry) }
                 }
                 if entry.canSSH { Button("Проверить подключение") {
                     store.query = ""; store.groupFilter = "all"; store.selected = entry.id
@@ -199,15 +200,9 @@ struct QuickAccessView: View {
     private func move(_ delta: Int) { guard !launching else { return }; selected = QuickAliasSearch.movedSelection(selected, by: delta, entries: entries) }
     private func connect(_ entry: SSHAlias) {
         guard !launching else { return }
-        if entry.recordKind == .serial { controller.openMain { store.connect(entry) }; return }
-        if !entry.canSSH { controller.openMain { store.showDashboard(entry) }; return }
-        selected = entry.id; launching = true; error = nil
-        Task {
-            do {
-                try await store.launchInTerminal(TerminalCommands.connection(entry, config: store.config.url), record: entry, kind: .ssh)
-                controller.close()
-            } catch { self.error = error.localizedDescription }
-            launching = false
+        selected = entry.id; error = nil
+        controller.openMain {
+            if entry.canConnect { store.connect(entry) } else { store.showDashboard(entry) }
         }
     }
 }

@@ -159,7 +159,7 @@ struct RecordEditorView: View {
                 Button("Отмена", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
                 Button(original == nil ? "Создать запись" : "Сохранить") { save() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(validation != nil)
             }.padding(16)
-        }.frame(width: 610, height: 650).onAppear { load() }
+        }.frame(width: 610, height: 650).dismissOnOutsideClick().onAppear { load() }
     }
     private var fields: some View {
         VStack(alignment: .leading, spacing: 12) {

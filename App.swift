@@ -20,6 +20,7 @@ import ConsoleSupport
     var detachedWindows: [WorkspaceTab: DetachedWorkspaceWindow] = [:]
     @Published var detachedTabs: Set<WorkspaceTab> = []
     @Published var showingPalette = false
+    @Published var showingCommandLibrary = false
     @Published var showingBackup = false
     @Published var showingTemplates = false
     @Published var showingAvailability = false
@@ -87,7 +88,7 @@ import ConsoleSupport
         reload()
         restoreWorkspace()
         restoringWorkspace = false
-        if pages.isEmpty && ConsoleStore.shared.sessions.isEmpty, let current { showDashboard(current) }
+        if pages.isEmpty && ConsoleStore.shared.sessions.isEmpty, let initial = current ?? filtered.first { showDashboard(initial) }
         saveWorkspace()
         availability.configure(entries: aliases)
     }
@@ -100,7 +101,8 @@ import ConsoleSupport
     var filtered: [SSHAlias] {
         (groupFilter == "recent" ? recentAliases : ordered).filter { entry in
             let matchesGroup = groupFilter == "all" || groupFilter == "recent" || (groupFilter == "favorites" && isFavorite(entry)) || (groupFilter == "ungrouped" && group(entry).isEmpty) || (groupFilter.hasPrefix("group:") && (ConnectionTree.normalized(group(entry)) == String(groupFilter.dropFirst(6)) || ConnectionTree.normalized(group(entry)).hasPrefix(String(groupFilter.dropFirst(6)) + "/")))
-            return matchesGroup && (query.isEmpty || "\(title(entry)) \(entry.name) \(entry.host) \(entry.user) \(entry.website ?? "") \(group(entry))".localizedCaseInsensitiveContains(query))
+            let matchesAvailability = (groupFilter == "available" || groupFilter == "unavailable") && availability.selected.contains(entry.favoriteID) && availability.results[entry.favoriteID]?.reachable == (groupFilter == "available")
+            return (matchesGroup || matchesAvailability) && (query.isEmpty || "\(title(entry)) \(entry.name) \(entry.host) \(entry.user) \(entry.website ?? "") \(group(entry))".localizedCaseInsensitiveContains(query))
         }
     }
     func showDocumentation(_ entry: SSHAlias) {
@@ -427,6 +429,7 @@ import ConsoleSupport
                     Button("Палитра действий…") { store.showingPalette = true }.keyboardShortcut("p", modifiers: .command)
                     Button("Резервное копирование…") { store.showingBackup = true }
                     Button("Шаблоны записей…") { store.showingTemplates = true }
+                    Button("Библиотека команд…") { store.showingCommandLibrary = true }
                     Button("Статус доступности…") { store.showingAvailability = true }
                     Button("Быстрое подключение…") { QuickAccessController.shared.show() }.keyboardShortcut("p", modifiers: [.command, .shift])
                     Button("Обновить список") { store.reload() }.keyboardShortcut("r", modifiers: .command)
@@ -468,10 +471,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let tunnels = TunnelManager.shared
         guard tunnels.hasSessions || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 else { return .terminateNow }
         tunnels.stopAll()
-        Task { @MainActor in
-            let deadline = Date().addingTimeInterval(3)
-            while (tunnels.hasSessions || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0) && Date() < deadline { try? await Task.sleep(nanoseconds: 50_000_000) }
-            sender.reply(toApplicationShouldTerminate: true)
+        UpdateTermination.finishAfterCleanup(sender) {
+            tunnels.hasSessions || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0
         }
         return .terminateLater
     }
@@ -616,6 +617,8 @@ struct MainView: View {
         case "all": return "Все подключения"
         case "favorites": return "Избранное"
         case "recent": return "Недавние"
+        case "available": return "Доступные"
+        case "unavailable": return "Недоступные"
         case "ungrouped": return "Без группы"
         default: return String(store.groupFilter.dropFirst("group:".count))
         }
@@ -644,6 +647,8 @@ struct MainView: View {
                         filterOption("Все подключения", value: "all")
                         filterOption("Избранное", value: "favorites")
                         filterOption("Недавние", value: "recent")
+                        filterOption("Доступные", value: "available")
+                        filterOption("Недоступные", value: "unavailable")
                         filterOption("Без группы", value: "ungrouped")
                         if !store.groupNames.isEmpty { Divider() }
                         ForEach(store.groupNames, id: \.self) { filterOption($0, value: "group:" + $0) }
@@ -664,7 +669,7 @@ struct MainView: View {
                     Spacer()
                     Button { store.openConfig() } label: { Image(systemName: "folder") }
                         .buttonStyle(.plain).help("Показать конфиг в Finder")
-                }.padding(14)
+                }.padding(.horizontal, 14).frame(height: WorkspaceMetrics.footerHeight)
             }.navigationSplitViewColumnWidth(min: 245, ideal: 280, max: 400)
                 .toolbar(removing: .sidebarToggle)
         } detail: {
@@ -679,8 +684,9 @@ struct MainView: View {
             ToolbarItem(id: "mainActions", placement: .primaryAction) {
                 HStack(spacing: 8) {
                     toolbarButton("Обновить", symbol: "arrow.clockwise", help: "Обновить · ⌘R") { store.reload() }
+                    toolbarButton("Палитра действий", symbol: "command", help: "Палитра действий · ⌘P") { store.showingPalette = true }
                     Menu {
-                        Button("Палитра действий…", systemImage: "command") { store.showingPalette = true }
+                        Button("Библиотека команд…", systemImage: "books.vertical") { store.showingCommandLibrary = true }
                         Button("Резервное копирование…", systemImage: "externaldrive") { store.showingBackup = true }
                         Button("Шаблоны записей…", systemImage: "square.stack") { store.showingTemplates = true }
                         Button("Статус доступности…", systemImage: "waveform.path.ecg") { store.showingAvailability = true }
@@ -721,6 +727,7 @@ struct MainView: View {
         .sheet(isPresented: $store.generatingKey) { GenerateKeyView(directory: store.config.sshDirectory) }
         .sheet(isPresented: $updater.presented) { AppUpdateView() }
         .sheet(isPresented: $store.showingPalette) { ActionPalette().environmentObject(store) }
+        .sheet(isPresented: $store.showingCommandLibrary) { CommandLibraryView() }
         .sheet(isPresented: $store.showingBackup) { BackupView().environmentObject(store) }
         .sheet(isPresented: $store.showingTemplates) { TemplatesView().environmentObject(store) }
         .sheet(isPresented: $store.showingAvailability) { AvailabilityView(monitor: store.availability).environmentObject(store) }
@@ -778,18 +785,12 @@ struct AliasDetail: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                HStack(spacing: 16) {
-                    Button { store.stylingAlias = entry } label: {
-                        ConnectionIcon(appearance: store.appearance(entry), size: 44, symbol: entry.recordKind?.icon ?? "server.rack").padding(8)
-                            .background(.blue.opacity(0.09), in: RoundedRectangle(cornerRadius: 14))
-                    }.buttonStyle(.plain).help("Изменить название и логотип")
-                    VStack(alignment: .leading, spacing: 4) {
-                        Button { store.stylingAlias = entry } label: { Text(store.title(entry)).font(.title2).bold() }.buttonStyle(.plain).help("Изменить название и логотип")
-                        Text(entry.secondaryTitle).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-                        Text(entry.canSSH ? "\(entry.user) · порт \(entry.port)" : (entry.recordKind?.title ?? "Запись")).font(.caption).foregroundStyle(.secondary)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 16) { recordIcon; recordInfo.frame(minWidth: 160); Spacer(minLength: 0); recordActions }
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack { recordIcon; Spacer(minLength: 8); recordActions }
+                        recordInfo
                     }
-                    Spacer()
-                    Button { store.toggleFavorite(entry) } label: { Image(systemName: store.isFavorite(entry) ? "star.fill" : "star").foregroundStyle(store.isFavorite(entry) ? .yellow : .secondary) }.buttonStyle(.plain).help("Избранное")
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 165), spacing: 10)], spacing: 10) {
                     if entry.canConnect {
@@ -810,12 +811,6 @@ struct AliasDetail: View {
                         tile("Внешний терминал", detail: "Открыть отдельно", icon: "arrow.up.forward.square") { store.connectExternally(entry) }
                     }
                 }
-                HStack {
-                    Button("Дублировать", systemImage: "plus.square.on.square") { store.duplicate(entry) }
-                    Button("Экспорт", systemImage: "square.and.arrow.up") { store.export(entries: [entry]) }
-                    Spacer()
-                    Button("Удалить", systemImage: "trash", role: .destructive) { store.prepareDelete(entry) }
-                }.controlSize(.small)
                 if store.checkingID == entry.favoriteID { HStack { ProgressView().controlSize(.small); Text("Проверяем подключение…"); Button("Отмена") { store.cancelCheck() } } }
                 if let result = store.results[entry.favoriteID] {
                     GroupBox { VStack(alignment: .leading, spacing: 8) {
@@ -837,6 +832,27 @@ struct AliasDetail: View {
                 Text(entry.localID == nil ? "SSH-алиас из " + entry.source.path.replacingOccurrences(of: NSHomeDirectory(), with: "~") : entry.sshAlias == nil ? "Запись хранится в SSH Hub." : "Запись связана с SSH-алиасом «" + (entry.sshAlias ?? "") + "».").font(.caption).foregroundStyle(.secondary)
             }.padding(24).frame(maxWidth: 850, alignment: .leading).frame(maxWidth: .infinity)
         }
+    }
+    private var recordIcon: some View {
+        Button { store.stylingAlias = entry } label: {
+            ConnectionIcon(appearance: store.appearance(entry), size: 44, symbol: entry.recordKind?.icon ?? "server.rack").padding(8)
+                .background(.blue.opacity(0.09), in: RoundedRectangle(cornerRadius: 14))
+        }.buttonStyle(.plain).help("Изменить название и логотип")
+    }
+    private var recordInfo: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button { store.stylingAlias = entry } label: { Text(store.title(entry)).font(.title2).bold().lineLimit(2) }.buttonStyle(.plain).help("Изменить название и логотип")
+            Text(entry.secondaryTitle).font(.callout).foregroundStyle(.secondary).textSelection(.enabled).lineLimit(2)
+            Text(entry.canSSH ? "\(entry.user) · порт \(entry.port)" : (entry.recordKind?.title ?? "Запись")).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+        }
+    }
+    private var recordActions: some View {
+        HStack(spacing: 8) {
+            Button { store.toggleFavorite(entry) } label: { Image(systemName: store.isFavorite(entry) ? "star.fill" : "star").foregroundStyle(store.isFavorite(entry) ? .yellow : .secondary).frame(width: 22, height: 24) }.help("Избранное").accessibilityLabel("Избранное")
+            Button { store.duplicate(entry) } label: { Image(systemName: "plus.square.on.square").frame(width: 22, height: 24) }.help("Дублировать запись").accessibilityLabel("Дублировать запись")
+            Button { store.export(entries: [entry]) } label: { Image(systemName: "square.and.arrow.up").frame(width: 22, height: 24) }.help("Экспорт записи").accessibilityLabel("Экспорт записи")
+            Button(role: .destructive) { store.prepareDelete(entry) } label: { Image(systemName: "trash").frame(width: 22, height: 24) }.help("Удалить запись").accessibilityLabel("Удалить запись")
+        }.buttonStyle(.plain).foregroundStyle(.secondary).fixedSize()
     }
     private func tile(_ title: String, detail: String, icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) { HStack(spacing: 12) {
@@ -951,7 +967,7 @@ struct CreateAliasView: View {
                     .keyboardShortcut(.defaultAction).disabled(validation != nil)
             }
         }.padding(26)
-        }.frame(width: 620, height: 720)
+        }.frame(width: 620, height: 720).dismissOnOutsideClick()
             .onAppear {
                 expectedData = store.data; nameFocused = true
                 if let entry = (editing ?? duplicating)?.entry { appearance = store.appearance(entry) }

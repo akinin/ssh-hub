@@ -61,7 +61,7 @@ struct AppSettingsView: View {
             }.formStyle(.grouped)
             if let error { Text(error).font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
             HStack { Spacer(); Button("Готово") { dismiss() }.keyboardShortcut(.defaultAction) }
-        }.padding(24).frame(width: 570, height: 760)
+        }.padding(24).frame(width: 570, height: 760).dismissOnOutsideClick()
             .onAppear { refreshLoginStatus() }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refreshLoginStatus() }
     }
@@ -109,6 +109,6 @@ struct GroupAssignmentView: View {
                 Button("Сохранить") { store.setGroup(name, for: entry); dismiss() }
                     .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(!AliasTransfer.validGroup(name))
             }
-        }.padding(24).frame(width: 430).onAppear { name = store.group(entry) }
+        }.padding(24).frame(width: 430).dismissOnOutsideClick().onAppear { name = store.group(entry) }
     }
 }

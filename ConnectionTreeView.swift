@@ -209,6 +209,6 @@ struct CreateFolderView: View {
             HStack { Spacer(); Button("Отмена", role: .cancel) { dismiss() }; Button("Создать") {
                 store.addFolder(path); dismiss()
             }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(!ConnectionTree.validPath(path) || name.trimmingCharacters(in: .whitespaces).isEmpty) }
-        }.padding(24).frame(width: 420)
+        }.padding(24).frame(width: 420).dismissOnOutsideClick()
     }
 }

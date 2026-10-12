@@ -74,7 +74,7 @@ struct RecordChooserView: View {
                     Spacer(); Button("Отмена", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
                     Button(selection == "tunnel" ? "Открыть" : "Продолжить") { choose() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(!choices.contains { $0.id == selection })
                 }.padding(16)
-            }.frame(width: 800, height: 490)
+            }.frame(width: 800, height: 490).dismissOnOutsideClick()
                 .onChange(of: category) { _, _ in if !choices.contains(where: { $0.id == selection }) { selection = choices.first?.id ?? "" } }
                 .onChange(of: query) { _, _ in if !choices.contains(where: { $0.id == selection }) { selection = choices.first?.id ?? "" } }
         }

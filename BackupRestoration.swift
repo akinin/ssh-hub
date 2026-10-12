@@ -3,7 +3,8 @@ import Foundation
 enum BackupRestoration {
     static func install(_ backup: HubBackup, selected: Set<UUID>, localRepository: LocalConnectionRepository,
                         documents: DocumentationRepository, commands: SavedCommandsRepository, attachments: AttachmentsRepository,
-                        templates: [RecordTemplate], writeTemplates: ([RecordTemplate]) throws -> Void) throws -> [(BackupRecord, SSHAlias)] {
+                        templates: [RecordTemplate], writeTemplates: ([RecordTemplate]) throws -> Void,
+                        library: [SavedConsoleCommand] = [], writeLibrary: ([SavedConsoleCommand]) throws -> Void = { _ in }) throws -> [(BackupRecord, SSHAlias)] {
         try backup.validate()
         let before = try localRepository.load()
         var after = before, installed: [URL] = []
@@ -28,6 +29,13 @@ enum BackupRestoration {
         }
         guard newTemplates.count <= 100 else { throw ConfigError.message("После восстановления будет больше 100 собственных шаблонов.") }
         let oldTemplates = templates
+        var newLibrary = library
+        for var command in backup.commandLibrary ?? [] {
+            if newLibrary.contains(command) { continue }
+            if newLibrary.contains(where: { $0.id == command.id }) || CommandCatalog.presets.contains(where: { $0.id == command.id }) { command.id = UUID() }
+            newLibrary.append(command)
+        }
+        try CommandCatalog.validate(newLibrary)
         do {
             for (value, entry) in metadata {
                 installed.append(documents.url(for: entry.favoriteID)); try documents.write(value.document, for: entry.favoriteID)
@@ -47,10 +55,12 @@ enum BackupRestoration {
                 }
             }
             try writeTemplates(newTemplates)
+            try writeLibrary(newLibrary)
             try localRepository.write(after, expected: before)
         } catch {
             for url in installed { try? FileManager.default.removeItem(at: url) }
             try? writeTemplates(oldTemplates)
+            try? writeLibrary(library)
             // A failed records write can leave only app-private generated transport files.
             for record in after where !before.contains(where: { $0.id == record.id }) { try? FileManager.default.removeItem(at: localRepository.privateConfig(record.id)) }
             throw error

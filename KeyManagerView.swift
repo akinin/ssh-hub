@@ -72,7 +72,7 @@ struct KeyManagerView: View {
             }
             if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
             HStack { Spacer(); Button("Готово") { dismiss() }.keyboardShortcut(.cancelAction) }
-        }.padding(24).frame(width: 820)
+        }.padding(24).frame(width: 820).dismissOnOutsideClick()
             .onAppear { target = store.selected ?? ""; refresh() }
             .sheet(isPresented: $generating, onDismiss: refresh) { GenerateKeyView(directory: store.config.sshDirectory) }
             .sheet(isPresented: Binding(get: { installation != nil }, set: { if !$0 { installation = nil } })) {
@@ -109,6 +109,6 @@ struct InstallationReviewView: View {
                 Spacer()
                 Button("Открыть в терминале") { store.runInTerminal(command); dismiss() }.buttonStyle(.borderedProminent)
             }
-        }.padding(24).frame(width: 590)
+        }.padding(24).frame(width: 590).dismissOnOutsideClick()
     }
 }

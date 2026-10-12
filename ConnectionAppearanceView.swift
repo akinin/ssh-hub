@@ -72,6 +72,6 @@ struct ConnectionAppearanceView: View {
                 Button("Сохранить") { store.setAppearance(appearance, for: entry); dismiss() }
                     .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(appearance.validation != nil)
             }
-        }.padding(24).frame(width: 490).onAppear { appearance = store.appearance(entry) }
+        }.padding(24).frame(width: 490).dismissOnOutsideClick().onAppear { appearance = store.appearance(entry) }
     }
 }

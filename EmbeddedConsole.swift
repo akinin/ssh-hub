@@ -238,6 +238,7 @@ struct ConsolePane: View {
     @State private var matchCase = false
     @State private var matchFound = true
     @State private var appearance = false
+    @State private var compactAppearance = false
     @FocusState private var searchFocused: Bool
     var body: some View {
         VStack(spacing: 0) {
@@ -246,12 +247,12 @@ struct ConsolePane: View {
             if session.showSearch {
                 HStack {
                     TextField("Найти в выводе", text: $search).focused($searchFocused).textFieldStyle(.roundedBorder).onSubmit { find(next: true) }
-                    Toggle("Аа", isOn: $matchCase).toggleStyle(.button).help("Учитывать регистр")
+                    Toggle(isOn: $matchCase) { Text("Аа").frame(width: 24, height: 20) }.toggleStyle(.button).help("Учитывать регистр")
                     if !matchFound { Text("Нет совпадений").font(.caption).foregroundStyle(.secondary) }
-                    Button { find(next: false) } label: { Image(systemName: "chevron.up") }
-                    Button { find(next: true) } label: { Image(systemName: "chevron.down") }
-                    Button { session.showSearch = false; session.view?.clearSearch() } label: { Image(systemName: "xmark") }
-                }.controlSize(.small).padding(8)
+                    Button { find(next: false) } label: { Image(systemName: "chevron.up").frame(width: 24, height: 20) }.help("Предыдущее совпадение")
+                    Button { find(next: true) } label: { Image(systemName: "chevron.down").frame(width: 24, height: 20) }.help("Следующее совпадение")
+                    Button { session.showSearch = false; session.view?.clearSearch() } label: { Image(systemName: "xmark").frame(width: 24, height: 20) }.help("Закрыть поиск")
+                }.buttonStyle(.bordered).controlSize(.regular).padding(8)
             }
             if session.awaitingConnection {
                 VStack(spacing: 16) {
@@ -281,15 +282,17 @@ struct ConsolePane: View {
                 Button { session.showSearch.toggle() } label: { Image(systemName: "magnifyingglass") }.help("Поиск по выводу · ⌘F")
                 if compact {
                     Menu {
-                        Button("Шрифт и цвета…") { appearance = true }
+                        Button("Шрифт и цвета…") { compactAppearance = true }
                         Button("Увеличить масштаб") { session.changeZoom(0.1) }
                         Button("Уменьшить масштаб") { session.changeZoom(-0.1) }
                         Button("Сбросить масштаб") { session.changeZoom(0) }
                         Button(session.recording ? "Остановить запись вывода" : "Записывать вывод") { session.toggleRecording() }.disabled(session.awaitingConnection || session.finished)
                         Button("Дублировать SSH-сеанс") { consoles.connect(session.entry, title: session.title, config: session.config, newSession: true) }.disabled(session.entry.recordKind == .serial)
                     } label: { Image(systemName: "ellipsis.circle") }.menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 24)
+                        .popover(isPresented: $compactAppearance, arrowEdge: .top) { ConsolePreferencesView() }
                 } else {
                 Button { appearance.toggle() } label: { Image(systemName: "textformat.size") }.help("Шрифт и цвета")
+                    .popover(isPresented: $appearance, arrowEdge: .top) { ConsolePreferencesView() }
                 Button { session.changeZoom(-0.1) } label: { Image(systemName: "minus.magnifyingglass") }.help("Уменьшить масштаб · ⌘−")
                 Button("\(Int(session.zoom * 100))%") { session.changeZoom(0) }.help("Сбросить масштаб · ⌘0")
                 Button { session.changeZoom(0.1) } label: { Image(systemName: "plus.magnifyingglass") }.help("Увеличить масштаб · ⌘+")
@@ -298,10 +301,8 @@ struct ConsolePane: View {
                 }
                 if session.finished {
                     Button("Подключиться снова", systemImage: "arrow.clockwise") { store.connect(session.entry, newSession: true) }.labelStyle(.iconOnly).help("Подключиться снова")
-                } else {
-                    Button("Отключиться", systemImage: "stop.circle") { session.disconnect() }.labelStyle(.iconOnly).help("Отключиться")
                 }
-            }.controlSize(.small).popover(isPresented: $appearance) { ConsolePreferencesView() }
+            }.controlSize(.small)
     }
     private func find(next: Bool) {
         guard let terminal = session.view else { return }

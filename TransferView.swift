@@ -67,6 +67,6 @@ struct ImportReviewView: View {
                     catch { self.error = error.localizedDescription }
                 }.buttonStyle(.borderedProminent).disabled(validation != nil)
             }
-        }.padding(24).frame(width: 620)
+        }.padding(24).frame(width: 620).dismissOnOutsideClick()
     }
 }

@@ -40,7 +40,7 @@ struct FolderAppearanceView: View {
             HStack { Spacer(); Button("Отмена", role: .cancel) { dismiss() }; Button("Сохранить") {
                 store.setFolderAppearance(appearance, path: path); dismiss()
             }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction) }
-        }.padding(24).frame(width: 460).onAppear { appearance = store.folderAppearance(path) }
+        }.padding(24).frame(width: 460).dismissOnOutsideClick().onAppear { appearance = store.folderAppearance(path) }
     }
     private func chooseLogo() {
         let panel = NSOpenPanel(); panel.title = "Логотип папки"; panel.allowedContentTypes = [.png, .jpeg, .webP]

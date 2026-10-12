@@ -72,7 +72,7 @@ struct AvailabilityView: View {
                 }
             }
             HStack { Button("Отключить все") { monitor.setSelected([], available: store.aliases) }; Spacer(); Button("Готово") { dismiss() }.keyboardShortcut(.defaultAction) }
-        }.padding(24).frame(width: 660, height: 540)
+        }.padding(24).frame(width: 660, height: 540).dismissOnOutsideClick()
     }
 }
 struct AvailabilityIndicator: View {

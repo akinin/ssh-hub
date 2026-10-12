@@ -24,8 +24,10 @@ struct HubBackup: Codable {
     var folders: [String]
     var folderAppearances: [String: ConnectionAppearance]
     var templates: [RecordTemplate]
+    var commandLibrary: [SavedConsoleCommand]? = nil
     static let maximumBytes = 350_000_000
     func validate() throws {
+        try CommandCatalog.validate(commandLibrary ?? [])
         guard version == 1, records.count <= 1000, Set(records.map(\.id)).count == records.count,
               folders.count <= 1000, folders.allSatisfy(ConnectionTree.validPath),
               folderAppearances.count <= 1000, folderAppearances.allSatisfy({ ConnectionTree.validPath($0.key) && $0.value.validation == nil }),

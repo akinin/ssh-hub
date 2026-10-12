@@ -66,14 +66,13 @@ struct DocumentationView: View {
     private var document: ConnectionDocument { workspace.document(key) }
     private var selectedRevision: DocumentationRevision? { document.revisions.first { $0.id == revisionID } ?? document.revisions.last }
     var body: some View {
+        GeometryReader { geometry in
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 if mode == .editor {
                     Button { workspace.save(key) } label: {
-                        ViewThatFits(in: .horizontal) {
-                            Label("Сохранить", systemImage: "square.and.arrow.down")
-                            Image(systemName: "square.and.arrow.down")
-                        }
+                        if geometry.size.width < 470 { Image(systemName: "square.and.arrow.down") }
+                        else { Label("Сохранить", systemImage: "square.and.arrow.down") }
                     }.disabled(!document.hasChanges).keyboardShortcut("s", modifiers: .command)
                         .help("Сохранить · ⌘S").accessibilityLabel("Сохранить")
                 } else if mode == .history {
@@ -84,9 +83,15 @@ struct DocumentationView: View {
                         .help("Черновик · изменения ещё не добавлены в историю").accessibilityLabel("Черновик")
                 }
                 Spacer(minLength: 0)
-                Picker("Режим документации", selection: $mode) {
-                    ForEach(DocumentationMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }.pickerStyle(.segmented).labelsHidden().frame(minWidth: 190, idealWidth: 250, maxWidth: 300)
+                if geometry.size.width < 320 {
+                    Picker("Режим документации", selection: $mode) {
+                        ForEach(DocumentationMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }.pickerStyle(.menu).labelsHidden().frame(maxWidth: 150)
+                } else {
+                    Picker("Режим документации", selection: $mode) {
+                        ForEach(DocumentationMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }.pickerStyle(.segmented).labelsHidden().frame(width: min(300, max(190, geometry.size.width - 150)))
+                }
                 Menu {
                     if mode == .editor {
                         Button("Отменить изменения") { discarding = true }.disabled(!document.hasChanges)
@@ -128,6 +133,7 @@ struct DocumentationView: View {
                 }
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
             .onAppear { workspace.load(key) }
             .alert("Не удалось сохранить документацию", isPresented: Binding(get: { workspace.error != nil }, set: { if !$0 { workspace.error = nil } })) {
                 Button("ОК") { workspace.error = nil }

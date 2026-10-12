@@ -59,7 +59,7 @@ struct TemplatesView: View {
             }
             if let error { Text(error).foregroundStyle(.red).font(.caption) }
             HStack { Spacer(); Button("Готово") { dismiss() }.keyboardShortcut(.defaultAction) }
-        }.padding(24).frame(width: 720, height: 480).sheet(item: $editing) { TemplateEditor(value: $0) }
+        }.padding(24).frame(width: 720, height: 480).dismissOnOutsideClick().sheet(item: $editing) { TemplateEditor(value: $0) }
     }
 }
 struct TemplateEditor: View {
@@ -87,6 +87,6 @@ struct TemplateEditor: View {
             Button("Добавить команду") { value.commands.commands.append(SavedConsoleCommand()) }.disabled(value.commands.commands.count >= 50)
             if let error = error ?? value.validation { Text(error).font(.caption).foregroundStyle(.red) }
             HStack { Spacer(); Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction); Button("Сохранить") { do { try TemplateLibrary.shared.save(value); dismiss() } catch { self.error = error.localizedDescription } }.keyboardShortcut(.defaultAction).disabled(value.validation != nil) }
-        }.padding(24).frame(width: 610, height: 670)
+        }.padding(24).frame(width: 610, height: 670).dismissOnOutsideClick()
     }
 }

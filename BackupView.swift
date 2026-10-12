@@ -24,7 +24,8 @@ extension AliasStore {
             }
             records.append(BackupRecord(record: record, appearance: appearance(entry), group: group(entry), favorite: isFavorite(entry), commands: try savedCommands.repository.load(entry.favoriteID), document: try DocumentationRepository().load(entry.favoriteID), attachments: attachments))
         }
-        let backup = HubBackup(records: records, folders: folders, folderAppearances: folderAppearances, templates: TemplateLibrary.shared.custom)
+        if let error = CommandLibrary.shared.error { throw ConfigError.message(error) }
+        let backup = HubBackup(records: records, folders: folders, folderAppearances: folderAppearances, templates: TemplateLibrary.shared.custom, commandLibrary: CommandLibrary.shared.custom)
         try backup.validate(); return backup
     }
     func restoreBackup(_ backup: HubBackup, selected: Set<UUID>) throws {
@@ -32,7 +33,8 @@ extension AliasStore {
         guard !ConsoleStore.shared.hasSessions, !SFTPRegistry.shared.hasSessions else { throw ConfigError.message("Заверши активные SSH, Serial и SFTP-сеансы перед восстановлением.") }
         let metadata = try BackupRestoration.install(backup, selected: selected, localRepository: localRepository,
             documents: DocumentationRepository(), commands: savedCommands.repository, attachments: attachmentsRepository,
-            templates: TemplateLibrary.shared.custom, writeTemplates: TemplateLibrary.shared.replace)
+            templates: TemplateLibrary.shared.custom, writeTemplates: TemplateLibrary.shared.replace,
+            library: CommandLibrary.shared.custom, writeLibrary: CommandLibrary.shared.replace)
         reload()
         for (value, entry) in metadata {
             setAppearance(value.appearance, for: entry); setGroup(value.group, for: entry)
@@ -76,21 +78,21 @@ struct BackupView: View {
                         VStack(alignment: .leading) { Text(value.appearance.title(fallback: value.record.title)); Text(value.record.host + " · вложений: \(value.attachments.count)").font(.caption).foregroundStyle(.secondary) }
                     }
                 }
-                Text("Восстановление добавляет записи. При совпадении ID создаётся копия. Папки и собственные шаблоны архива также добавляются.").font(.caption).foregroundStyle(.secondary)
+                Text("Восстановление добавляет записи. При совпадении ID создаётся копия. Папки, собственные шаблоны и библиотека команд архива также добавляются.").font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button("Другой архив") { self.backup = nil; selection = [] }
                     Spacer()
                     Button("Восстановить выбранные (\(selection.count))") {
                         do { try store.restoreBackup(backup, selected: selection); self.backup = nil; success = "Восстановление завершено"; password = ""; confirmation = "" }
                         catch { self.error = error.localizedDescription }
-                    }.disabled(busy || selection.isEmpty).buttonStyle(.borderedProminent)
+                    }.disabled(busy || (selection.isEmpty && backup.templates.isEmpty && (backup.commandLibrary ?? []).isEmpty && backup.folders.isEmpty)).buttonStyle(.borderedProminent)
                 }
             }
             if busy { ProgressView("Обработка зашифрованного архива…") }
             if let error { Text(error).foregroundStyle(.red).font(.caption).textSelection(.enabled) }
             if let success { Label(success, systemImage: "checkmark.circle").foregroundStyle(.green) }
             HStack { Spacer(); Button("Готово") { password = ""; confirmation = ""; dismiss() }.keyboardShortcut(.cancelAction).disabled(busy) }
-        }.padding(24).frame(width: 700, height: 570)
+        }.padding(24).frame(width: 700, height: 570).interactiveDismissDisabled(busy).dismissOnOutsideClick(enabled: !busy)
     }
     private func export() {
         let panel = NSSavePanel(); panel.nameFieldStringValue = "SSH-Hub-Backup.sshhub"; panel.allowedContentTypes = [.data]; panel.canSelectHiddenExtension = true

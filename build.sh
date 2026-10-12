@@ -36,6 +36,10 @@ swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$b
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift Nmap.swift TransportTests.swift -o "$build_dir/transport-tests"
 "$build_dir/transport-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" ReleaseUpdate.swift UpdateTests.swift -o "$build_dir/update-tests"
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" UpdateTermination.swift UpdateTerminationTests.swift -framework AppKit -o "$build_dir/update-quit-tests"
+"$build_dir/update-quit-tests"
+"$build_dir/update-quit-tests" --later
+"$build_dir/update-quit-tests" --later --timeout
 app_dir="$build_dir/SSH Hub.app"
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 swiftc -parse-as-library -swift-version 5 -O -sdk "$sdk_dir" -target arm64-apple-macosx14.0 -module-cache-path "$build_dir/module-cache" ReleaseUpdate.swift UpdateHelper.swift -o "$app_dir/Contents/MacOS/SSHUpdate"
@@ -46,7 +50,7 @@ swiftc -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-ca
 swiftc -parse-as-library -swift-version 5 -O -sdk "$sdk_dir" -target arm64-apple-macosx14.0 -module-cache-path "$build_dir/module-cache" LoginAskpass.swift -o "$app_dir/Contents/MacOS/SSHLoginAskpass"
 swiftc -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift PublicKeys.swift TerminalLauncher.swift ConnectionTree.swift ConsoleLaunch.swift SSHCredentials.swift WorkspaceLayout.swift SavedCommands.swift WorkspaceTests.swift -o "$build_dir/workspace-tests" -framework AppKit -framework Security
 "$build_dir/workspace-tests" "$app_dir/Contents/MacOS/SSHLoginAskpass"
-swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift ConnectionAttachments.swift ConnectionDocumentation.swift SavedCommands.swift ConnectionTree.swift WorkspaceLayout.swift WorkspaceSnapshot.swift RecordTemplate.swift BackupArchive.swift BackupRestoration.swift TCPAvailability.swift SessionJournal.swift AdvancedTests.swift -o "$build_dir/advanced-tests" -framework Security
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift ConnectionAttachments.swift ConnectionDocumentation.swift SavedCommands.swift ConnectionTree.swift WorkspaceLayout.swift WorkspaceSnapshot.swift RecordTemplate.swift CommandLibrary.swift BackupArchive.swift BackupRestoration.swift TCPAvailability.swift SessionJournal.swift AdvancedTests.swift -o "$build_dir/advanced-tests" -framework Security
 "$build_dir/advanced-tests"
 spm_args=(--build-system native --scratch-path "$build_dir/spm" --cache-path "$build_dir/spm-cache" --config-path "$build_dir/spm-config" --security-path "$build_dir/spm-security" --disable-sandbox --sdk "$sdk_dir" --triple arm64-apple-macosx14.0 -c release)
 swift build "${spm_args[@]}" --product SSHHub

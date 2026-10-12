@@ -40,13 +40,13 @@ struct ConsoleCommandBar: View {
                     ForEach(value.commands.filter { group.isEmpty || $0.group == group }) { command in
                         Button(command.title) {
                             session.execute(command)
-                        }.disabled(session.finished || session.awaitingConnection).help(command.text + (value.sendEnter ? " · с Enter" : " · без Enter"))
+                        }.disabled(session.finished || session.awaitingConnection).help((command.description.isEmpty ? "" : command.description + "\n") + command.text + (value.sendEnter ? " · с Enter" : " · без Enter"))
                             .contextMenu { Button("Копировать команду") { store.copy(command.text) }; Button("Настроить команды…") { editing = true } }
                     }
                 }.font(.system(size: 11)).padding(.vertical, 3)
             }.scrollIndicators(.hidden)
             Button { editing = true } label: { Image(systemName: "slider.horizontal.3") }.help("Настроить команды записи").accessibilityLabel("Настроить команды записи")
-        }.controlSize(.small).padding(.horizontal, 12).frame(height: 34).background(.bar)
+        }.controlSize(.small).padding(.horizontal, 12).frame(height: WorkspaceMetrics.footerHeight).background(.bar)
             .onAppear { workspace.load(entry.favoriteID) }
             .sheet(isPresented: $editing) { ConsoleCommandsEditor(key: entry.favoriteID, title: store.title(entry), workspace: workspace) }
     }
@@ -68,6 +68,9 @@ struct ConsoleCommandsEditor: View {
     @State private var draft = SavedCommandSet()
     @State private var ready = false
     @State private var error: String?
+    @State private var query = ""
+    @State private var showingLibrary = false
+    @State private var libraryNotice: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Команды · " + title).font(.title3).bold().lineLimit(1)
@@ -76,12 +79,15 @@ struct ConsoleCommandsEditor: View {
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Text("Переменные: {{host}}, {{user}}, {{port}}, {{name}}. Значения экранируются для shell; используй их без своих кавычек. Клавиши действуют в выбранной консоли.").font(.caption).foregroundStyle(.secondary)
             Divider()
+            TextField("Поиск по названию, описанию, группе или команде", text: $query).textFieldStyle(.roundedBorder)
             ScrollView {
-                VStack(spacing: 10) {
+                VStack(spacing: 16) {
                     ForEach($draft.commands) { $command in
+                        if CommandCatalog.matches(command, query: query) {
                         HStack(spacing: 8) {
                             VStack(spacing: 10) {
                                 TextField("Название кнопки", text: $command.title).accessibilityIdentifier("commandTitle")
+                                TextField("Описание", text: $command.description, axis: .vertical).lineLimit(1...3).font(.caption)
                                 HStack {
                                     TextField("Группа", text: $command.group)
                                     Picker("Клавиша", selection: $command.shortcut) {
@@ -94,20 +100,32 @@ struct ConsoleCommandsEditor: View {
                             VStack {
                                 Button { move(command.id, by: -1) } label: { Image(systemName: "arrow.up") }.help("Выше")
                                 Button { move(command.id, by: 1) } label: { Image(systemName: "arrow.down") }.help("Ниже")
+                                Button {
+                                    do { if let copy = CommandCatalog.copies([command]).first { try CommandLibrary.shared.save(copy); libraryNotice = "Команда добавлена в общую библиотеку" } }
+                                    catch { self.error = error.localizedDescription }
+                                } label: { Image(systemName: "books.vertical") }.help("Сохранить копию в библиотеку").disabled(SavedCommandSet(commands: [command]).validation != nil)
                             }.buttonStyle(.plain)
                             Button { draft.commands.removeAll { $0.id == command.id } } label: { Image(systemName: "minus.circle") }.buttonStyle(.plain).help("Удалить команду")
+                        }.padding(12).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
+                            .overlay { RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.2), lineWidth: 1) }
                         }
                     }
                 }.padding(6)
             }.frame(maxHeight: .infinity)
-            Button("Добавить команду", systemImage: "plus") { draft.commands.append(SavedConsoleCommand()) }.disabled(draft.commands.count >= 50 || !ready)
+            HStack {
+                Button("Добавить команду", systemImage: "plus") { query = ""; draft.commands.append(SavedConsoleCommand()) }.disabled(draft.commands.count >= 50 || !ready)
+                Button("Из библиотеки…", systemImage: "books.vertical") { showingLibrary = true }.disabled(draft.commands.count >= 50 || !ready)
+                Spacer(); Text("\(draft.commands.count) / 50").font(.caption).foregroundStyle(.secondary)
+            }
+            if let libraryNotice { Text(libraryNotice).font(.caption).foregroundStyle(.secondary) }
             if let error = error ?? draft.validation { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
             HStack { Spacer(); Button("Отмена", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Сохранить") {
                     do { try workspace.save(draft, key: key); dismiss() } catch { self.error = error.localizedDescription }
                 }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(!ready || draft.validation != nil)
             }
-        }.padding(20).frame(width: 640, height: 540)
+        }.padding(20).frame(width: 700, height: 650).dismissOnOutsideClick()
+            .sheet(isPresented: $showingLibrary) { CommandLibraryView(assignmentLimit: 50 - draft.commands.count) { commands in draft.commands += commands; query = "" } }
             .onAppear { workspace.load(key); if let value = workspace.records[key] { draft = value; ready = true } else { error = workspace.error } }
     }
     private func move(_ id: UUID, by offset: Int) {

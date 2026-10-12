@@ -69,7 +69,7 @@ struct HistoryView: View {
                 Spacer()
                 Button("Готово") { dismiss() }.keyboardShortcut(.defaultAction)
             }
-        }.padding(24).frame(width: 720, height: 550)
+        }.padding(24).frame(width: 720, height: 550).dismissOnOutsideClick()
             .confirmationDialog("Очистить историю подключений?", isPresented: $confirmingClear, titleVisibility: .visible) {
                 Button("Очистить историю", role: .destructive) { store.clearHistory() }
                 Button("Отмена", role: .cancel) {}

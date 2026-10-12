@@ -73,7 +73,7 @@ import AppKit
                 let installer = Process(); installer.executableURL = helper; installer.arguments = [jobFile.path]
                 installer.standardInput = FileHandle.nullDevice; installer.standardOutput = FileHandle.nullDevice; installer.standardError = FileHandle.nullDevice
                 try installer.run(); handedOff = true; message = "Перезапуск для установки…"
-                NSApplication.shared.terminate(nil)
+                UpdateTermination.request { self.presented = false }
             } catch is CancellationError { message = "Скачивание отменено." }
             catch { if Task.isCancelled { message = "Скачивание отменено." } else { self.error = error.localizedDescription; message = "Обновление не установлено." } }
         }
@@ -106,7 +106,7 @@ struct AppUpdateView: View {
                     if updater.available != nil { Button("Скачать и установить") { confirming = true }.buttonStyle(.borderedProminent) }
                 }
             }
-        }.padding(24).frame(width: 560).interactiveDismissDisabled(updater.busy)
+        }.padding(24).frame(width: 560).interactiveDismissDisabled(updater.busy).dismissOnOutsideClick(enabled: !updater.busy)
             .confirmationDialog("Установить обновление и перезапустить SSH Hub?", isPresented: $confirming, titleVisibility: .visible) {
                 Button("Установить и перезапустить") { updater.install() }
                 Button("Отмена", role: .cancel) {}

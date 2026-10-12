@@ -69,7 +69,7 @@ struct TunnelsView: View {
                 Button("Остановить все") { tunnels.stopAll() }.disabled(!tunnels.hasSessions)
                 Button("Готово") { dismiss() }.keyboardShortcut(.defaultAction)
             }
-        }.padding(24).frame(width: 830, height: 580)
+        }.padding(24).frame(width: 830, height: 580).dismissOnOutsideClick()
             .onAppear { selected = tunnels.profiles.first?.id }
             .sheet(item: $editing) { item in
                 TunnelEditor(profile: item.profile, aliases: store.ordered.filter(\.canSSH)) { profile in
@@ -145,7 +145,7 @@ struct TunnelEditor: View {
                 }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
                     .disabled(candidate.validation != nil || !aliases.contains { $0.favoriteID == profile.aliasID })
             }
-        }.padding(24).frame(width: 570, height: 580)
+        }.padding(24).frame(width: 570, height: 580).dismissOnOutsideClick()
             .onChange(of: profile.kind) { _, mode in if mode == .socks && localPort == "8080" { localPort = "1080" } }
     }
 }

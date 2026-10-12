@@ -81,7 +81,7 @@ struct GenerateKeyView: View {
                         .keyboardShortcut(.defaultAction).disabled(generating || validation != nil)
                 }
             }
-        }.padding(26).frame(width: 590).interactiveDismissDisabled(generating)
+        }.padding(26).frame(width: 590).interactiveDismissDisabled(generating).dismissOnOutsideClick(enabled: !generating)
     }
     func generate() {
         generating = true
