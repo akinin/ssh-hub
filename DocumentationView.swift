@@ -68,30 +68,34 @@ struct DocumentationView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                Spacer(minLength: 0)
-                Picker("Режим документации", selection: $mode) {
-                    ForEach(DocumentationMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }.pickerStyle(.segmented).labelsHidden().frame(minWidth: 190, idealWidth: 250, maxWidth: 300)
+                if mode == .editor {
+                    Button { workspace.save(key) } label: {
+                        ViewThatFits(in: .horizontal) {
+                            Label("Сохранить", systemImage: "square.and.arrow.down")
+                            Image(systemName: "square.and.arrow.down")
+                        }
+                    }.disabled(!document.hasChanges).keyboardShortcut("s", modifiers: .command)
+                        .help("Сохранить · ⌘S").accessibilityLabel("Сохранить")
+                } else if mode == .history {
+                    Text("Версий: \(document.revisions.count)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
                 if document.hasChanges {
                     Circle().fill(Color.orange).frame(width: 6, height: 6)
                         .help("Черновик · изменения ещё не добавлены в историю").accessibilityLabel("Черновик")
                 }
+                Spacer(minLength: 0)
+                Picker("Режим документации", selection: $mode) {
+                    ForEach(DocumentationMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }.pickerStyle(.segmented).labelsHidden().frame(minWidth: 190, idealWidth: 250, maxWidth: 300)
                 Menu {
+                    if mode == .editor {
+                        Button("Отменить изменения") { discarding = true }.disabled(!document.hasChanges)
+                        Divider()
+                    }
                     Button("Импорт Markdown…") { importMarkdown() }
                     Button("Экспорт Markdown…") { exportMarkdown() }.disabled(document.text.isEmpty)
                 } label: { Image(systemName: "ellipsis.circle") }.menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 24).help("Импорт и экспорт документации")
-            }.frame(height: 30).padding(.horizontal, 12).padding(.vertical, 5)
-            if mode == .editor {
-                HStack(spacing: 10) {
-                    Button { workspace.save(key) } label: { Label("Сохранить", systemImage: "square.and.arrow.down") }
-                        .disabled(!document.hasChanges).keyboardShortcut("s", modifiers: .command)
-                    Spacer()
-                    Button("Отменить изменения") { discarding = true }.disabled(!document.hasChanges)
-                }.frame(height: 24).controlSize(.small).padding(.horizontal, 12).padding(.bottom, 6)
-            } else if mode == .history {
-                Text("Версий: \(document.revisions.count) · последние 50")
-                    .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 12).padding(.bottom, 6)
-            }
+            }.frame(height: 30).controlSize(.small).padding(.horizontal, 12).padding(.vertical, 5)
             Divider()
             switch mode {
             case .preview:
