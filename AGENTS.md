@@ -13,6 +13,7 @@
 - `SSHCredentials.swift`, `Askpass.swift`, `LoginAskpass.swift`: Связка ключей и запрос учётных данных.
 - `DocumentationView.swift`, `ConnectionDocumentation.swift`, `AttachmentsView.swift`, `ConnectionAttachments.swift`: материалы записи.
 - `Nmap.swift`, `NmapView.swift`: запуск установленного Nmap, зависимости и результаты.
+- `ReleaseUpdate.swift`, `UpdaterView.swift`, `UpdateHelper.swift`: GitHub Releases, проверка ZIP/SHA-256/кода и атомарная замена приложения.
 - `SerialHelper.swift`, `SerialSettingsView.swift`: отдельный транспортный процесс и параметры последовательного порта.
 - `Vendor/SwiftTerm`: включённая сторонняя библиотека; сохраняйте её лицензию и избегайте несвязанных изменений.
 
@@ -45,5 +46,7 @@ zsh package-dmg.sh /private/tmp/ssh-hub-build /private/tmp/ssh-hub-dist --skip-b
 ## Публикация
 
 В репозиторий не добавляйте пользовательские SSH-конфиги, ключи, пароли, логи сеансов, данные Application Support, локальные пути и сборочные архивы. Используйте вымышленные адреса и примеры. Перед публикацией проверяйте список файлов и содержимое на секреты. Сборки и DMG размещайте в GitHub Releases, исходники — в Git. Не изменяйте стороннюю лицензию.
+
+Для встроенного обновления релиз должен быть стабильным Latest с тегом `vX.Y.Z` и файлом `SSH-Hub-macOS.zip`, содержащим `SSH Hub.app`. SHA-256 берётся из метаданных asset GitHub; отсутствие digest должно блокировать установку. Не добавляйте токены в клиент, не разрешайте другие источники или произвольные shell-команды. Проверки `UpdateTests.swift` запускаются сборкой; `UpdateIntegrationTests.py` проверяет helper на временных копиях без запуска UI.
 
 При выпуске обновляйте обе версии в `Info.plist`, README и собирайте согласованные приложение, DMG и архив исходников. Установку в `/Applications` выполняйте, когда пользователь её запросил, с возможностью восстановления предыдущей сборки. Не утверждайте, что приложение подписано Developer ID или нотарифицировано: текущая сборка использует локальную ad-hoc подпись.

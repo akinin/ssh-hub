@@ -67,6 +67,7 @@ struct QuickAccessView: View {
                     Button("Создать SSH-ключ…") { controller.openMain { store.generatingKey = true } }
                     Button("SSH-ключи…") { controller.openMain { store.showingKeys = true } }
                     Button("История подключений…") { controller.openMain { store.showingHistory = true } }
+                    Button("Проверить обновления…") { controller.openMain { AppUpdater.shared.check() } }
                     Button("Настройки…") { controller.openMain { store.showingSettings = true } }
                     Divider()
                     Button("Завершить SSH Hub") { NSApplication.shared.terminate(nil) }

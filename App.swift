@@ -389,6 +389,7 @@ import ConsoleSupport
 
 @main struct SSHHubApp: App {
     @StateObject private var store = AliasStore()
+    @ObservedObject private var updater = AppUpdater.shared
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     init() { NSApplication.shared.setActivationPolicy(.regular) }
     var body: some Scene {
@@ -413,6 +414,9 @@ import ConsoleSupport
                     Button("SSH-туннели…") { store.showingTunnels = true }.keyboardShortcut("t", modifiers: [.command, .shift])
                     Button("Дублировать запись…") { if let entry = store.current { store.duplicate(entry) } }
                         .keyboardShortcut("d", modifiers: .command).disabled(store.current == nil)
+                }
+                CommandGroup(after: .appInfo) {
+                    Button(updater.available == nil ? "Проверить обновления…" : "Доступно обновление…") { QuickAccessController.shared.openMain { updater.check() } }
                 }
                 CommandGroup(replacing: .appSettings) {
                     Button("Настройки…") { store.showingSettings = true }.keyboardShortcut(",", modifiers: .command)
@@ -530,6 +534,7 @@ struct StatusMenu: View {
 }
 
 struct MainView: View {
+    @ObservedObject private var updater = AppUpdater.shared
     @EnvironmentObject var store: AliasStore
     @Environment(\.openWindow) private var openWindow
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
@@ -698,6 +703,7 @@ struct MainView: View {
         .sheet(item: $store.editingAlias) { snapshot in CreateAliasView(editing: snapshot).environmentObject(store) }
         .sheet(item: $store.duplicatingAlias) { snapshot in CreateAliasView(duplicating: snapshot, existing: store.aliases).environmentObject(store) }
         .sheet(isPresented: $store.generatingKey) { GenerateKeyView(directory: store.config.sshDirectory) }
+        .sheet(isPresented: $updater.presented) { AppUpdateView() }
         .sheet(isPresented: $store.showingSettings) { AppSettingsView().environmentObject(store) }
         .sheet(isPresented: $store.showingKeys) { KeyManagerView().environmentObject(store) }
         .sheet(isPresented: $store.showingHistory) { HistoryView().environmentObject(store) }
@@ -707,6 +713,7 @@ struct MainView: View {
         .sheet(item: $store.groupingAlias) { GroupAssignmentView(entry: $0).environmentObject(store) }
         .sheet(item: $store.importReview) { ImportReviewView(review: $0, existing: store.aliases).environmentObject(store) }
         .onAppear {
+            updater.checkAutomatically()
             AppDelegate.scannerForTermination = store.scanner
             QuickAccessController.shared.configure(store: store) {
                 openWindow(id: "main"); NSApplication.shared.activate(ignoringOtherApps: true)

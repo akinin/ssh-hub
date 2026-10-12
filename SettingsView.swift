@@ -8,6 +8,8 @@ struct AppSettingsView: View {
     @AppStorage("consoleDestination.v1") private var consoleDestination = "embedded"
     @AppStorage("terminalID") private var terminalID = "com.apple.Terminal"
     @AppStorage("startInMenuBar") private var startInMenuBar = false
+    @AppStorage("checkUpdatesOnLaunch.v1") private var checkUpdates = true
+    @ObservedObject private var updater = AppUpdater.shared
     @State private var loginEnabled = false
     @State private var requiresApproval = false
     @State private var error: String?
@@ -33,6 +35,15 @@ struct AppSettingsView: View {
                     }
                     Text("Для автозапуска сначала перенеси приложение в «Программы».").font(.caption).foregroundStyle(.secondary)
                 }
+                Section("Обновления") {
+                    Toggle("Проверять при запуске", isOn: $checkUpdates)
+                    HStack {
+                        Text("Версия " + updater.installed).foregroundStyle(.secondary)
+                        Spacer()
+                        Button(updater.available == nil ? "Проверить обновления…" : "Доступна " + updater.available!.version.string) { dismiss(); DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { updater.check() } }
+                    }
+                    Text("GitHub Releases · проверка не чаще раза в сутки, установка по нажатию.").font(.caption).foregroundStyle(.secondary)
+                }
                 Section("Перенос подключений") {
                     HStack {
                         Button("Импорт…", systemImage: "square.and.arrow.down") { dismiss(); DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { store.chooseImport() } }
@@ -44,7 +55,7 @@ struct AppSettingsView: View {
             }.formStyle(.grouped)
             if let error { Text(error).font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
             HStack { Spacer(); Button("Готово") { dismiss() }.keyboardShortcut(.defaultAction) }
-        }.padding(24).frame(width: 570, height: 590)
+        }.padding(24).frame(width: 570, height: 680)
             .onAppear { refreshLoginStatus() }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refreshLoginStatus() }
     }
