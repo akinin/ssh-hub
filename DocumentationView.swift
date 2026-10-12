@@ -42,10 +42,11 @@ import UniformTypeIdentifiers
 struct EntryDetailScreen: View {
     @EnvironmentObject var store: AliasStore
     let entry: SSHAlias
+    let section: EntryDetailSection
     var body: some View {
         Group {
-            if store.detailSection == .documentation { DocumentationView(entry: entry, workspace: store.documentation).id(entry.favoriteID) }
-            else if store.detailSection == .attachments { AttachmentsView(entry: entry).id(entry.favoriteID) }
+            if section == .documentation { DocumentationView(entry: entry, workspace: store.documentation).id(entry.favoriteID) }
+            else if section == .attachments { AttachmentsView(entry: entry).id(entry.favoriteID) }
             else { AliasDetail(entry: entry) }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }

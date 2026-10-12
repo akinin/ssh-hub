@@ -19,6 +19,14 @@ import UniformTypeIdentifiers
     func closeAll() { for id in Array(sessions.keys) { close(id) } }
 }
 
+struct SFTPTransfer: Identifiable {
+    let id = UUID()
+    let uploads: [URL]
+    let downloads: [SFTPEntry]
+    let remote: String
+    let local: URL?
+    var title: String { uploads.isEmpty ? "Скачать · \(downloads.count)" : "Загрузить · \(uploads.count)" }
+}
 @MainActor final class SFTPModel: ObservableObject {
     @Published var entries: [SFTPEntry] = []
     @Published var path = ""
@@ -30,6 +38,11 @@ import UniformTypeIdentifiers
     @Published var log = ""
     @Published var progress: SFTPProgress?
     @Published var operation = ""
+    @Published var pending: [SFTPTransfer] = []
+    @Published var transferActive = false
+    private var started = false
+    func startIfNeeded() { if !started { started = true; connect() } }
+    func removePending(_ id: UUID) { pending.removeAll { $0.id == id } }
     private let id = UUID()
     private let queue = DispatchQueue(label: "ssh-aliases.sftp", qos: .userInitiated)
     private var connection: SFTPConnection?
@@ -76,27 +89,32 @@ import UniformTypeIdentifiers
         } success: { [weak self] entries in self?.entries = entries; self?.notice = "Папка создана" }
     }
     func upload(_ files: [URL]) {
-        guard let client = connection, connected, !busy, !files.isEmpty else { return }
-        let parent = path
-        client.prepareTransfer()
-        let report = progressReporter()
-        run("Загрузка на сервер · Файлов: \(files.count)") {
-            for file in files { try client.upload(file, to: SFTPConnection.child(parent, file.lastPathComponent), progress: report) }
-            return try client.list(parent)
-        } success: { [weak self] entries in self?.entries = entries; self?.notice = "Загружено файлов: \(files.count)" }
+        guard connected, !files.isEmpty else { return }
+        pending.append(SFTPTransfer(uploads: files, downloads: [], remote: path, local: nil)); nextTransfer()
     }
     func download(_ entries: [SFTPEntry], to folder: URL) {
-        guard let client = connection, connected, !busy, !entries.isEmpty else { return }
-        let parent = path
-        client.prepareTransfer()
-        let report = progressReporter()
-        run("Скачивание на Mac · Файлов: \(entries.count)") {
-            for entry in entries { try client.download(SFTPConnection.child(parent, entry.name), to: folder.appendingPathComponent(entry.name), progress: report) }
-        } success: { [weak self] in self?.notice = "Скачано файлов: \(entries.count)" }
+        guard connected, !entries.isEmpty else { return }
+        pending.append(SFTPTransfer(uploads: [], downloads: entries, remote: path, local: folder)); nextTransfer()
     }
-    func cancel() { connection?.cancelTransfer() }
+    private func nextTransfer() {
+        guard let client = connection, connected, !busy, !pending.isEmpty else { return }
+        let job = pending.removeFirst(), report = progressReporter()
+        client.prepareTransfer(); transferActive = true
+        run(job.title) {
+            for file in job.uploads { try client.uploadTree(file, to: SFTPConnection.child(job.remote, file.lastPathComponent), progress: report) }
+            if let folder = job.local {
+                for entry in job.downloads { try client.downloadTree(SFTPConnection.child(job.remote, entry.name), to: folder.appendingPathComponent(entry.name), progress: report) }
+            }
+            return try client.list(job.remote)
+        } success: { [weak self] entries in
+            guard let self else { return }
+            if self.path == job.remote { self.entries = entries }
+            self.notice = "Передача завершена · Объектов: \(job.uploads.count + job.downloads.count)"
+        }
+    }
+    func cancel() { pending = []; connection?.cancelTransfer() }
     func disconnect() {
-        generation = UUID()
+        generation = UUID(); pending = []; transferActive = false
         login?.stop(); login = nil
         if connection != nil { SFTPRegistry.shared.close(id) }
         connection = nil
@@ -121,7 +139,12 @@ import UniformTypeIdentifiers
                 guard let self, self.generation == token else { return }
                 self.login?.stop(); self.login = nil
                 self.busy = false; self.connected = alive; self.progress = nil; self.log = log
-                switch result { case .success(let value): success(value); case .failure(let error): self.error = error.localizedDescription }
+                self.transferActive = false
+                switch result {
+                case .success(let value): success(value)
+                case .failure(let error): self.error = error.localizedDescription; self.pending = []
+                }
+                self.nextTransfer()
                 if !alive { SFTPRegistry.shared.remove(self.id, connection: client) }
             }
         }
@@ -129,9 +152,8 @@ import UniformTypeIdentifiers
 }
 
 struct SFTPView: View {
-    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var store: AliasStore
-    @StateObject private var model: SFTPModel
+    @ObservedObject var model: SFTPModel
     @State private var selection = Set<String>()
     @State private var pathInput = ""
     @State private var search = ""
@@ -140,20 +162,20 @@ struct SFTPView: View {
     @State private var folderName = ""
     @State private var targeted = false
     @State private var recorded = false
-    init(entry: SSHAlias, config: URL) { _model = StateObject(wrappedValue: SFTPModel(entry: entry, config: config)) }
     private var filtered: [SFTPEntry] {
         model.entries.filter { (showHidden || !$0.name.hasPrefix(".")) && (search.isEmpty || $0.name.localizedCaseInsensitiveContains(search)) }
     }
     private var selectedEntries: [SFTPEntry] { filtered.filter { selection.contains($0.id) } }
-    private var canDownload: Bool { !selectedEntries.isEmpty && selectedEntries.allSatisfy { $0.attributes.isRegular } }
+    private var canDownload: Bool { !selectedEntries.isEmpty && selectedEntries.allSatisfy { $0.attributes.isRegular || $0.attributes.isDirectory } }
     private var available: Bool { model.connected && !model.busy }
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        GeometryReader { geometry in
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Label("SFTP · \(store.title(model.entry))", systemImage: "folder.badge.gearshape").font(.title2).bold()
+                Label("SFTP · \(store.title(model.entry))", systemImage: "folder.badge.gearshape").font(.headline).lineLimit(1)
                 Spacer()
                 if !model.connected && !model.busy { Button("Подключиться снова") { model.connect() } }
-                Button("Готово") { model.disconnect(); dismiss() }.keyboardShortcut(.cancelAction)
+                if model.connected { Button { model.disconnect() } label: { Image(systemName: "stop.circle") }.help("Отключить SFTP").accessibilityLabel("Отключить SFTP") }
             }
             HStack(spacing: 10) {
                 Button { model.navigate((model.path as NSString).deletingLastPathComponent) } label: { Image(systemName: "arrow.up") }
@@ -167,18 +189,16 @@ struct SFTPView: View {
                     .help("Обновить папку").accessibilityLabel("Обновить папку").disabled(!available)
             }
             HStack {
-                Button("Загрузить…", systemImage: "arrow.up.doc") { chooseUpload() }.disabled(!available)
-                Button("Скачать…", systemImage: "arrow.down.doc") { chooseDownload(selectedEntries) }.disabled(!available || !canDownload)
-                Button("Новая папка…", systemImage: "folder.badge.plus") { folderName = ""; folderPrompt = true }.disabled(!available)
+                Button { chooseUpload() } label: { Image(systemName: "arrow.up.doc") }.help("Загрузить файлы или папки…").accessibilityLabel("Загрузить файлы или папки").disabled(!model.connected)
+                Button { chooseDownload(selectedEntries) } label: { Image(systemName: "arrow.down.doc") }.help("Скачать выбранное…").accessibilityLabel("Скачать выбранное").disabled(!model.connected || !canDownload)
+                Button { folderName = ""; folderPrompt = true } label: { Image(systemName: "folder.badge.plus") }.help("Новая папка…").accessibilityLabel("Новая папка").disabled(!available)
                 Spacer()
-                Toggle("Скрытые", isOn: $showHidden).toggleStyle(.switch).controlSize(.small)
-                TextField("Поиск файлов", text: $search).textFieldStyle(.roundedBorder).frame(width: 175)
+                Toggle("Скрытые", isOn: $showHidden).labelsHidden().toggleStyle(.switch).controlSize(.small).help("Показывать скрытые файлы").accessibilityLabel("Показывать скрытые файлы")
+                TextField("Поиск файлов", text: $search).textFieldStyle(.roundedBorder).frame(minWidth: 60, maxWidth: 175)
             }
             Table(filtered, selection: $selection) {
                 TableColumn("Имя") { entry in Label(entry.name, systemImage: entry.icon).lineLimit(1).help(entry.name) }
-                TableColumn("Тип") { entry in Text(entry.kind).foregroundStyle(.secondary) }.width(75)
                 TableColumn("Размер") { entry in Text(entry.attributes.isDirectory ? "—" : entry.attributes.size.map(bytes) ?? "—").monospacedDigit() }.width(100)
-                TableColumn("Изменён") { entry in Text(entry.attributes.modified.map { $0.formatted(date: .numeric, time: .shortened) } ?? "—").foregroundStyle(.secondary) }.width(160)
             }
             .contextMenu(forSelectionType: String.self) { ids in
                 let entries = filtered.filter { ids.contains($0.id) }
@@ -186,7 +206,7 @@ struct SFTPView: View {
                     if entry.attributes.isDirectory || entry.attributes.isLink { Button("Открыть папку") { open(entry) }.disabled(!available) }
                     Button("Копировать путь") { if let path = try? SFTPConnection.child(model.path, entry.name) { store.copy(path) } }
                 }
-                Button("Скачать…") { chooseDownload(entries) }.disabled(!available || entries.isEmpty || !entries.allSatisfy { $0.attributes.isRegular })
+                Button("Скачать…") { chooseDownload(entries) }.disabled(!available || entries.isEmpty || !entries.allSatisfy { $0.attributes.isRegular || $0.attributes.isDirectory })
             } primaryAction: { ids in
                 guard available, ids.count == 1, let entry = filtered.first(where: { ids.contains($0.id) }) else { return }
                 if entry.attributes.isDirectory || entry.attributes.isLink { open(entry) } else if entry.attributes.isRegular { chooseDownload([entry]) }
@@ -197,8 +217,13 @@ struct SFTPView: View {
             }
             .overlay { if targeted { RoundedRectangle(cornerRadius: 8).stroke(Color.accentColor, lineWidth: 3).allowsHitTesting(false) } }
             .dropDestination(for: URL.self) { urls, _ in
-                guard available, urls.allSatisfy(\.isFileURL) else { return false }; model.upload(urls); return true
+                guard model.connected, urls.allSatisfy(\.isFileURL) else { return false }; model.upload(urls); return true
             } isTargeted: { targeted = $0 }
+            if !model.pending.isEmpty {
+                DisclosureGroup("В очереди: \(model.pending.count)") {
+                    ScrollView { ForEach(model.pending) { job in HStack { Text(job.title).lineLimit(1); Spacer(); Button { model.removePending(job.id) } label: { Image(systemName: "xmark") }.buttonStyle(.plain) } } }.frame(maxHeight: 65)
+                }.font(.caption)
+            }
             if model.busy {
                 HStack(spacing: 12) {
                     if let progress = model.progress {
@@ -208,13 +233,13 @@ struct SFTPView: View {
                             Text("\(bytes(progress.completed)) / \(bytes(progress.total))").font(.caption).foregroundStyle(.secondary)
                         }
                         Button("Отменить передачу") { model.cancel() }
-                    } else { ProgressView().controlSize(.small); Text(model.operation) }
+                    } else { ProgressView().controlSize(.small); Text(model.operation); if model.transferActive { Button("Отменить") { model.cancel() } } }
                 }
             }
             if let error = model.error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
             else if !model.notice.isEmpty { Label(model.notice, systemImage: "checkmark.circle").font(.callout).foregroundStyle(.green) }
             if !model.connected && !model.busy {
-                Text("Для входа нужен SSH-ключ или ssh-agent. Ключ нового сервера сначала подтверди через обычное SSH-подключение.").font(.caption).foregroundStyle(.secondary)
+                Text("Используются настройки SSH-записи: ключ, ssh-agent или пароль. Ключ нового сервера сначала подтверди через консоль.").font(.caption).foregroundStyle(.secondary)
             }
             if !model.log.isEmpty {
                 DisclosureGroup("Журнал SSH") { ScrollView { Text(model.log).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(height: 80) }.font(.caption)
@@ -223,12 +248,12 @@ struct SFTPView: View {
                 Circle().fill(model.connected ? Color.green : Color.secondary).frame(width: 7, height: 7)
                 Text(model.connected ? "Подключено · Объектов: \(filtered.count)" : model.busy ? "Подключение…" : "Соединение закрыто")
                 Spacer()
-                Text("Перетащи файлы из Finder для загрузки").foregroundStyle(.secondary)
+                if geometry.size.width > 550 { Text("Файлы и папки из Finder").foregroundStyle(.secondary) }
             }.font(.caption)
         }
-        .padding(24).frame(width: 980, height: 660)
-        .onAppear { model.connect() }
-        .onDisappear { model.disconnect() }
+        .controlSize(.small).padding(12).frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+        }
+        .onAppear { pathInput = model.path; model.startIfNeeded() }
         .onChange(of: model.path) { _, path in pathInput = path; selection = [] }
         .onChange(of: model.connected) { _, connected in
             if connected && !recorded { store.recordConnection(model.entry, kind: .sftp); recorded = true }
@@ -242,7 +267,7 @@ struct SFTPView: View {
     private func open(_ entry: SFTPEntry) { if let path = try? SFTPConnection.child(model.path, entry.name) { model.navigate(path) } }
     private func chooseUpload() {
         let panel = NSOpenPanel(); panel.title = "Загрузить файлы на сервер"; panel.prompt = "Загрузить"
-        panel.canChooseDirectories = false; panel.canChooseFiles = true; panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = true; panel.canChooseFiles = true; panel.allowsMultipleSelection = true
         panel.begin { response in if response == .OK { model.upload(panel.urls) } }
     }
     private func chooseDownload(_ entries: [SFTPEntry]) {

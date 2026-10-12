@@ -13,11 +13,14 @@ import ConsoleSupport
     let attachmentsRepository = AttachmentsRepository()
     @Published var selected: String?
     @Published var pages: [EntryPage] = []
+    @Published var workspace = WorkspaceLayout()
+    var sftpModels: [UUID: SFTPModel] = [:]
     @Published var selectedPage: UUID?
     let scanner = NmapModel()
     @Published var detailSection: EntryDetailSection = .overview
     @Published var revealRequest = 0
     let documentation = DocumentationWorkspace()
+    let savedCommands = SavedCommandsWorkspace()
     @Published var query = ""
     @Published var error: String?
     @Published var warnings: [String] = []
@@ -45,7 +48,6 @@ import ConsoleSupport
     @Published var showingKeys = false
     @Published var showingHistory = false
     @Published var showingTunnels = false
-    @Published var sftpAlias: SSHAlias?
     @Published var history: [RecentConnection] = []
     @Published var importReview: ImportReview?
     private var appliedLaunchPreference = false
@@ -69,6 +71,9 @@ import ConsoleSupport
         groups = UserDefaults.standard.dictionary(forKey: "aliasGroups.v1") as? [String: String] ?? [:]
         history = ConnectionHistory.decode(UserDefaults.standard.data(forKey: "connectionHistory.v1"))
         appearances = ConnectionAppearance.decode(UserDefaults.standard.data(forKey: "connectionAppearance.v1"))
+        ConsoleStore.shared.onSelection = { [weak self] session in self?.selectConsole(session) }
+        ConsoleStore.shared.onClose = { [weak self] id in self?.workspace.remove(.console(id)); self?.syncWorkspaceSelection() }
+        ConsoleStore.shared.onReplacement = { [weak self] old, new in self?.workspace.replace(.console(old), with: .console(new)); self?.syncWorkspaceSelection() }
         reload()
         if let current { showDashboard(current) }
     }
@@ -216,6 +221,7 @@ import ConsoleSupport
         appearances = ConnectionAppearance.moving(from: from.favoriteID, to: to.favoriteID, in: appearances); persistAppearances()
         for index in pages.indices where pages[index].key == from.favoriteID { pages[index].key = to.favoriteID }
         documentation.copy(from: from.favoriteID, to: to.favoriteID)
+        savedCommands.copy(from: from.favoriteID, to: to.favoriteID)
         do { try attachmentsRepository.copy(from: from.favoriteID, to: to.favoriteID) } catch { self.error = error.localizedDescription }
     }
     func edit(_ entry: SSHAlias) {
@@ -232,6 +238,7 @@ import ConsoleSupport
             setGroup(group(original), for: entry)
             setAppearance(appearance(original), for: entry)
             documentation.copy(from: original.favoriteID, to: entry.favoriteID)
+            savedCommands.copy(from: original.favoriteID, to: entry.favoriteID)
         }
         notice = "Создан дубликат «\(name)». Можно отменить изменение."
     }
@@ -335,7 +342,7 @@ import ConsoleSupport
     }
     func openSFTP(_ entry: SSHAlias) {
         guard entry.canSSH else { return }
-        sftpAlias = entry
+        openPage(entry, section: .sftp)
     }
     func terminalSFTP(_ entry: SSHAlias) {
         guard entry.canSSH else { return }
@@ -640,24 +647,7 @@ struct MainView: View {
             }.navigationSplitViewColumnWidth(min: 245, ideal: 280, max: 400)
                 .toolbar(removing: .sidebarToggle)
         } detail: {
-            VStack(spacing: 0) {
-                if !consoles.sessions.isEmpty || !store.pages.isEmpty { ConsoleTabs().fixedSize(horizontal: false, vertical: true); Divider() }
-                if let session = consoles.active {
-                    ConsolePane(session: session).environmentObject(store)
-                } else {
-            if store.activePage?.section == .scanner { NmapView(model: store.scanner) }
-            else if let page = store.activePage, let entry = store.entry(for: page) {
-                EntryDetailScreen(entry: entry).id(page.id)
-            } else {
-                VStack(spacing: 18) {
-                    Image(systemName: "terminal").font(.system(size: 48)).foregroundStyle(.blue)
-                    Text("Подключения под рукой").font(.title2).bold()
-                    Text("Выбери запись слева или создай новую.").foregroundStyle(.secondary)
-                    Button("Новая запись", systemImage: "plus") { store.creatingAlias = true }.buttonStyle(.borderedProminent)
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-                }
-            }
+            WorkspaceView()
         }
         .frame(minWidth: 780, minHeight: 550)
         .background(WindowTitleBehavior().frame(width: 0, height: 0))
@@ -708,7 +698,6 @@ struct MainView: View {
         .sheet(isPresented: $store.showingKeys) { KeyManagerView().environmentObject(store) }
         .sheet(isPresented: $store.showingHistory) { HistoryView().environmentObject(store) }
         .sheet(isPresented: $store.showingTunnels) { TunnelsView().environmentObject(store) }
-        .sheet(item: $store.sftpAlias) { entry in SFTPView(entry: entry, config: store.config.url).environmentObject(store) }
         .sheet(item: $store.stylingAlias) { ConnectionAppearanceView(entry: $0).environmentObject(store) }
         .sheet(item: $store.groupingAlias) { GroupAssignmentView(entry: $0).environmentObject(store) }
         .sheet(item: $store.importReview) { ImportReviewView(review: $0, existing: store.aliases).environmentObject(store) }
@@ -729,12 +718,6 @@ struct MainView: View {
         }
         .onChange(of: store.revealRequest) { _, _ in
             columnVisibility = .all; sidebarController.setVisible(true)
-        }
-        .onChange(of: consoles.selected) { _, _ in
-            if let session = consoles.active { store.selected = session.entry.id }
-        }
-        .onChange(of: store.selected) { _, selection in
-            if let active = consoles.active, active.entry.id != selection { consoles.selected = nil }
         }
         .onChange(of: store.groupFilter) { _, _ in
             if !store.filtered.contains(where: { $0.id == store.selected }) { store.selected = store.filtered.first?.id }
@@ -881,6 +864,7 @@ struct CreateAliasView: View {
                 }
             }
             ConnectionAppearanceFields(appearance: $appearance, fallback: draft.name)
+            if let entry = editing?.entry { ConsoleCommandsSettingsLink(entry: entry) }
             Form {
                 TextField("Алиас", text: $draft.name, prompt: Text("например, my-server")).focused($nameFocused)
                     .accessibilityIdentifier("aliasName")

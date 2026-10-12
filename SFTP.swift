@@ -267,6 +267,57 @@ final class SFTPConnection: @unchecked Sendable {
         do { _ = try attributes(path) } catch SFTPError.status(2, _) { return }
         throw SFTPError.message("«\((path as NSString).lastPathComponent)» уже существует. Выбери другое имя или папку.")
     }
+    // Directory downloads are staged as a whole and committed without replacing an existing name.
+    func uploadTree(_ local: URL, to path: String, progress: (SFTPProgress) -> Void) throws {
+        var count = 0
+        try validateUploadTree(local, depth: 0, count: &count)
+        try uploadTreeValidated(local, to: path, progress: progress)
+    }
+    private func validateUploadTree(_ local: URL, depth: Int, count: inout Int) throws {
+        try checkTransfer(); count += 1
+        guard depth <= 64, count <= 100000 else { throw SFTPError.message("Слишком большая или глубокая структура папок.") }
+        let values = try local.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey, .isRegularFileKey])
+        guard values.isSymbolicLink != true else { throw SFTPError.message("Передача символических ссылок не поддерживается: " + local.lastPathComponent) }
+        if values.isDirectory == true {
+            for child in try FileManager.default.contentsOfDirectory(at: local, includingPropertiesForKeys: nil) { try validateUploadTree(child, depth: depth + 1, count: &count) }
+        } else if values.isRegularFile != true { throw SFTPError.message("Передача специальных файлов не поддерживается: " + local.lastPathComponent) }
+    }
+    private func uploadTreeValidated(_ local: URL, to path: String, progress: (SFTPProgress) -> Void) throws {
+        try checkTransfer()
+        let values = try local.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
+        guard values.isSymbolicLink != true else { throw SFTPError.message("Папка была заменена символической ссылкой.") }
+        if values.isDirectory == true {
+            try mustNotExist(path); try mkdir(path)
+            for child in try FileManager.default.contentsOfDirectory(at: local, includingPropertiesForKeys: nil) { try uploadTreeValidated(child, to: Self.child(path, child.lastPathComponent), progress: progress) }
+        } else { try upload(local, to: path, progress: progress) }
+    }
+    func downloadTree(_ path: String, to local: URL, progress: (SFTPProgress) -> Void) throws {
+        try checkTransfer()
+        let attrs = try attributes(path)
+        if attrs.isRegular { try download(path, to: local, progress: progress); return }
+        guard attrs.isDirectory else { throw SFTPError.message("Передача ссылок и специальных файлов не поддерживается.") }
+        let temporary = local.deletingLastPathComponent().appendingPathComponent(".ssh-hub-" + UUID().uuidString + ".part")
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        var count = 0
+        try downloadContents(path, to: temporary, depth: 0, count: &count, progress: progress)
+        try checkTransfer()
+        guard renamex_np(temporary.path, local.path, UInt32(RENAME_EXCL)) == 0 else { throw SFTPError.message("Не удалось сохранить папку «" + local.lastPathComponent + "»: имя уже занято или папка недоступна.") }
+    }
+    private func downloadContents(_ path: String, to local: URL, depth: Int, count: inout Int, progress: (SFTPProgress) -> Void) throws {
+        try checkTransfer()
+        guard depth <= 64 else { throw SFTPError.message("Слишком глубокая структура папок.") }
+        for entry in try list(path) {
+            count += 1; guard count <= 100000 else { throw SFTPError.message("В папке слишком много объектов.") }
+            let remote = try Self.child(path, entry.name), destination = local.appendingPathComponent(entry.name)
+            let attrs = try attributes(remote)
+            if attrs.isDirectory {
+                try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+                try downloadContents(remote, to: destination, depth: depth + 1, count: &count, progress: progress)
+            } else if attrs.isRegular { try download(remote, to: destination, progress: progress) }
+            else { throw SFTPError.message("Передача ссылки или специального файла не поддерживается: " + entry.name) }
+        }
+    }
     func upload(_ local: URL, to path: String, progress: (SFTPProgress) -> Void) throws {
         try checkTransfer()
         let fd = Darwin.open(local.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)

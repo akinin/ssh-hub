@@ -96,7 +96,10 @@ final class HubTerminalView: LocalProcessTerminalView {
 @MainActor final class ConsoleStore: ObservableObject {
     static let shared = ConsoleStore()
     @Published var sessions: [ConsoleSession] = []
-    @Published var selected: UUID?
+    var onSelection: ((ConsoleSession) -> Void)?
+    var onClose: ((UUID) -> Void)?
+    var onReplacement: ((UUID, UUID) -> Void)?
+    @Published var selected: UUID? { didSet { if oldValue != selected, let active { onSelection?(active) } } }
     var active: ConsoleSession? { sessions.first { $0.id == selected } }
     var hasSessions: Bool { sessions.contains { !$0.finished } }
     func connect(_ entry: SSHAlias, title: String, config: URL, newSession: Bool = false) {
@@ -106,7 +109,8 @@ final class HubTerminalView: LocalProcessTerminalView {
     }
     func close(_ session: ConsoleSession) {
         session.disconnect(); sessions.removeAll { $0.id == session.id }
-        if selected == session.id { selected = sessions.last?.id }
+        if selected == session.id { selected = nil }
+        if let onClose { onClose(session.id) } else if selected == nil { selected = sessions.last?.id }
     }
     func closeOthers(keeping session: ConsoleSession) {
         sessions.filter { $0.id != session.id }.forEach { close($0) }; selected = session.id
@@ -119,15 +123,17 @@ final class HubTerminalView: LocalProcessTerminalView {
         guard let index = sessions.firstIndex(where: { $0.id == session.id }) else { return }
         session.disconnect()
         let replacement = ConsoleSession(entry: entry, title: session.title, config: session.config)
-        sessions[index] = replacement; selected = replacement.id
+        sessions[index] = replacement
+        onReplacement?(session.id, replacement.id); selected = replacement.id
     }
-    func closeAll() { sessions.forEach { $0.disconnect() }; sessions = []; selected = nil }
+    func closeAll() { Array(sessions).forEach { close($0) }; selected = nil }
 }
 
 final class ConsoleContainer: NSView {
     let terminal: LocalProcessTerminalView
-    init(terminal: LocalProcessTerminalView) {
-        self.terminal = terminal
+    var shouldFocus: Bool
+    init(terminal: LocalProcessTerminalView, shouldFocus: Bool) {
+        self.terminal = terminal; self.shouldFocus = shouldFocus
         super.init(frame: terminal.frame)
         wantsLayer = true; layer?.backgroundColor = terminal.nativeBackgroundColor.cgColor
         addSubview(terminal)
@@ -137,14 +143,19 @@ final class ConsoleContainer: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if let window { DispatchQueue.main.async { [weak self, weak window] in
-            if let self, self.window === window { window?.makeFirstResponder(self.terminal) }
+            if let self, self.shouldFocus, self.window === window { window?.makeFirstResponder(self.terminal) }
         } }
     }
 }
 struct EmbeddedTerminalView: NSViewRepresentable {
     @ObservedObject var session: ConsoleSession
-    func makeNSView(context: Context) -> ConsoleContainer { ConsoleContainer(terminal: session.terminal()) }
-    func updateNSView(_ nsView: ConsoleContainer, context: Context) {}
+    let isActive: Bool
+    func makeNSView(context: Context) -> ConsoleContainer { ConsoleContainer(terminal: session.terminal(), shouldFocus: isActive) }
+    func updateNSView(_ nsView: ConsoleContainer, context: Context) {
+        let activate = isActive && !nsView.shouldFocus
+        nsView.shouldFocus = isActive
+        if activate { nsView.window?.makeFirstResponder(nsView.terminal) }
+    }
 }
 
 struct ConsolePane: View {
@@ -157,31 +168,21 @@ struct ConsolePane: View {
                 Circle().fill(session.finished ? Color.secondary : Color.green).frame(width: 6, height: 6)
                 Text(session.status).font(.system(size: 11)).lineLimit(1)
                 Spacer()
-                Button("Дублировать", systemImage: "plus.square.on.square") { consoles.connect(session.entry, title: session.title, config: session.config, newSession: true) }.disabled(session.entry.recordKind == .serial)
+                Button("Дублировать", systemImage: "plus.square.on.square") { consoles.connect(session.entry, title: session.title, config: session.config, newSession: true) }.labelStyle(.iconOnly).help("Дублировать SSH-сеанс").disabled(session.entry.recordKind == .serial)
                 if session.finished {
-                    Button("Подключиться снова", systemImage: "arrow.clockwise") { store.connect(session.entry, newSession: true) }
+                    Button("Подключиться снова", systemImage: "arrow.clockwise") { store.connect(session.entry, newSession: true) }.labelStyle(.iconOnly).help("Подключиться снова")
                 } else {
-                    Button("Отключиться", systemImage: "stop.circle") { session.disconnect() }
+                    Button("Отключиться", systemImage: "stop.circle") { session.disconnect() }.labelStyle(.iconOnly).help("Отключиться")
                 }
             }.controlSize(.small).padding(.horizontal, 12).padding(.vertical, 8).background(.bar)
-            EmbeddedTerminalView(session: session).id(session.id).frame(maxWidth: .infinity, maxHeight: .infinity)
+            EmbeddedTerminalView(session: session, isActive: consoles.selected == session.id).id(session.id).frame(maxWidth: .infinity, maxHeight: .infinity)
+            Divider()
+            ConsoleCommandBar(entry: session.entry, session: session, workspace: store.savedCommands)
         }
     }
 }
 
-struct ConsoleTabs: View {
-    @EnvironmentObject var store: AliasStore
-    @ObservedObject private var consoles = ConsoleStore.shared
-    var body: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 3) {
-                ForEach(store.pages) { page in WorkspacePageTab(page: page) }
-                ForEach(consoles.sessions) { session in ConsoleTab(session: session) }
-            }.font(.system(size: 11)).padding(.horizontal, 6).padding(.vertical, 4)
-        }.frame(height: 36).scrollIndicators(.hidden).background(.bar)
-    }
-}
-private struct ConsoleTab: View {
+struct ConsoleTab: View {
     @ObservedObject var session: ConsoleSession
     @ObservedObject private var consoles = ConsoleStore.shared
     @EnvironmentObject var store: AliasStore
@@ -191,12 +192,14 @@ private struct ConsoleTab: View {
     var body: some View {
         HStack(spacing: 7) {
             Button { consoles.selected = session.id } label: {
-                HStack(spacing: 5) { Image(systemName: "terminal"); Text(session.title).lineLimit(1) }
+                HStack(spacing: 5) { Image(systemName: "terminal"); Text(session.title).lineLimit(1).frame(maxWidth: 150) }
             }.buttonStyle(.plain)
             Button { consoles.close(session) } label: { Image(systemName: "xmark").font(.system(size: 9)) }.buttonStyle(.plain).help("Закрыть сеанс")
         }.padding(.horizontal, 10).padding(.vertical, 7)
             .contentShape(Rectangle())
             .contextMenu {
+                WorkspaceMoveMenu(tab: .console(session.id))
+                Divider()
                 Button("Закрыть", systemImage: "xmark") { consoles.close(session) }
                 Button("Закрыть все вкладки", systemImage: "xmark.square") { store.closeAllTabs() }
                 Button("Закрыть другие вкладки") { store.keepConsole(session) }.disabled(consoles.sessions.count + store.pages.count < 2)
@@ -227,6 +230,6 @@ private struct ConsoleTab: View {
             } message: { Text("Имя записи и SSH-алиас останутся прежними.") }
             .help(session.entry.recordKind == .serial ? session.title + " · " + (session.entry.serial?.summary ?? "Serial") : "\(session.title) · \(session.entry.user)@\(session.entry.host):\(session.entry.port)")
             .foregroundStyle(session.finished ? .secondary : .primary)
-            .background(consoles.selected == session.id ? Color.accentColor.opacity(0.17) : Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 5))
+            .background(store.workspace.selection(in: store.workspace.pane(for: .console(session.id)) ?? .primary) == .console(session.id) ? Color.accentColor.opacity(0.17) : Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 5))
     }
 }

@@ -49,6 +49,27 @@ import Darwin
         check(!FileManager.default.fileExists(atPath: local.appendingPathComponent("cancelled-download").path), "cancelled download never published")
         check(!(try! FileManager.default.contentsOfDirectory(atPath: local.path)).contains { $0.hasPrefix(".ssh-aliases-") }, "local temporary files cleaned")
         connection.prepareTransfer()
+        let tree = local.appendingPathComponent("Folder ' ; $(safe)")
+        try FileManager.default.createDirectory(at: tree.appendingPathComponent("nested/empty"), withIntermediateDirectories: true)
+        try payload.write(to: tree.appendingPathComponent("nested/данные.bin"))
+        try Data().write(to: tree.appendingPathComponent(".hidden"))
+        let remoteTree = remote + "/tree"
+        try connection.uploadTree(tree, to: remoteTree) { _ in }
+        let downloadedTree = local.appendingPathComponent("tree-copy")
+        try connection.downloadTree(remoteTree, to: downloadedTree) { _ in }
+        check(try! Data(contentsOf: downloadedTree.appendingPathComponent("nested/данные.bin")) == payload, "recursive bytes exact")
+        check(FileManager.default.fileExists(atPath: downloadedTree.appendingPathComponent("nested/empty").path), "empty nested directory")
+        check(FileManager.default.fileExists(atPath: downloadedTree.appendingPathComponent(".hidden").path), "hidden file included")
+        rejects("folder collision upload") { try connection.uploadTree(tree, to: remoteTree) { _ in } }
+        rejects("folder collision download") { try connection.downloadTree(remoteTree, to: downloadedTree) { _ in } }
+        try FileManager.default.createSymbolicLink(at: tree.appendingPathComponent("link"), withDestinationURL: source)
+        rejects("folder containing symlink") { try connection.uploadTree(tree, to: remote + "/bad-tree") { _ in } }
+        check(!(try! connection.list(remote)).contains { $0.name == "bad-tree" }, "upload preflight prevents partial folder on unsupported links")
+        let cancelledTree = local.appendingPathComponent("cancelled-tree")
+        rejects("recursive cancellation") { try connection.downloadTree(remoteTree, to: cancelledTree) { state in if state.completed > 0 { connection.cancelTransfer() } } }
+        check(!FileManager.default.fileExists(atPath: cancelledTree.path), "cancelled directory download never published")
+        check(!(try! FileManager.default.contentsOfDirectory(atPath: local.path)).contains { $0.hasPrefix(".ssh-hub-") }, "directory staging cleaned")
+        connection.prepareTransfer()
         check(try! connection.realpath(folder) == folder, "connection remains usable after cancellation")
     }
     static func main() throws {
@@ -97,6 +118,6 @@ import Darwin
         let stalled = SFTPConnection(timeout: 0.3), start = Date()
         rejects("stalled subsystem") { _ = try stalled.connect(config: config, alias: "test", executable: silent) }
         stalled.dispose(); check(Date().timeIntervalSince(start) < 3, "bounded timeout")
-        print("PASS: SFTP codec, real subsystem, listings, pipelined transfers, names, collisions, links, cancellation, cleanup and timeout")
+        print("PASS: SFTP codec, real subsystem, listings, pipelined transfers, names, collisions, links, recursive folders, cancellation, cleanup and timeout")
     }
 }

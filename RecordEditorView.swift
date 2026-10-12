@@ -27,6 +27,7 @@ extension AliasStore {
         setAppearance(appearance, for: entry); setGroup(group, for: entry)
         if let template, template.localID != entry.localID {
             documentation.copy(from: template.favoriteID, to: entry.favoriteID)
+            savedCommands.copy(from: template.favoriteID, to: entry.favoriteID)
             do { try attachmentsRepository.copy(from: template.favoriteID, to: entry.favoriteID) }
             catch { self.error = "Запись создана, но вложения не скопированы: " + error.localizedDescription }
         }
@@ -145,6 +146,7 @@ struct RecordEditorView: View {
                     } else {
                         Text("После создания добавь инструкции в «Документации» и файлы во «Вложениях».").font(.callout).foregroundStyle(.secondary)
                     }
+                    if kind == .ssh || kind == .serial, let original, let entry = store.aliases.first(where: { $0.localID == original.id }) { ConsoleCommandsSettingsLink(entry: entry) }
                     if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
                     else if ready && !appearance.name.isEmpty, let validation { Text(validation).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
                 }.padding(20)

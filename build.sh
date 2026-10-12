@@ -44,7 +44,7 @@ swiftc -swift-version 5 -O -sdk "$sdk_dir" -target arm64-apple-macosx14.0 -modul
 swiftc -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift Keygen.swift KeygenTests.swift -o "$build_dir/keygen-tests"
 "$build_dir/keygen-tests" "${app_dir:A}/Contents/MacOS/SSHAskpass"
 swiftc -parse-as-library -swift-version 5 -O -sdk "$sdk_dir" -target arm64-apple-macosx14.0 -module-cache-path "$build_dir/module-cache" LoginAskpass.swift -o "$app_dir/Contents/MacOS/SSHLoginAskpass"
-swiftc -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift PublicKeys.swift TerminalLauncher.swift ConnectionTree.swift ConsoleLaunch.swift SSHCredentials.swift WorkspaceTests.swift -o "$build_dir/workspace-tests" -framework AppKit -framework Security
+swiftc -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift PublicKeys.swift TerminalLauncher.swift ConnectionTree.swift ConsoleLaunch.swift SSHCredentials.swift WorkspaceLayout.swift SavedCommands.swift WorkspaceTests.swift -o "$build_dir/workspace-tests" -framework AppKit -framework Security
 "$build_dir/workspace-tests" "$app_dir/Contents/MacOS/SSHLoginAskpass"
 spm_args=(--build-system native --scratch-path "$build_dir/spm" --cache-path "$build_dir/spm-cache" --config-path "$build_dir/spm-config" --security-path "$build_dir/spm-security" --disable-sandbox --sdk "$sdk_dir" --triple arm64-apple-macosx14.0 -c release)
 swift build "${spm_args[@]}" --product SSHHub
