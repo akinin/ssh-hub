@@ -75,14 +75,14 @@ struct ConsoleCommandsEditor: View {
                 VStack(spacing: 10) {
                     ForEach($draft.commands) { $command in
                         HStack(spacing: 8) {
-                            VStack(spacing: 6) {
+                            VStack(spacing: 10) {
                                 TextField("Название кнопки", text: $command.title).accessibilityIdentifier("commandTitle")
                                 TextField("Команда", text: $command.text).font(.system(.body, design: .monospaced)).accessibilityIdentifier("commandText")
                             }.textFieldStyle(.roundedBorder)
                             Button { draft.commands.removeAll { $0.id == command.id } } label: { Image(systemName: "minus.circle") }.buttonStyle(.plain).help("Удалить команду")
                         }
                     }
-                }
+                }.padding(6)
             }.frame(maxHeight: .infinity)
             Button("Добавить команду", systemImage: "plus") { draft.commands.append(SavedConsoleCommand()) }.disabled(draft.commands.count >= 50 || !ready)
             if let error = error ?? draft.validation { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
