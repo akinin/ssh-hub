@@ -16,9 +16,15 @@ struct TransferAlias: Codable, Identifiable {
     var recordKind: RecordKind?
     var website: String?
     var serial: SerialSettings?
+    var transport: ConnectionSettings?
     var isStandalone: Bool { standalone == true }
     func validation(existing: [SSHAlias]) -> String? {
         if isStandalone {
+            if let kind = recordKind, kind != .ssh {
+                var record = LocalConnectionRecord(); record.kind = kind; record.title = appearance.trimmedName
+                record.host = host; record.user = user; record.port = port; record.website = website ?? ""; record.serial = serial; record.transport = transport
+                return appearance.validation ?? record.validation
+            }
             if appearance.trimmedName.isEmpty { return "Укажи название записи." }
             if let message = appearance.validation { return message }
             if recordKind == .website {
@@ -45,7 +51,7 @@ struct TransferAlias: Codable, Identifiable {
         self.group = group; self.favorite = favorite
         authentication = entry.authentication == .automatic ? nil : entry.authentication
         displayName = appearance.trimmedName.isEmpty ? (entry.localID == nil ? nil : entry.name) : appearance.trimmedName; logo = appearance.logo
-        standalone = entry.localID == nil ? nil : true; recordKind = entry.recordKind; website = entry.website; serial = entry.serial
+        standalone = entry.localID == nil ? nil : true; recordKind = entry.recordKind; website = entry.website; serial = entry.serial; transport = entry.transport
     }
 }
 

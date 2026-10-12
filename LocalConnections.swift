@@ -13,6 +13,7 @@ struct LocalConnectionRecord: Codable, Identifiable, Equatable {
     var authentication: SSHAuthentication = .automatic
     var website = ""
     var serial: SerialSettings?
+    var transport: ConnectionSettings?
     var aliasName: String?
     var aliasSource: URL?
     var extraOptions: [SSHOption] = []
@@ -27,7 +28,20 @@ struct LocalConnectionRecord: Codable, Identifiable, Equatable {
         if kind != .ssh && aliasName != nil { return "SSH-алиас доступен только для записей SSH." }
         if kind == .serial { return (serial ?? SerialSettings()).validation }
         if kind == .ssh { return draft.validation(existing: []) }
-        if kind == .website, !Self.validWebsite(website) { return "Укажи полный адрес сайта: https://example.com." }
+        if kind.isWeb || kind == .webdav, !Self.validWebsite(website) { return "Укажи полный адрес: https://example.com." }
+        if let error = transport?.validation { return error }
+        if [.rdp, .vnc, .telnet, .ftp, .ftps, .mosh].contains(kind) || (kind == .adb && transport?.adbNetwork == true) {
+            guard SSHConfig.matches(host, "^[A-Za-z0-9_:.%\\-]+$"), !host.hasPrefix("-"), let number = UInt16(port), number > 0 else { return "Укажи имя или IP сервера и порт 1–65535." }
+        }
+        if kind == .localShell, !["/bin/zsh", "/bin/bash", "/bin/sh"].contains(transport?.shell ?? "/bin/zsh") { return "Выбери системную оболочку Mac." }
+        if [.docker, .kubernetes].contains(kind) {
+            let value = transport ?? ConnectionSettings()
+            guard !value.container.isEmpty, !value.container.hasPrefix("-"), !value.namespace.hasPrefix("-"), !value.context.hasPrefix("-"), value.containerShell.hasPrefix("/") else { return "Укажи контейнер/pod и абсолютный путь оболочки." }
+        }
+        if kind == .adb, let device = transport?.device, device.hasPrefix("-") { return "Некорректный идентификатор ADB." }
+        if kind == .mosh, !SSHConfig.matches(user, "^[A-Za-z0-9_.-]+$") { return "Укажи имя пользователя Mosh без пробелов и управляющих символов." }
+        if kind == .rdp, user.isEmpty || user.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) { return "Укажи пользователя RDP одной строкой." }
+        if let ca = transport?.certificateAuthority, !ca.isEmpty && !ca.hasPrefix("/") { return "Укажи абсолютный путь к CA-сертификату." }
         return nil
     }
     static func validWebsite(_ text: String) -> Bool {
@@ -43,7 +57,7 @@ struct LocalConnectionRecord: Codable, Identifiable, Equatable {
             options += authentication.options.map { SSHOption(key: $0.0, value: $0.1) } + extraOptions
         }
         return SSHAlias(name: aliasName ?? title, source: config, line: 0, options: options,
-                        localID: id, connectionFile: alias == nil ? privateConfig : nil, recordKind: kind, website: website, recordAlias: aliasName, serial: serial)
+                        localID: id, connectionFile: alias == nil ? privateConfig : nil, recordKind: kind, website: website, recordAlias: aliasName, serial: serial, transport: transport)
     }
 }
 

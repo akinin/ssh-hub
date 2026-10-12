@@ -18,12 +18,26 @@ struct SSHAlias: Identifiable {
     var website: String?
     var recordAlias: String?
     var serial: SerialSettings?
+    var transport: ConnectionSettings?
     var id: String { localID.map { "record:" + $0.uuidString } ?? "\(source.path):\(line):\(name)" }
     var canSSH: Bool { recordKind == nil || recordKind == .ssh }
-    var canConnect: Bool { canSSH || recordKind == .serial }
+    var canConnect: Bool { canSSH || recordKind?.isSession == true }
+    var isConsole: Bool { canSSH || recordKind?.isConsole == true }
     var sshTarget: String { localID == nil ? name : connectionFile != nil ? "connection" : recordAlias ?? "connection" }
     var sshAlias: String? { localID == nil ? name : recordAlias }
-    var secondaryTitle: String { recordKind == .serial ? (serial ?? SerialSettings()).summary : canSSH ? sshAlias.map { "\($0) (\(host))" } ?? host : recordKind == .website ? website ?? "" : "Информационная запись" }
+    var secondaryTitle: String {
+        if canSSH { return sshAlias.map { "\($0) (\(host))" } ?? host }
+        switch recordKind {
+        case .serial: return (serial ?? SerialSettings()).summary
+        case .web, .website, .webdav: return website ?? ""
+        case .localShell: return "Этот Mac · " + (transport?.shell ?? "/bin/zsh")
+        case .docker: return transport?.container ?? ""
+        case .kubernetes: return (transport?.namespace ?? "default") + "/" + (transport?.container ?? "")
+        case .adb: return transport?.adbNetwork == true ? host + ":" + port : transport?.device.isEmpty == false ? transport!.device : "USB · единственное устройство"
+        case .information: return "Информационная запись"
+        default: return host + ":" + port
+        }
+    }
     func connectionConfig(fallback: URL) -> URL { connectionFile ?? fallback }
     func credentialConfig(fallback: URL) -> URL { localID == nil ? fallback : source }
     func value(_ key: String) -> String? {
@@ -42,10 +56,39 @@ struct SSHAlias: Identifiable {
 }
 
 enum RecordKind: String, Codable, CaseIterable, Identifiable {
-    case ssh, website, information, serial
+    case ssh, website, information, serial, rdp, vnc, web, telnet, ftp, ftps, webdav, mosh, adb, docker, kubernetes, localShell
     var id: String { rawValue }
-    var title: String { switch self { case .ssh: return "SSH"; case .website: return "Веб-ссылка"; case .information: return "Информационная запись"; case .serial: return "Serial port" } }
-    var icon: String { switch self { case .ssh: return "terminal"; case .website: return "globe"; case .information: return "doc.text"; case .serial: return "cable.connector" } }
+    var title: String { switch self { case .ssh: return "SSH"; case .website: return "Веб-ссылка"; case .information: return "Информационная запись"; case .serial: return "Serial port"; case .rdp: return "RDP"; case .vnc: return "VNC"; case .web: return "Встроенный веб"; case .telnet: return "Telnet"; case .ftp: return "FTP"; case .ftps: return "FTPS"; case .webdav: return "WebDAV"; case .mosh: return "Mosh"; case .adb: return "ADB"; case .docker: return "Docker"; case .kubernetes: return "Kubernetes"; case .localShell: return "Локальная консоль" } }
+    var icon: String { switch self { case .ssh, .mosh, .telnet, .localShell: return "terminal"; case .website, .web: return "globe"; case .information: return "doc.text"; case .serial: return "cable.connector"; case .rdp, .vnc: return "desktopcomputer"; case .ftp, .ftps, .webdav: return "folder.badge.gearshape"; case .adb: return "iphone"; case .docker, .kubernetes: return "shippingbox" } }
+    var isWeb: Bool { self == .website || self == .web }
+    var isFiles: Bool { [.ftp, .ftps, .webdav].contains(self) }
+    var isDesktop: Bool { self == .rdp || self == .vnc }
+    var isConsole: Bool { [.ssh, .serial, .telnet, .mosh, .adb, .docker, .kubernetes, .localShell].contains(self) }
+    var isSession: Bool { isConsole || isDesktop || isFiles || self == .web }
+    var hasPassword: Bool { isDesktop || isFiles }
+    var defaultPort: String { switch self { case .rdp: return "3389"; case .vnc: return "5900"; case .telnet: return "23"; case .ftp, .ftps: return "21"; case .webdav: return "443"; case .adb: return "5555"; default: return "22" } }
+}
+
+struct ConnectionSettings: Codable, Equatable {
+    var domain = ""
+    var path = "/"
+    var shell = "/bin/zsh"
+    var workingDirectory = ""
+    var device = ""
+    var adbNetwork = false
+    var container = ""
+    var namespace = "default"
+    var context = ""
+    var containerShell = "/bin/sh"
+    var width = 1280
+    var height = 800
+    var ftpsImplicit = false
+    var certificateAuthority = ""
+    var validation: String? {
+        let fields = [domain, path, shell, workingDirectory, device, container, namespace, context, containerShell, certificateAuthority]
+        guard fields.allSatisfy({ $0.utf8.count <= 4096 && !$0.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) }), (320...3840).contains(width), (200...2160).contains(height) else { return "Проверь параметры подключения и размер рабочего стола." }
+        return nil
+    }
 }
 
 struct SSHSnapshot {

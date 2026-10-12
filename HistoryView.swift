@@ -43,7 +43,7 @@ struct HistoryView: View {
             } else {
                 List(store.history) { record in
                     HStack(spacing: 14) {
-                        Image(systemName: record.kind == .ssh ? "terminal" : "folder").foregroundStyle(.secondary)
+                        Image(systemName: record.kind.icon).foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 5) {
                             Text(store.alias(for: record).map { store.title($0) } ?? record.name).font(.body).lineLimit(1)
                             Text(record.date.formatted(.dateTime.day().month(.abbreviated).year().hour().minute().locale(Locale(identifier: "ru_RU"))))

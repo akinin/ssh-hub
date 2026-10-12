@@ -8,7 +8,9 @@ import Darwin
 enum SSHPasswordStore {
     private static let service = "com.olshaniki.sshhub.ssh-password.v1"
     static func account(for entry: SSHAlias, config: URL) -> String {
-        [config.standardizedFileURL.path, (entry.localID?.uuidString ?? entry.name.lowercased()), entry.user, entry.host.lowercased(), entry.port]
+        var fields = [config.standardizedFileURL.path, (entry.localID?.uuidString ?? entry.name.lowercased()), entry.user, entry.host.lowercased(), entry.port]
+        if !entry.canSSH { fields += [entry.recordKind?.rawValue ?? "", entry.website ?? "", entry.transport?.domain ?? ""] }
+        return fields
             .map { Data($0.utf8).base64EncodedString() }.joined(separator: ":")
     }
     private static func query(_ account: String) -> [String: Any] {

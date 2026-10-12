@@ -17,9 +17,9 @@ swiftc -swift-version 5 -module-cache-path "$build_dir/module-cache" SSHConfig.s
 "$build_dir/config-tests"
 swiftc -swift-version 5 -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionProbe.swift FeatureTests.swift -o "$build_dir/feature-tests"
 "$build_dir/feature-tests"
-swiftc -swift-version 5 -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift PublicKeys.swift TerminalLauncher.swift RecentConnections.swift ExtendedTests.swift -o "$build_dir/extended-tests" -framework AppKit
+swiftc -swift-version 5 -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift PublicKeys.swift TerminalLauncher.swift RecentConnections.swift ExtendedTests.swift -o "$build_dir/extended-tests" -framework AppKit
 "$build_dir/extended-tests"
-swiftc -swift-version 5 -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift ConnectionLogo.swift AliasTransfer.swift ConnectionAppearanceTests.swift -o "$build_dir/appearance-tests" -framework AppKit
+swiftc -swift-version 5 -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift ConnectionLogo.swift AliasTransfer.swift LocalConnections.swift ConnectionAppearanceTests.swift -o "$build_dir/appearance-tests" -framework AppKit
 "$build_dir/appearance-tests"
 swiftc -swift-version 5 -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift RecentConnections.swift QuickAliasSearch.swift QuickAliasSearchTests.swift -o "$build_dir/quick-search-tests"
 "$build_dir/quick-search-tests"
@@ -42,16 +42,22 @@ swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$b
 "$build_dir/update-quit-tests" --later --timeout
 app_dir="$build_dir/SSH Hub.app"
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
+clang -arch arm64 -mmacosx-version-min=14.0 -isysroot "$sdk_dir" -O2 TelnetHelper.c -o "$app_dir/Contents/MacOS/SSHTelnet"
+zsh build-rdp.sh "${SSH_HUB_RDP_CACHE:-$build_dir/rdp}" "$app_dir/Contents/MacOS/SSHRDP" "$sdk_dir" "$build_dir/rdp-fixture"
+cp "${SSH_HUB_RDP_CACHE:-$build_dir/rdp}/freerdp-3.32.2/LICENSE" "$app_dir/Contents/Resources/FreeRDP-LICENSE.txt"
+cp "${SSH_HUB_RDP_CACHE:-$build_dir/rdp}/openssl-3.6.4/LICENSE.txt" "$app_dir/Contents/Resources/OpenSSL-LICENSE.txt"
 swiftc -parse-as-library -swift-version 5 -O -sdk "$sdk_dir" -target arm64-apple-macosx14.0 -module-cache-path "$build_dir/module-cache" ReleaseUpdate.swift UpdateHelper.swift -o "$app_dir/Contents/MacOS/SSHUpdate"
 swiftc -parse-as-library -swift-version 5 -O -sdk "$sdk_dir" -target arm64-apple-macosx14.0 -module-cache-path "$build_dir/module-cache" SSHConfig.swift SerialHelper.swift -o "$app_dir/Contents/MacOS/SSHSerial"
 swiftc -swift-version 5 -O -sdk "$sdk_dir" -target arm64-apple-macosx14.0 -module-cache-path "$build_dir/module-cache" Askpass.swift -o "$app_dir/Contents/MacOS/SSHAskpass"
 swiftc -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift Keygen.swift KeygenTests.swift -o "$build_dir/keygen-tests"
 "$build_dir/keygen-tests" "${app_dir:A}/Contents/MacOS/SSHAskpass"
 swiftc -parse-as-library -swift-version 5 -O -sdk "$sdk_dir" -target arm64-apple-macosx14.0 -module-cache-path "$build_dir/module-cache" LoginAskpass.swift -o "$app_dir/Contents/MacOS/SSHLoginAskpass"
-swiftc -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift PublicKeys.swift TerminalLauncher.swift ConnectionTree.swift ConsoleLaunch.swift SSHCredentials.swift WorkspaceLayout.swift SavedCommands.swift WorkspaceTests.swift -o "$build_dir/workspace-tests" -framework AppKit -framework Security
+swiftc -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift PublicKeys.swift TerminalLauncher.swift ConnectionTree.swift ConsoleLaunch.swift SSHCredentials.swift WorkspaceLayout.swift SavedCommands.swift WorkspaceTests.swift -o "$build_dir/workspace-tests" -framework AppKit -framework Security
 "$build_dir/workspace-tests" "$app_dir/Contents/MacOS/SSHLoginAskpass"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift ConnectionAttachments.swift ConnectionDocumentation.swift SavedCommands.swift ConnectionTree.swift WorkspaceLayout.swift WorkspaceSnapshot.swift RecordTemplate.swift CommandLibrary.swift BackupArchive.swift BackupRestoration.swift TCPAvailability.swift SessionJournal.swift AdvancedTests.swift -o "$build_dir/advanced-tests" -framework Security
 "$build_dir/advanced-tests"
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift PublicKeys.swift TerminalLauncher.swift ConsoleLaunch.swift ConnectionLaunch.swift CommandTask.swift RemoteFiles.swift VNCConnection.swift RemoteProtocolTests.swift -o "$build_dir/remote-protocol-tests" -framework AppKit
+"$build_dir/remote-protocol-tests"
 spm_args=(--build-system native --scratch-path "$build_dir/spm" --cache-path "$build_dir/spm-cache" --config-path "$build_dir/spm-config" --security-path "$build_dir/spm-security" --disable-sandbox --sdk "$sdk_dir" --triple arm64-apple-macosx14.0 -c release)
 swift build "${spm_args[@]}" --product SSHHub
 swift build "${spm_args[@]}" --product SSHHubConsoleChecks

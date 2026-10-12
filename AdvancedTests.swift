@@ -19,6 +19,11 @@ import Network
         let snapshot = WorkspaceSnapshot(layout: layout, fraction: 0.37, pages: [], consoles: [], windows: [], paths: ["test": "/tmp"])
         let restored = try JSONDecoder().decode(WorkspaceSnapshot.self, from: JSONEncoder().encode(snapshot))
         check(restored.layout.primary == [c, b] && restored.layout.secondary == [a] && restored.fraction == 0.37, "workspace positions and sizes survive restart")
+        let firstDashboard = EntryPage(key: "first", section: .overview), activeDashboard = EntryPage(key: "active", section: .overview), documentPage = EntryPage(key: "first", section: .documentation)
+        var oldLayout = WorkspaceLayout(); oldLayout.select(.page(firstDashboard.id)); oldLayout.select(b); oldLayout.move(.page(activeDashboard.id), to: .secondary)
+        let oldWorkspace = WorkspaceSnapshot(layout: oldLayout, fraction: 0.5, pages: [firstDashboard, documentPage, activeDashboard], consoles: [], windows: [], paths: [:])
+        let migrated = try JSONDecoder().decode(WorkspaceSnapshot.self, from: JSONEncoder().encode(oldWorkspace)).uniqueDashboardPages
+        check(migrated.map(\.id) == [documentPage.id, activeDashboard.id] && oldWorkspace.layout.primary.contains(b), "legacy multiple dashboards collapse to the active one without losing documents or consoles")
         layout.normalize(valid: [b]); check(layout.primary == [b] && layout.primarySelection == b && layout.secondary.isEmpty, "missing records cannot leave stale selected tabs")
         let old = Data("{\"commands\":[{\"id\":\"11111111-2222-4333-8444-555555555555\",\"title\":\"Old\",\"text\":\"pwd\"}],\"sendEnter\":false}".utf8)
         let legacy = try JSONDecoder().decode(SavedCommandSet.self, from: old)

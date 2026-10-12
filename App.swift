@@ -25,6 +25,8 @@ import ConsoleSupport
     @Published var showingTemplates = false
     @Published var showingAvailability = false
     var sftpModels: [UUID: SFTPModel] = [:]
+    var connectionSessions: [UUID: ConnectionPageSession] = [:]
+    var launchTasks: [UUID: Task<Void, Never>] = [:]
     @Published var selectedPage: UUID?
     let scanner = NmapModel()
     @Published var detailSection: EntryDetailSection = .overview
@@ -201,6 +203,7 @@ import ConsoleSupport
         for value in records where value.isStandalone {
             var record = LocalConnectionRecord(); record.kind = value.recordKind ?? .ssh; record.title = value.appearance.trimmedName
             record.host = value.host; record.user = value.user; record.port = value.port; record.identity = value.identity; record.jump = value.jump; record.authentication = value.authentication ?? .automatic; record.website = value.website ?? ""; record.serial = value.serial
+            record.transport = value.transport
             after.append(record); created.append((record.id, value))
         }
         var change: ConfigChange?
@@ -342,7 +345,22 @@ import ConsoleSupport
         notice = "Команда скопирована"
     }
     func connect(_ entry: SSHAlias, newSession: Bool = false) {
-        if entry.recordKind == .serial { selected = entry.id; ConsoleStore.shared.connect(entry, title: title(entry), config: config.url, newSession: newSession); return }
+        if let kind = entry.recordKind, kind.isSession && kind != .ssh && kind != .serial {
+            selected = entry.id
+            if kind.isConsole {
+                if kind == .adb && entry.transport?.adbNetwork == true {
+                    let token = UUID()
+                    launchTasks[token] = Task { defer { launchTasks[token] = nil }; do {
+                        try await ConnectionLaunch.prepare(entry)
+                        guard !endingWorkspace else { return }
+                        ConsoleStore.shared.connect(entry, title: title(entry), config: config.url, newSession: newSession)
+                    } catch is CancellationError {} catch { self.error = error.localizedDescription } }
+                } else { ConsoleStore.shared.connect(entry, title: title(entry), config: config.url, newSession: newSession) }
+            } else { openPage(entry, section: .connection) }
+            recordConnection(entry, kind: ConnectionKind(rawValue: kind.rawValue) ?? .ssh)
+            return
+        }
+        if entry.recordKind == .serial { selected = entry.id; ConsoleStore.shared.connect(entry, title: title(entry), config: config.url, newSession: newSession); recordConnection(entry, kind: .serial); return }
         guard entry.canSSH else { if entry.recordKind == .website { openWebsite(entry) } else { showDashboard(entry) }; return }
         selected = entry.id
         if UserDefaults.standard.string(forKey: "consoleDestination.v1") == "external" {
@@ -794,7 +812,7 @@ struct AliasDetail: View {
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 165), spacing: 10)], spacing: 10) {
                     if entry.canConnect {
-                        tile("Подключиться", detail: entry.canSSH ? "Консоль SSH" : "Serial-консоль", icon: "cable.connector") { store.connect(entry) }
+                        tile("Подключиться", detail: entry.canSSH ? "Консоль SSH" : entry.recordKind?.title ?? "Сеанс", icon: entry.recordKind?.icon ?? "cable.connector") { store.connect(entry) }
                     }
                     if entry.canSSH {
                         tile("SFTP", detail: "Файлы сервера", icon: "folder") { store.openSFTP(entry) }

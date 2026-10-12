@@ -20,6 +20,7 @@ extension AliasStore {
         guard !restoringWorkspace, !endingWorkspace else { return }
         var paths: [String: String] = [:]
         for (id, model) in sftpModels { paths[id.uuidString] = model.path; paths[id.uuidString + ".local"] = model.localPath.path }
+        for (id, session) in connectionSessions { if let model = session.files { paths[id.uuidString] = model.path; paths[id.uuidString + ".local"] = model.localPath.path } }
         let snapshot = WorkspaceSnapshot(layout: workspace, fraction: splitFraction, pages: pages,
             consoles: ConsoleStore.shared.sessions.map { WorkspaceConsoleSnapshot(id: $0.id, key: $0.entry.favoriteID, title: $0.title, zoom: $0.zoom) },
             windows: detachedWindows.map { WorkspaceWindowSnapshot(tab: $0.key, frame: $0.value.window.map { NSStringFromRect($0.frame) } ?? "") }, paths: paths)
@@ -31,9 +32,17 @@ extension AliasStore {
               let snapshot = try? JSONDecoder().decode(WorkspaceSnapshot.self, from: data), snapshot.version == 1,
               snapshot.pages.count + snapshot.consoles.count <= 150 else { return }
         var valid = Set<WorkspaceTab>()
-        for page in snapshot.pages where !valid.contains(.page(page.id)) {
+        for page in snapshot.uniqueDashboardPages where !valid.contains(.page(page.id)) {
             guard page.section == .scanner || aliases.contains(where: { $0.favoriteID == page.key }) else { continue }
             pages.append(page); valid.insert(.page(page.id))
+            if page.section == .connection, let entry = entry(for: page) {
+                let session = ConnectionPageSession(entry: entry, config: config.url, restored: true)
+                if let model = session.files {
+                    if let path = snapshot.paths[page.id.uuidString] { model.path = path }
+                    if let local = snapshot.paths[page.id.uuidString + ".local"] { model.localNavigate(URL(fileURLWithPath: local)) }
+                }
+                connectionSessions[page.id] = session
+            }
             if page.section == .sftp, let entry = entry(for: page), entry.canSSH {
                 let model = SFTPModel(entry: entry, config: config.url)
                 model.restore(path: snapshot.paths[page.id.uuidString], localPath: snapshot.paths[page.id.uuidString + ".local"])
@@ -41,7 +50,7 @@ extension AliasStore {
             }
         }
         for value in snapshot.consoles where !valid.contains(.console(value.id)) {
-            guard let entry = aliases.first(where: { $0.favoriteID == value.key }), entry.canSSH || entry.recordKind == .serial else { continue }
+            guard let entry = aliases.first(where: { $0.favoriteID == value.key }), entry.isConsole else { continue }
             let session = ConsoleSession(entry: entry, title: value.title, config: config.url, id: value.id, restored: true)
             session.zoom = value.zoom?.isFinite == true ? min(3, max(0.5, value.zoom ?? 1)) : 1
             ConsoleStore.shared.sessions.append(session); valid.insert(.console(value.id))
@@ -73,7 +82,7 @@ extension AliasStore {
             }
         }
     }
-    func finishWorkspace() { saveWorkspace(); endingWorkspace = true; availability.stop() }
+    func finishWorkspace() { saveWorkspace(); endingWorkspace = true; availability.stop(); launchTasks.values.forEach { $0.cancel() }; connectionSessions.values.forEach { $0.stop() } }
     func acceptTabDrop(_ token: String?, pane: WorkspacePane, before: WorkspaceTab? = nil) -> Bool {
         guard let token, let tab = WorkspaceTab(dragToken: token),
               pages.contains(where: { .page($0.id) == tab }) || ConsoleStore.shared.sessions.contains(where: { .console($0.id) == tab }) else { return false }
@@ -145,6 +154,7 @@ struct DetachedWorkspaceView: View {
             case .console(let id): if let session = consoles.sessions.first(where: { $0.id == id }) { ConsolePane(session: session).id(id) }
             case .page(let id): if let page = store.pages.first(where: { $0.id == id }) {
                 if page.section == .sftp, let model = store.sftpModels[id] { SFTPView(model: model).id(id) }
+                else if page.section == .connection, let session = store.connectionSessions[id] { ConnectionPageView(session: session).id(id) }
                 else if page.section == .scanner { NmapView(model: store.scanner) }
                 else if let entry = store.entry(for: page) { EntryDetailScreen(entry: entry, section: page.section).id(id) }
             }

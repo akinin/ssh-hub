@@ -101,7 +101,7 @@ struct RecordEditorView: View {
     private var target: SSHAlias { candidate.entry(config: store.config.url, privateConfig: store.localRepository.privateConfig(candidate.id)) }
     private var reusePassword: Bool {
         guard let original else { return false }
-        return storedPassword && original.host.caseInsensitiveCompare(candidate.host) == .orderedSame && original.user == candidate.user && original.port == candidate.port
+        return storedPassword && original.host.caseInsensitiveCompare(candidate.host) == .orderedSame && original.user == candidate.user && original.port == candidate.port && original.website == candidate.website && original.transport?.domain == candidate.transport?.domain
     }
     private var validation: String? {
         if !ready { return "Загрузка записи…" }
@@ -143,12 +143,14 @@ struct RecordEditorView: View {
                         } else { Text("Запись хранится в SSH Hub. SSH-алиас можно создать позже при редактировании.").font(.caption).foregroundStyle(.secondary) }
                     } else if kind == .serial {
                         SerialSettingsFields(settings: Binding(get: { record.serial ?? SerialSettings() }, set: { record.serial = $0 }))
-                    } else if kind == .website {
+                    } else if kind.isWeb {
                         TextField("Адрес сайта", text: $record.website, prompt: Text("https://example.com")).textFieldStyle(.roundedBorder).accessibilityIdentifier("recordWebsite")
+                    } else if kind.isSession {
+                        transportFields
                     } else {
                         Text("После создания добавь инструкции в «Документации» и файлы во «Вложениях».").font(.callout).foregroundStyle(.secondary)
                     }
-                    if kind == .ssh || kind == .serial, let original, let entry = store.aliases.first(where: { $0.localID == original.id }) { ConsoleCommandsSettingsLink(entry: entry) }
+                    if kind.isConsole, let original, let entry = store.aliases.first(where: { $0.localID == original.id }) { ConsoleCommandsSettingsLink(entry: entry) }
                     if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
                     else if ready && !appearance.name.isEmpty, let validation { Text(validation).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
                 }.padding(20)
@@ -160,6 +162,57 @@ struct RecordEditorView: View {
                 Button(original == nil ? "Создать запись" : "Сохранить") { save() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(validation != nil)
             }.padding(16)
         }.frame(width: 610, height: 650).dismissOnOutsideClick().onAppear { load() }
+    }
+    private var settings: Binding<ConnectionSettings> { Binding(get: { record.transport ?? ConnectionSettings() }, set: { record.transport = $0 }) }
+    @ViewBuilder private var transportFields: some View {
+        if kind == .webdav {
+            TextField("Адрес WebDAV", text: $record.website, prompt: Text("https://cloud.example.com/remote.php/dav/files/user/")).textFieldStyle(.roundedBorder)
+        }
+        if [.rdp, .vnc, .telnet, .ftp, .ftps, .mosh, .adb].contains(kind) {
+            if kind == .adb { Toggle("Подключение ADB по сети", isOn: settings.adbNetwork) }
+            if kind != .adb || settings.wrappedValue.adbNetwork {
+                LabeledContent("Сервер") { TextField("IP или имя сервера", text: $record.host).textFieldStyle(.roundedBorder) }
+                LabeledContent("Порт") { TextField(kind.defaultPort, text: $record.port).textFieldStyle(.roundedBorder) }
+            }
+        }
+        if kind.hasPassword || kind == .mosh {
+            LabeledContent("Пользователь") { TextField(kind == .ftp || kind == .ftps ? "anonymous" : "Имя пользователя", text: $record.user).textFieldStyle(.roundedBorder) }
+        }
+        if kind.hasPassword {
+            SecureField("Пароль", text: $password, prompt: Text(reusePassword && !removePassword ? "Сохранён · оставь пустым" : "Ввести при подключении")).textFieldStyle(.roundedBorder)
+            Toggle("Сохранить в Связке ключей macOS", isOn: $keepPassword)
+            if reusePassword && !removePassword { Button("Удалить сохранённый пароль") { removePassword = true } }
+        }
+        if kind == .rdp {
+            TextField("Домен (необязательно)", text: settings.domain).textFieldStyle(.roundedBorder)
+            HStack { Stepper("Ширина: \(settings.wrappedValue.width)", value: settings.width, in: 640...3840, step: 160); Stepper("Высота: \(settings.wrappedValue.height)", value: settings.height, in: 480...2160, step: 100) }
+        }
+        if kind == .vnc { Text("Для macOS включи доступ VNC с паролем в настройках общего экрана. Поддерживается стандартная VNC-аутентификация; учётная запись Apple Remote Desktop не используется.").font(.caption).foregroundStyle(.secondary) }
+        if kind == .ftp || kind == .ftps { TextField("Начальная папка", text: settings.path).textFieldStyle(.roundedBorder) }
+        if kind == .ftps { Toggle("Неявный TLS (обычно порт 990)", isOn: settings.ftpsImplicit).onChange(of: settings.wrappedValue.ftpsImplicit) { _, enabled in if record.port == "21" || record.port == "990" { record.port = enabled ? "990" : "21" } } }
+        if kind == .ftps || kind == .webdav {
+            HStack { TextField("Сертификат центра CA (PEM, необязательно)", text: settings.certificateAuthority).textFieldStyle(.roundedBorder); Button("Выбрать…") { let panel = NSOpenPanel(); panel.title = "Доверенный центр сертификации"; if panel.runModal() == .OK, let url = panel.url { settings.wrappedValue.certificateAuthority = url.path } } }
+        }
+        if kind == .adb {
+            TextField("ID устройства (пусто — единственное устройство)", text: settings.device).textFieldStyle(.roundedBorder)
+            Text("Нужен adb из Android Platform Tools. Разреши отладку на Android; сетевое подключение запускается явно кнопкой подключения.").font(.caption).foregroundStyle(.secondary)
+        }
+        if kind == .docker || kind == .kubernetes {
+            TextField(kind == .docker ? "Имя или ID контейнера" : "Имя pod", text: settings.container).textFieldStyle(.roundedBorder)
+            if kind == .kubernetes {
+                TextField("Namespace", text: settings.namespace).textFieldStyle(.roundedBorder)
+                TextField("Контекст (пусто — текущий)", text: settings.context).textFieldStyle(.roundedBorder)
+                TextField("Контейнер внутри pod (необязательно)", text: settings.device).textFieldStyle(.roundedBorder)
+            }
+            TextField("Оболочка контейнера", text: settings.containerShell).textFieldStyle(.roundedBorder)
+            Text("Используется установленный на Mac CLI и его текущая авторизация. Docker — выбранный Docker context, Kubernetes — kubeconfig.").font(.caption).foregroundStyle(.secondary)
+        }
+        if kind == .localShell {
+            Picker("Оболочка", selection: settings.shell) { Text("zsh").tag("/bin/zsh"); Text("bash").tag("/bin/bash"); Text("sh").tag("/bin/sh") }
+            TextField("Рабочая папка (пусто — домашняя)", text: settings.workingDirectory).textFieldStyle(.roundedBorder)
+        }
+        if kind == .mosh { Text("Нужен mosh на Mac и mosh-server на сервере. Вход использует SSH с проверкой ключа; затем Mosh работает по UDP.").font(.caption).foregroundStyle(.secondary) }
+        if kind == .telnet || kind == .ftp { Text("Этот протокол передаёт данные без шифрования. Используй в доверенной сети.").font(.caption).foregroundStyle(.secondary) }
     }
     private var fields: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -187,6 +240,9 @@ struct RecordEditorView: View {
     private func load() {
         do {
             record = original ?? LocalConnectionRecord(); record.kind = kind
+            if kind.hasPassword { record.authentication = .password }
+            if original == nil { record.port = kind.defaultPort; if kind.hasPassword { record.authentication = .password; record.user = kind == .ftp || kind == .ftps ? "anonymous" : "" } }
+            if kind.isSession && kind != .ssh && kind != .serial && record.transport == nil { record.transport = ConnectionSettings() }
             if kind == .serial && record.serial == nil { record.serial = SerialSettings() }
             expected = try store.localRepository.load(); expectedConfig = store.data
             if let original {
@@ -206,6 +262,7 @@ struct RecordEditorView: View {
                 record.port = blueprint.port; record.identity = blueprint.identity; record.jump = blueprint.jump; group = blueprint.group
             } else if let template {
                 record.serial = template.serial
+                record.transport = template.transport
                 record.website = template.website ?? ""
                 record.host = template.host; record.user = template.user; record.port = template.port
                 record.identity = template.value("IdentityFile") ?? ""; record.jump = template.value("ProxyJump") ?? ""; record.authentication = template.authentication

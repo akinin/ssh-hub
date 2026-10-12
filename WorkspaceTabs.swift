@@ -5,10 +5,20 @@ extension AliasStore {
     func entry(for page: EntryPage) -> SSHAlias? { aliases.first { $0.favoriteID == page.key } }
     func openPage(_ entry: SSHAlias?, section: EntryDetailSection) {
         let key = entry?.favoriteID
+        if section == .overview, var page = pages.first(where: { $0.section == .overview }) {
+            for duplicate in pages.filter({ $0.section == .overview && $0.id != page.id }) { closePage(duplicate) }
+            page.key = key
+            if let index = pages.firstIndex(where: { $0.id == page.id }) { pages[index] = page }
+            selectPage(page)
+            return
+        }
         let page = pages.first { $0.key == key && $0.section == section } ?? EntryPage(key: key, section: section)
         if !pages.contains(where: { $0.id == page.id }) {
             pages.append(page)
+            if section == .connection, let entry { connectionSessions[page.id] = ConnectionPageSession(entry: entry, config: config.url, restored: false) }
             if section == .sftp, let entry { sftpModels[page.id] = SFTPModel(entry: entry, config: config.url) }
+        } else if section == .connection {
+            connectionSessions[page.id]?.start()
         }
         selectPage(page)
     }
@@ -31,11 +41,12 @@ extension AliasStore {
     func closePage(_ page: EntryPage) {
         removeDetached(.page(page.id))
         sftpModels.removeValue(forKey: page.id)?.disconnect()
+        connectionSessions.removeValue(forKey: page.id)?.stop()
         pages.removeAll { $0.id == page.id }; workspace.remove(.page(page.id))
         if page.section == .scanner { scanner.cancel() }
         syncWorkspaceSelection()
     }
-    func closeAllTabs() { pages.forEach { closePage($0) }; ConsoleStore.shared.closeAll(); workspace = WorkspaceLayout(); syncWorkspaceSelection() }
+    func closeAllTabs() { launchTasks.values.forEach { $0.cancel() }; pages.forEach { closePage($0) }; ConsoleStore.shared.closeAll(); workspace = WorkspaceLayout(); syncWorkspaceSelection() }
     func keepPage(_ page: EntryPage) { ConsoleStore.shared.closeAll(); pages.filter { $0.id != page.id }.forEach { closePage($0) }; arrangeWorkspace(.none); selectPage(page) }
     func keepConsole(_ session: ConsoleSession) { pages.forEach { closePage($0) }; ConsoleStore.shared.closeOthers(keeping: session); arrangeWorkspace(.none); selectConsole(session) }
     func openScanner(_ entry: SSHAlias? = nil) {
@@ -47,7 +58,7 @@ struct WorkspacePageTab: View {
     let page: EntryPage
     @EnvironmentObject var store: AliasStore
     @ObservedObject private var consoles = ConsoleStore.shared
-    private var title: String { page.section.title + (store.entry(for: page).map { " · " + store.title($0) } ?? "") }
+    private var title: String { (page.section == .connection ? store.entry(for: page)?.recordKind?.title ?? page.section.title : page.section.title) + (store.entry(for: page).map { " · " + store.title($0) } ?? "") }
     var body: some View {
         HStack(spacing: 6) {
             Button { store.selectPage(page) } label: { Label(title, systemImage: page.section.icon).lineLimit(1).frame(maxWidth: 175) }.buttonStyle(.plain)
@@ -171,6 +182,7 @@ struct WorkspacePaneView: View {
         case .page(let id):
             if let page = store.pages.first(where: { $0.id == id }) {
                 if page.section == .scanner { NmapView(model: store.scanner) }
+                else if page.section == .connection, let session = store.connectionSessions[id] { ConnectionPageView(session: session).id(id) }
                 else if page.section == .sftp, let model = store.sftpModels[id] { SFTPView(model: model).id(id) }
                 else if let entry = store.entry(for: page) { EntryDetailScreen(entry: entry, section: page.section).id(id) }
             }

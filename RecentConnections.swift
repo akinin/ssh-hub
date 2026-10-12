@@ -1,8 +1,9 @@
 import Foundation
 
 enum ConnectionKind: String, Codable {
-    case ssh, sftp
-    var title: String { rawValue.uppercased() }
+    case ssh, sftp, serial, rdp, vnc, web, telnet, ftp, ftps, webdav, mosh, adb, docker, kubernetes, localShell
+    var title: String { RecordKind(rawValue: rawValue)?.title ?? rawValue.uppercased() }
+    var icon: String { RecordKind(rawValue: rawValue)?.icon ?? "folder" }
 }
 
 struct RecentConnection: Codable, Identifiable, Equatable {

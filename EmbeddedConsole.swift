@@ -72,7 +72,13 @@ final class HubTerminalView: LocalProcessTerminalView {
     private var outputLog: SessionOutputLog?
     private var diagnosticTail = Data()
     private var event: SessionEvent?
-    func resume() { awaitingConnection = false; objectWillChange.send() }
+    private var preflight: Task<Void, Never>?
+    func resume() {
+        guard preflight == nil, !finished else { return }
+        if entry.recordKind == .adb && entry.transport?.adbNetwork == true {
+            preflight = Task { defer { preflight = nil }; do { try await ConnectionLaunch.prepare(entry); guard !finished else { return }; awaitingConnection = false } catch { if !finished { status = error.localizedDescription } } }
+        } else { awaitingConnection = false; objectWillChange.send() }
+    }
     func changeZoom(_ delta: Double) { zoom = delta == 0 ? 1 : min(3, max(0.5, zoom + delta)); if let view { ConsolePreferences.shared.apply(to: view, zoom: zoom) } }
     func execute(_ command: SavedConsoleCommand) {
         guard !awaitingConnection, !finished, let terminal = view else { return }
@@ -128,7 +134,10 @@ final class HubTerminalView: LocalProcessTerminalView {
         if entry.recordKind == .serial {
             guard let helper = Bundle.main.url(forAuxiliaryExecutable: "SSHSerial"), let settings = entry.serial, settings.validation == nil else { status = "Некорректные параметры serial port"; finished = true; finishEvent(); return terminal }
             launch = ConsoleLaunch(executable: helper.path, arguments: settings.arguments)
-        } else { launch = ConsoleLaunch.ssh(entry, config: config) }
+        } else {
+            do { launch = try ConnectionLaunch.console(entry, config: config) }
+            catch { status = error.localizedDescription; finished = true; terminal.feed(text: status + "\r\n"); finishEvent(); return terminal }
+        }
         var environment = launch.environment
         do {
             if entry.canSSH, entry.authentication == .password, let password = try SSHPasswordStore.password(for: entry, config: entry.credentialConfig(fallback: config)) {
@@ -139,13 +148,14 @@ final class HubTerminalView: LocalProcessTerminalView {
                 environment["SSH_HUB_LOGIN_SOCKET"] = server.path
             }
         } catch { login?.stop(); login = nil; status = "Пароль из Связки ключей недоступен; введи его в консоли" }
+        let directory = entry.recordKind == .localShell && entry.transport?.workingDirectory.isEmpty == false ? entry.transport!.workingDirectory : NSHomeDirectory()
         terminal.startProcess(executable: launch.executable, args: launch.arguments,
-                              environment: environment.map { "\($0.key)=\($0.value)" }, currentDirectory: NSHomeDirectory())
-        if terminal.process.running { status = entry.recordKind == .serial ? "Serial · " + (entry.serial?.summary ?? "") : "SSH · \(entry.user)@\(entry.host)" }
+                              environment: environment.map { "\($0.key)=\($0.value)" }, currentDirectory: directory)
+        if terminal.process.running { status = entry.canSSH ? "SSH · \(entry.user)@\(entry.host)" : (entry.recordKind?.title ?? "Консоль") + " · " + title }
         else { status = "Не удалось запустить подключение"; finished = true; login?.stop(); login = nil; finishEvent() }
         return terminal
     }
-    func disconnect() { guard !finished else { return }; login?.stop(); login = nil; if let view { ConsoleProcess.stop(view.process) }; finished = true; status = "Отключено пользователем"; finishEvent() }
+    func disconnect() { preflight?.cancel(); preflight = nil; guard !finished else { return }; login?.stop(); login = nil; if let view { ConsoleProcess.stop(view.process) }; finished = true; status = "Отключено пользователем"; finishEvent() }
     nonisolated func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
     nonisolated func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
     nonisolated func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
@@ -158,7 +168,7 @@ final class HubTerminalView: LocalProcessTerminalView {
             else if self.entry.canSSH {
                 let result = ConnectionResult.classify(status: code ?? 255, log: String(decoding: self.diagnosticTail, as: UTF8.self))
                 self.status = result.title + " · " + result.detail
-            } else { self.status = "Serial завершён · код \(code.map(String.init) ?? "—")" }
+            } else { self.status = (self.entry.recordKind?.title ?? "Сеанс") + " завершён · код \(code.map(String.init) ?? "—")" }
             self.finishEvent()
         }
     }
@@ -277,7 +287,7 @@ struct ConsolePane: View {
     private func toolbar(compact: Bool) -> some View {
             HStack(spacing: 10) {
                 Circle().fill(session.finished || session.awaitingConnection ? Color.secondary : Color.green).frame(width: 6, height: 6)
-                Text(session.status).font(.system(size: 11)).lineLimit(1)
+                Text(session.status).font(.system(size: 11)).lineLimit(1).help(session.status)
                 Spacer()
                 Button { session.showSearch.toggle() } label: { Image(systemName: "magnifyingglass") }.help("Поиск по выводу · ⌘F")
                 if compact {

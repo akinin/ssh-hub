@@ -18,6 +18,10 @@ struct WorkspaceSnapshot: Codable {
     var consoles: [WorkspaceConsoleSnapshot]
     var windows: [WorkspaceWindowSnapshot]
     var paths: [String: String]
+    var uniqueDashboardPages: [EntryPage] {
+        let keep = pages.first(where: { $0.section == .overview && .page($0.id) == layout.active })?.id ?? pages.first(where: { $0.section == .overview })?.id
+        return pages.filter { $0.section != .overview || $0.id == keep }
+    }
 }
 
 extension WorkspaceTab {

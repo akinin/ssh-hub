@@ -30,7 +30,10 @@ extension AliasStore {
     }
     func restoreBackup(_ backup: HubBackup, selected: Set<UUID>) throws {
         try backup.validate()
-        guard !ConsoleStore.shared.hasSessions, !SFTPRegistry.shared.hasSessions else { throw ConfigError.message("Заверши активные SSH, Serial и SFTP-сеансы перед восстановлением.") }
+        let activeConnection = connectionSessions.values.contains { session in
+            session.files?.busy == true || session.desktop?.connected == true || session.desktop?.starting == true
+        }
+        guard !ConsoleStore.shared.hasSessions, !SFTPRegistry.shared.hasSessions, !activeConnection else { throw ConfigError.message("Заверши активные консольные, графические и файловые сеансы перед восстановлением.") }
         let metadata = try BackupRestoration.install(backup, selected: selected, localRepository: localRepository,
             documents: DocumentationRepository(), commands: savedCommands.repository, attachments: attachmentsRepository,
             templates: TemplateLibrary.shared.custom, writeTemplates: TemplateLibrary.shared.replace,
