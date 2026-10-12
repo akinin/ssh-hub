@@ -1,0 +1,17 @@
+.DS_Store
+build/
+dist/
+.build/
+*.xcuserstate
+xcuserdata/
+__pycache__/
+*.pyc
+*.dmg
+*.zip
+# Local SSH data must never be committed.
+.ssh/
+*.pem
+*.key
+id_ed25519*
+id_rsa*
+config.backup-*
