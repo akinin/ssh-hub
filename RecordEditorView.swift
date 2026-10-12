@@ -5,6 +5,7 @@ struct RecordEditorTarget: Identifiable {
     var id = UUID()
     var record: LocalConnectionRecord?
     var template: SSHAlias?
+    var blueprint: RecordTemplate?
 }
 struct LocalRecordChange {
     let before: [LocalConnectionRecord]
@@ -72,6 +73,7 @@ struct RecordEditorView: View {
     let kind: RecordKind
     var original: LocalConnectionRecord?
     var template: SSHAlias?
+    var blueprint: RecordTemplate?
     var back: (() -> Void)?
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) private var dismiss
@@ -199,6 +201,9 @@ struct RecordEditorView: View {
                 if appearance.name.isEmpty { appearance.name = original.title }
                 group = entry.map(store.group) ?? ""
                 storedPassword = SSHPasswordStore.hasPassword(for: target, config: store.config.url)
+            } else if let blueprint {
+                appearance.name = blueprint.name; record.host = blueprint.host; record.user = blueprint.user
+                record.port = blueprint.port; record.identity = blueprint.identity; record.jump = blueprint.jump; group = blueprint.group
             } else if let template {
                 record.serial = template.serial
                 record.website = template.website ?? ""
@@ -218,6 +223,8 @@ struct RecordEditorView: View {
     }
     private func save() {
         guard validation == nil else { return }
+        var stagedTemplateURLs: [URL] = []
+        var recordCommitted = false
         var ssh: ConfigChange?, credentialChanged = false, previousPassword: String?
         do {
             let changePassword = removePassword || (record.authentication == .password && ((!keepPassword && reusePassword) || (keepPassword && !password.isEmpty)))
@@ -229,10 +236,20 @@ struct RecordEditorView: View {
                 if let aliasSnapshot { ssh = try store.config.update(aliasSnapshot, draft: candidate.draft) }
                 else { ssh = try store.config.importAliases([candidate.draft], expectedData: expectedConfig) }
             }
+            if let blueprint {
+                let commandFile = store.savedCommands.repository.file(target.favoriteID), documentFile = DocumentationRepository().url(for: target.favoriteID)
+                guard !FileManager.default.fileExists(atPath: commandFile.path), !FileManager.default.fileExists(atPath: documentFile.path) else { throw ConfigError.message("Материалы с таким ID уже существуют. Открой создание заново.") }
+                stagedTemplateURLs = [commandFile, documentFile]
+                try store.savedCommands.save(blueprint.commands, key: target.favoriteID)
+                var document = ConnectionDocument(); document.draft = blueprint.documentation; document.save()
+                try DocumentationRepository().write(document, for: target.favoriteID)
+            }
             try store.commitRecord(candidate, expected: expected, appearance: appearance, group: group, ssh: ssh, template: template)
+            recordCommitted = true
             dismiss()
         } catch {
             var detail = error.localizedDescription
+            if !recordCommitted { for url in stagedTemplateURLs { try? FileManager.default.removeItem(at: url) } }
             if let ssh { do { _ = try store.config.undo(ssh) } catch { detail += "\nНе удалось откатить SSH-конфиг: " + error.localizedDescription } }
             if credentialChanged { do { try SSHPasswordStore.set(previousPassword, for: target, config: store.config.url) } catch { detail += "\nНе удалось восстановить пароль в Связке ключей." } }
             self.error = detail

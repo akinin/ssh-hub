@@ -13,7 +13,16 @@ import ConsoleSupport
     let attachmentsRepository = AttachmentsRepository()
     @Published var selected: String?
     @Published var pages: [EntryPage] = []
-    @Published var workspace = WorkspaceLayout()
+    @Published var workspace = WorkspaceLayout() { didSet { saveWorkspace() } }
+    @Published var splitFraction = 0.5 { didSet { saveWorkspace() } }
+    var restoringWorkspace = true
+    var endingWorkspace = false
+    var detachedWindows: [WorkspaceTab: DetachedWorkspaceWindow] = [:]
+    @Published var detachedTabs: Set<WorkspaceTab> = []
+    @Published var showingPalette = false
+    @Published var showingBackup = false
+    @Published var showingTemplates = false
+    @Published var showingAvailability = false
     var sftpModels: [UUID: SFTPModel] = [:]
     @Published var selectedPage: UUID?
     let scanner = NmapModel()
@@ -21,6 +30,7 @@ import ConsoleSupport
     @Published var revealRequest = 0
     let documentation = DocumentationWorkspace()
     let savedCommands = SavedCommandsWorkspace()
+    let availability = AvailabilityMonitor()
     @Published var query = ""
     @Published var error: String?
     @Published var warnings: [String] = []
@@ -72,10 +82,14 @@ import ConsoleSupport
         history = ConnectionHistory.decode(UserDefaults.standard.data(forKey: "connectionHistory.v1"))
         appearances = ConnectionAppearance.decode(UserDefaults.standard.data(forKey: "connectionAppearance.v1"))
         ConsoleStore.shared.onSelection = { [weak self] session in self?.selectConsole(session) }
-        ConsoleStore.shared.onClose = { [weak self] id in self?.workspace.remove(.console(id)); self?.syncWorkspaceSelection() }
-        ConsoleStore.shared.onReplacement = { [weak self] old, new in self?.workspace.replace(.console(old), with: .console(new)); self?.syncWorkspaceSelection() }
+        ConsoleStore.shared.onClose = { [weak self] id in self?.removeDetached(.console(id)); self?.workspace.remove(.console(id)); self?.syncWorkspaceSelection() }
+        ConsoleStore.shared.onReplacement = { [weak self] old, new in self?.replaceConsoleTab(old, with: new) }
         reload()
-        if let current { showDashboard(current) }
+        restoreWorkspace()
+        restoringWorkspace = false
+        if pages.isEmpty && ConsoleStore.shared.sessions.isEmpty, let current { showDashboard(current) }
+        saveWorkspace()
+        availability.configure(entries: aliases)
     }
     var ordered: [SSHAlias] {
         aliases.sorted {
@@ -312,6 +326,7 @@ import ConsoleSupport
             aliases = snapshot.aliases.filter { item in !linked.contains(where: { $0.id == item.id }) } + records.map { record in
                 record.entry(config: config.url, privateConfig: localRepository.privateConfig(record.id), alias: linked.first { $0.name == record.aliasName && $0.source == record.aliasSource })
             }
+            availability.configure(entries: aliases)
             data = snapshot.data
             warnings = snapshot.warnings
             if let name { selected = aliases.first { $0.name == name }?.id }
@@ -409,6 +424,10 @@ import ConsoleSupport
                         .keyboardShortcut("n", modifiers: .command)
                 }
                 CommandGroup(after: .newItem) {
+                    Button("Палитра действий…") { store.showingPalette = true }.keyboardShortcut("p", modifiers: .command)
+                    Button("Резервное копирование…") { store.showingBackup = true }
+                    Button("Шаблоны записей…") { store.showingTemplates = true }
+                    Button("Статус доступности…") { store.showingAvailability = true }
                     Button("Быстрое подключение…") { QuickAccessController.shared.show() }.keyboardShortcut("p", modifiers: [.command, .shift])
                     Button("Обновить список") { store.reload() }.keyboardShortcut("r", modifiers: .command)
                     Button("Создать SSH-ключ…") { store.generatingKey = true }.keyboardShortcut("k", modifiers: [.command, .shift])
@@ -438,10 +457,12 @@ import ConsoleSupport
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    static weak var storeForTermination: AliasStore?
     static weak var scannerForTermination: NmapModel?
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         AppDelegate.scannerForTermination?.cancel()
+        AppDelegate.storeForTermination?.finishWorkspace()
         ConsoleStore.shared.closeAll()
         SFTPRegistry.shared.closeAll()
         let tunnels = TunnelManager.shared
@@ -659,6 +680,11 @@ struct MainView: View {
                 HStack(spacing: 8) {
                     toolbarButton("Обновить", symbol: "arrow.clockwise", help: "Обновить · ⌘R") { store.reload() }
                     Menu {
+                        Button("Палитра действий…", systemImage: "command") { store.showingPalette = true }
+                        Button("Резервное копирование…", systemImage: "externaldrive") { store.showingBackup = true }
+                        Button("Шаблоны записей…", systemImage: "square.stack") { store.showingTemplates = true }
+                        Button("Статус доступности…", systemImage: "waveform.path.ecg") { store.showingAvailability = true }
+                        Divider()
                         Button("Nmap — сканирование сети…", systemImage: "network") { store.openScanner() }
                         Divider()
                         Button("Создать SSH-ключ…", systemImage: "key.fill") { store.generatingKey = true }
@@ -689,11 +715,15 @@ struct MainView: View {
         .sheet(item: $store.stylingFolder) { FolderAppearanceView(path: $0.path).environmentObject(store) }
         .sheet(isPresented: $store.creatingFolder) { CreateFolderView().environmentObject(store) }
         .sheet(isPresented: $store.creatingAlias) { RecordChooserView().environmentObject(store) }
-        .sheet(item: $store.recordEditor) { target in RecordEditorView(kind: target.record?.kind ?? target.template?.recordKind ?? .ssh, original: target.record, template: target.template).environmentObject(store) }
+        .sheet(item: $store.recordEditor) { target in RecordEditorView(kind: target.record?.kind ?? target.template?.recordKind ?? .ssh, original: target.record, template: target.template, blueprint: target.blueprint).environmentObject(store) }
         .sheet(item: $store.editingAlias) { snapshot in CreateAliasView(editing: snapshot).environmentObject(store) }
         .sheet(item: $store.duplicatingAlias) { snapshot in CreateAliasView(duplicating: snapshot, existing: store.aliases).environmentObject(store) }
         .sheet(isPresented: $store.generatingKey) { GenerateKeyView(directory: store.config.sshDirectory) }
         .sheet(isPresented: $updater.presented) { AppUpdateView() }
+        .sheet(isPresented: $store.showingPalette) { ActionPalette().environmentObject(store) }
+        .sheet(isPresented: $store.showingBackup) { BackupView().environmentObject(store) }
+        .sheet(isPresented: $store.showingTemplates) { TemplatesView().environmentObject(store) }
+        .sheet(isPresented: $store.showingAvailability) { AvailabilityView(monitor: store.availability).environmentObject(store) }
         .sheet(isPresented: $store.showingSettings) { AppSettingsView().environmentObject(store) }
         .sheet(isPresented: $store.showingKeys) { KeyManagerView().environmentObject(store) }
         .sheet(isPresented: $store.showingHistory) { HistoryView().environmentObject(store) }
@@ -703,6 +733,7 @@ struct MainView: View {
         .sheet(item: $store.importReview) { ImportReviewView(review: $0, existing: store.aliases).environmentObject(store) }
         .onAppear {
             updater.checkAutomatically()
+            AppDelegate.storeForTermination = store
             AppDelegate.scannerForTermination = store.scanner
             QuickAccessController.shared.configure(store: store) {
                 openWindow(id: "main"); NSApplication.shared.activate(ignoringOtherApps: true)

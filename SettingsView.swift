@@ -6,6 +6,7 @@ struct AppSettingsView: View {
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) private var dismiss
     @AppStorage("consoleDestination.v1") private var consoleDestination = "embedded"
+    @AppStorage("restoreWorkspace.v1") private var restoreWorkspace = true
     @AppStorage("terminalID") private var terminalID = "com.apple.Terminal"
     @AppStorage("startInMenuBar") private var startInMenuBar = false
     @AppStorage("checkUpdatesOnLaunch.v1") private var checkUpdates = true
@@ -27,6 +28,10 @@ struct AppSettingsView: View {
                     }
                     Text("iTerm2 появится в списке, если он установлен.").font(.caption).foregroundStyle(.secondary)
                 }
+                Section("Рабочая область") {
+                    Toggle("Восстанавливать вкладки, панели и окна", isOn: $restoreWorkspace)
+                    Text("Сохранённые SSH, Serial и SFTP-вкладки подключаются по кнопке.").font(.caption).foregroundStyle(.secondary)
+                }
                 Section("Запуск") {
                     Toggle("Запускать при входе в macOS", isOn: Binding(get: { loginEnabled }, set: setLoginEnabled))
                     Toggle("При запуске оставлять только иконку в строке меню", isOn: $startInMenuBar)
@@ -45,6 +50,7 @@ struct AppSettingsView: View {
                     Text("GitHub Releases · проверка не чаще раза в сутки, установка по нажатию.").font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Перенос подключений") {
+                    Button("Резервное копирование с паролем…") { dismiss(); DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { store.showingBackup = true } }
                     HStack {
                         Button("Импорт…", systemImage: "square.and.arrow.down") { dismiss(); DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { store.chooseImport() } }
                         Button("Экспорт всех…", systemImage: "square.and.arrow.up") { store.export(entries: store.ordered) }.disabled(store.aliases.isEmpty)
@@ -55,7 +61,7 @@ struct AppSettingsView: View {
             }.formStyle(.grouped)
             if let error { Text(error).font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
             HStack { Spacer(); Button("Готово") { dismiss() }.keyboardShortcut(.defaultAction) }
-        }.padding(24).frame(width: 570, height: 680)
+        }.padding(24).frame(width: 570, height: 760)
             .onAppear { refreshLoginStatus() }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refreshLoginStatus() }
     }

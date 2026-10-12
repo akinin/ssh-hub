@@ -1,11 +1,21 @@
 import Foundation
 
-enum WorkspaceTab: Hashable { case page(UUID), console(UUID) }
-enum WorkspacePane: Int { case primary, secondary }
-enum WorkspaceSplit: String { case none, columns, rows }
+enum EntryDetailSection: String, Codable { case overview, documentation, attachments, scanner, sftp
+    var title: String { switch self { case .overview: return "Панель"; case .documentation: return "Документация"; case .attachments: return "Вложения"; case .sftp: return "SFTP"; case .scanner: return "Nmap" } }
+    var icon: String { switch self { case .overview: return "gauge.with.dots.needle.50percent"; case .documentation: return "doc.richtext"; case .attachments: return "paperclip"; case .sftp: return "folder"; case .scanner: return "network" } }
+}
+struct EntryPage: Identifiable, Codable {
+    var id = UUID()
+    var key: String?
+    var section: EntryDetailSection
+}
+
+enum WorkspaceTab: Hashable, Codable { case page(UUID), console(UUID) }
+enum WorkspacePane: Int, Codable { case primary, secondary }
+enum WorkspaceSplit: String, Codable { case none, columns, rows }
 
 // A tab belongs to exactly one pane. Moving it never creates a second transport/view.
-struct WorkspaceLayout {
+struct WorkspaceLayout: Codable {
     private(set) var primary: [WorkspaceTab] = []
     private(set) var secondary: [WorkspaceTab] = []
     private(set) var primarySelection: WorkspaceTab?
@@ -36,6 +46,25 @@ struct WorkspaceLayout {
         if split == .none { split = .columns }
         remove(tab)
         focused = pane; select(tab)
+    }
+    mutating func normalize(valid: Set<WorkspaceTab>) {
+        var seen = Set<WorkspaceTab>()
+        primary = primary.filter { valid.contains($0) && seen.insert($0).inserted }
+        secondary = secondary.filter { valid.contains($0) && seen.insert($0).inserted }
+        if primarySelection.map({ !primary.contains($0) }) ?? true { primarySelection = primary.first }
+        if secondarySelection.map({ !secondary.contains($0) }) ?? true { secondarySelection = secondary.first }
+        if split == .none { arrange(.none) }
+    }
+    mutating func insert(_ tab: WorkspaceTab, in pane: WorkspacePane, before anchor: WorkspaceTab? = nil) {
+        if tab == anchor { return }
+        if pane == .secondary && split == .none { split = .columns }
+        remove(tab)
+        var values = tabs(in: pane)
+        let index = anchor.flatMap { values.firstIndex(of: $0) } ?? values.count
+        values.insert(tab, at: index)
+        if pane == .primary { primary = values; primarySelection = tab }
+        else { secondary = values; secondarySelection = tab }
+        focused = pane
     }
     mutating func remove(_ tab: WorkspaceTab) {
         for pane in [WorkspacePane.primary, .secondary] {

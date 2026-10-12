@@ -1,14 +1,5 @@
 import SwiftUI
 
-enum EntryDetailSection: String { case overview, documentation, attachments, scanner, sftp
-    var title: String { switch self { case .overview: return "Панель"; case .documentation: return "Документация"; case .attachments: return "Вложения"; case .sftp: return "SFTP"; case .scanner: return "Nmap" } }
-    var icon: String { switch self { case .overview: return "gauge.with.dots.needle.50percent"; case .documentation: return "doc.richtext"; case .attachments: return "paperclip"; case .sftp: return "folder"; case .scanner: return "network" } }
-}
-struct EntryPage: Identifiable {
-    var id = UUID()
-    var key: String?
-    var section: EntryDetailSection
-}
 extension AliasStore {
     var activePage: EntryPage? { pages.first { $0.id == selectedPage } }
     func entry(for page: EntryPage) -> SSHAlias? { aliases.first { $0.favoriteID == page.key } }
@@ -21,10 +12,10 @@ extension AliasStore {
         }
         selectPage(page)
     }
-    func selectPage(_ page: EntryPage) { workspace.select(.page(page.id)); syncWorkspaceSelection() }
-    func selectConsole(_ session: ConsoleSession) { workspace.select(.console(session.id)); syncWorkspaceSelection() }
+    func selectPage(_ page: EntryPage) { if focusDetached(.page(page.id)) { return }; workspace.select(.page(page.id)); syncWorkspaceSelection() }
+    func selectConsole(_ session: ConsoleSession) { if focusDetached(.console(session.id)) { return }; workspace.select(.console(session.id)); syncWorkspaceSelection() }
     func focusPane(_ pane: WorkspacePane) { workspace.focus(pane); syncWorkspaceSelection() }
-    func moveTab(_ tab: WorkspaceTab, to pane: WorkspacePane) { workspace.move(tab, to: pane); syncWorkspaceSelection() }
+    func moveTab(_ tab: WorkspaceTab, to pane: WorkspacePane) { removeDetached(tab); workspace.move(tab, to: pane); syncWorkspaceSelection() }
     func arrangeWorkspace(_ mode: WorkspaceSplit) { workspace.arrange(mode); syncWorkspaceSelection() }
     func syncWorkspaceSelection() {
         switch workspace.active {
@@ -38,6 +29,7 @@ extension AliasStore {
         }
     }
     func closePage(_ page: EntryPage) {
+        removeDetached(.page(page.id))
         sftpModels.removeValue(forKey: page.id)?.disconnect()
         pages.removeAll { $0.id == page.id }; workspace.remove(.page(page.id))
         if page.section == .scanner { scanner.cancel() }
@@ -77,7 +69,7 @@ struct WorkspacePageTab: View {
                     Button("Вложения") { store.showAttachments(entry) }
                     Button("Показать в дереве") { store.reveal(entry) }
                 }
-            }.help(title)
+            }.modifier(WorkspaceTabDrag(tab: .page(page.id))).help(title)
     }
 }
 
@@ -85,6 +77,8 @@ struct WorkspaceMoveMenu: View {
     let tab: WorkspaceTab
     @EnvironmentObject var store: AliasStore
     var body: some View {
+        Button("Открыть в отдельном окне", systemImage: "macwindow") { store.detach(tab) }.disabled(store.detachedTabs.contains(tab))
+        Divider()
         Button(store.workspace.split == .rows ? "Переместить вниз" : "Переместить вправо", systemImage: "rectangle.righthalf.inset.filled") { store.moveTab(tab, to: .secondary) }
             .disabled(store.workspace.pane(for: tab) == .secondary)
         if store.workspace.split != .none {
@@ -97,13 +91,39 @@ struct WorkspaceMoveMenu: View {
 struct WorkspaceView: View {
     @EnvironmentObject var store: AliasStore
     var body: some View {
-        Group {
-            switch store.workspace.split {
-            case .none: WorkspacePaneView(pane: .primary)
-            case .columns: HSplitView { WorkspacePaneView(pane: .primary); WorkspacePaneView(pane: .secondary) }
-            case .rows: VSplitView { WorkspacePaneView(pane: .primary); WorkspacePaneView(pane: .secondary) }
+        GeometryReader { geometry in
+            if store.workspace.split == .none { WorkspacePaneView(pane: .primary) }
+            else {
+                let columns = store.workspace.split == .columns
+                let length = columns ? geometry.size.width : geometry.size.height
+                let first = max(100, (length - 7) * store.splitFraction)
+                if columns {
+                    HStack(spacing: 0) {
+                        WorkspacePaneView(pane: .primary).frame(width: first)
+                        divider(length: length, columns: true)
+                        WorkspacePaneView(pane: .secondary)
+                    }
+                } else {
+                    VStack(spacing: 0) {
+                        WorkspacePaneView(pane: .primary).frame(height: first)
+                        divider(length: length, columns: false)
+                        WorkspacePaneView(pane: .secondary)
+                    }
+                }
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    @State private var dragStart: Double?
+    private func divider(length: CGFloat, columns: Bool) -> some View {
+        Rectangle().fill(Color.secondary.opacity(0.18))
+            .frame(width: columns ? 7 : nil, height: columns ? nil : 7)
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                if dragStart == nil { dragStart = store.splitFraction }
+                let delta = columns ? value.translation.width : value.translation.height
+                store.splitFraction = min(0.85, max(0.15, (dragStart ?? 0.5) + delta / max(1, length - 7)))
+            }.onEnded { _ in dragStart = nil })
+            .accessibilityLabel("Размер панелей")
     }
 }
 struct WorkspacePaneView: View {
@@ -140,7 +160,8 @@ struct WorkspacePaneView: View {
                 .overlay(alignment: .bottom) { if store.workspace.split != .none && store.workspace.focused == pane { Color.accentColor.frame(height: 2) } }
             Divider()
             paneContent.frame(maxWidth: .infinity, maxHeight: .infinity)
-        }.frame(minWidth: 245, minHeight: 180)
+        }.frame(minWidth: 100, minHeight: 100)
+            .dropDestination(for: String.self) { values, _ in store.acceptTabDrop(values.first, pane: pane) }
             .background(WorkspaceFocusObserver { store.focusPane(pane) })
     }
     @ViewBuilder private var paneContent: some View {

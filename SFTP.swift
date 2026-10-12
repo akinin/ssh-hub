@@ -82,6 +82,10 @@ struct SFTPProgress {
 }
 
 // One worker owns protocol I/O. Only cancellation and disconnect are called concurrently.
+final class SFTPUploadRecovery {
+    var directories = Set<String>()
+    var files: [String: (size: UInt64, modified: Date?)] = [:]
+}
 final class SFTPConnection: @unchecked Sendable {
     private let lock = NSLock()
     private var process: Process?
@@ -266,6 +270,52 @@ final class SFTPConnection: @unchecked Sendable {
     private func mustNotExist(_ path: String) throws {
         do { _ = try attributes(path) } catch SFTPError.status(2, _) { return }
         throw SFTPError.message("«\((path as NSString).lastPathComponent)» уже существует. Выбери другое имя или папку.")
+    }
+    func renameEntry(in parent: String, name: String, to newName: String) throws {
+        let from = try Self.child(parent, name), to = try Self.child(parent, newName)
+        guard from != to else { return }
+        try mustNotExist(to)
+        // SFTP v3 RENAME must fail if newpath exists (no posix-rename extension).
+        try rename(from, to)
+    }
+    func deleteTree(_ path: String) throws {
+        var count = 0
+        try deleteTree(path, depth: 0, count: &count)
+    }
+    private func deleteTree(_ path: String, depth: Int, count: inout Int) throws {
+        try checkTransfer(); count += 1
+        guard depth <= 64, count <= 100000 else { throw SFTPError.message("Слишком большая или глубокая структура папок.") }
+        let value = try attributes(path) // LSTAT: never follow a symlink while deleting.
+        if value.isDirectory {
+            for entry in try list(path) { try deleteTree(Self.child(path, entry.name), depth: depth + 1, count: &count) }
+            var result = try request(15) { $0.string(path) }; try ok(&result)
+        } else { try remove(path) }
+    }
+    func uploadRecovering(_ local: URL, to path: String, recovery: SFTPUploadRecovery, progress: (SFTPProgress) -> Void) throws {
+        var count = 0
+        try validateUploadTree(local, depth: 0, count: &count)
+        try uploadRecoveringValidated(local, to: path, recovery: recovery, progress: progress)
+    }
+    private func uploadRecoveringValidated(_ local: URL, to path: String, recovery: SFTPUploadRecovery, progress: (SFTPProgress) -> Void) throws {
+        try checkTransfer()
+        let info = try local.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey])
+        guard info.isSymbolicLink != true else { throw SFTPError.message("Файл заменён ссылкой.") }
+        if info.isDirectory == true {
+            if recovery.directories.contains(path) {
+                guard try attributes(path).isDirectory else { throw SFTPError.message("Папка на сервере изменилась. Выбери новое место передачи.") }
+            } else { try mustNotExist(path); try mkdir(path); recovery.directories.insert(path) }
+            for child in try FileManager.default.contentsOfDirectory(at: local, includingPropertiesForKeys: nil) {
+                try uploadRecoveringValidated(child, to: Self.child(path, child.lastPathComponent), recovery: recovery, progress: progress)
+            }
+        } else {
+            if let completed = recovery.files[path] {
+                guard completed.size == UInt64(info.fileSize ?? 0), completed.modified == info.contentModificationDate,
+                      try attributes(path).size == completed.size else { throw SFTPError.message("Уже переданный файл изменился. Выбери новую папку для загрузки.") }
+                return
+            }
+            try upload(local, to: path, progress: progress)
+            recovery.files[path] = (UInt64(info.fileSize ?? 0), info.contentModificationDate)
+        }
     }
     // Directory downloads are staged as a whole and committed without replacing an existing name.
     func uploadTree(_ local: URL, to path: String, progress: (SFTPProgress) -> Void) throws {

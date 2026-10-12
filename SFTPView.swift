@@ -25,7 +25,13 @@ struct SFTPTransfer: Identifiable {
     let downloads: [SFTPEntry]
     let remote: String
     let local: URL?
+    let recovery = SFTPUploadRecovery()
     var title: String { uploads.isEmpty ? "Скачать · \(downloads.count)" : "Загрузить · \(uploads.count)" }
+}
+struct FailedSFTPTransfer: Identifiable {
+    var job: SFTPTransfer
+    var reason: String
+    var id: UUID { job.id }
 }
 @MainActor final class SFTPModel: ObservableObject {
     @Published var entries: [SFTPEntry] = []
@@ -40,7 +46,43 @@ struct SFTPTransfer: Identifiable {
     @Published var operation = ""
     @Published var pending: [SFTPTransfer] = []
     @Published var transferActive = false
+    @Published var failed: [FailedSFTPTransfer] = []
+    @Published var localPath = FileManager.default.homeDirectoryForCurrentUser
+    @Published var localEntries: [LocalFileEntry] = []
+    @Published var localError: String?
+    private var restoredPath: String?
+    private var activeJob: SFTPTransfer?
+    private var cancelled = false
     private var started = false
+    func restore(path: String?, localPath: String?) {
+        started = true; restoredPath = path
+        if let localPath { self.localPath = URL(fileURLWithPath: localPath) }
+        refreshLocal()
+    }
+    func refreshLocal() {
+        do { localEntries = try LocalFileEntry.list(localPath); localError = nil }
+        catch { localError = error.localizedDescription }
+    }
+    func navigateLocal(_ url: URL) { localPath = url; refreshLocal() }
+    func retry(_ id: UUID) {
+        guard connected, let item = failed.first(where: { $0.id == id }) else { return }
+        failed.removeAll { $0.id == id }; pending.append(item.job); nextTransfer()
+    }
+    func dismissFailure(_ id: UUID) { failed.removeAll { $0.id == id } }
+    func rename(_ entry: SFTPEntry, to name: String) {
+        guard let client = connection, connected, !busy else { return }
+        let parent = path
+        run("Переименование…") { try client.renameEntry(in: parent, name: entry.name, to: name); return try client.list(parent) }
+        success: { [weak self] in self?.entries = $0 }
+    }
+    func delete(_ entries: [SFTPEntry]) {
+        guard let client = connection, connected, !busy, !entries.isEmpty else { return }
+        let parent = path; client.prepareTransfer()
+        run("Удаление…") {
+            for entry in entries { try client.deleteTree(SFTPConnection.child(parent, entry.name)) }
+            return try client.list(parent)
+        } success: { [weak self] in self?.entries = $0 }
+    }
     func startIfNeeded() { if !started { started = true; connect() } }
     func removePending(_ id: UUID) { pending.removeAll { $0.id == id } }
     private let id = UUID()
@@ -72,7 +114,10 @@ struct SFTPTransfer: Identifiable {
                 let entries = try client.list(home)
                 return (home, entries)
             } catch { client.close(); throw error }
-        } success: { [weak self] home, entries in self?.home = home; self?.path = home; self?.entries = entries }
+        } success: { [weak self] home, entries in
+            guard let self else { return }; self.home = home; self.path = home; self.entries = entries
+            if let path = self.restoredPath, path != home { self.restoredPath = nil; self.navigate(path) }
+        }
     }
     func navigate(_ destination: String) {
         guard let client = connection, connected, !busy else { return }
@@ -90,31 +135,32 @@ struct SFTPTransfer: Identifiable {
     }
     func upload(_ files: [URL]) {
         guard connected, !files.isEmpty else { return }
-        pending.append(SFTPTransfer(uploads: files, downloads: [], remote: path, local: nil)); nextTransfer()
+        pending += files.map { SFTPTransfer(uploads: [$0], downloads: [], remote: path, local: nil) }; nextTransfer()
     }
     func download(_ entries: [SFTPEntry], to folder: URL) {
         guard connected, !entries.isEmpty else { return }
-        pending.append(SFTPTransfer(uploads: [], downloads: entries, remote: path, local: folder)); nextTransfer()
+        pending += entries.map { SFTPTransfer(uploads: [], downloads: [$0], remote: path, local: folder) }; nextTransfer()
     }
     private func nextTransfer() {
         guard let client = connection, connected, !busy, !pending.isEmpty else { return }
         let job = pending.removeFirst(), report = progressReporter()
-        client.prepareTransfer(); transferActive = true
+        client.prepareTransfer(); transferActive = true; activeJob = job; cancelled = false
         run(job.title) {
-            for file in job.uploads { try client.uploadTree(file, to: SFTPConnection.child(job.remote, file.lastPathComponent), progress: report) }
+            for file in job.uploads { try client.uploadRecovering(file, to: SFTPConnection.child(job.remote, file.lastPathComponent), recovery: job.recovery, progress: report) }
             if let folder = job.local {
                 for entry in job.downloads { try client.downloadTree(SFTPConnection.child(job.remote, entry.name), to: folder.appendingPathComponent(entry.name), progress: report) }
             }
-            return try client.list(job.remote)
+            return (try? client.list(job.remote)) ?? []
         } success: { [weak self] entries in
             guard let self else { return }
             if self.path == job.remote { self.entries = entries }
+            self.refreshLocal()
             self.notice = "Передача завершена · Объектов: \(job.uploads.count + job.downloads.count)"
         }
     }
-    func cancel() { pending = []; connection?.cancelTransfer() }
+    func cancel() { cancelled = true; pending = []; connection?.cancelTransfer() }
     func disconnect() {
-        generation = UUID(); pending = []; transferActive = false
+        generation = UUID(); pending = []; transferActive = false; activeJob = nil
         login?.stop(); login = nil
         if connection != nil { SFTPRegistry.shared.close(id) }
         connection = nil
@@ -142,8 +188,15 @@ struct SFTPTransfer: Identifiable {
                 self.transferActive = false
                 switch result {
                 case .success(let value): success(value)
-                case .failure(let error): self.error = error.localizedDescription; self.pending = []
+                case .failure(let error):
+                    self.error = error.localizedDescription
+                    if let job = self.activeJob, !self.cancelled {
+                        self.failed.append(FailedSFTPTransfer(job: job, reason: error.localizedDescription))
+                        self.failed += self.pending.map { FailedSFTPTransfer(job: $0, reason: "Не выполнено после ошибки предыдущей передачи") }
+                    }
+                    self.pending = []
                 }
+                self.activeJob = nil
                 self.nextTransfer()
                 if !alive { SFTPRegistry.shared.remove(self.id, connection: client) }
             }
@@ -162,6 +215,10 @@ struct SFTPView: View {
     @State private var folderName = ""
     @State private var targeted = false
     @State private var recorded = false
+    @State private var renaming: SFTPEntry?
+    @State private var renameName = ""
+    @State private var deleting = false
+    @State private var localVisible = true
     private var filtered: [SFTPEntry] {
         model.entries.filter { (showHidden || !$0.name.hasPrefix(".")) && (search.isEmpty || $0.name.localizedCaseInsensitiveContains(search)) }
     }
@@ -196,6 +253,18 @@ struct SFTPView: View {
                 Toggle("Скрытые", isOn: $showHidden).labelsHidden().toggleStyle(.switch).controlSize(.small).help("Показывать скрытые файлы").accessibilityLabel("Показывать скрытые файлы")
                 TextField("Поиск файлов", text: $search).textFieldStyle(.roundedBorder).frame(minWidth: 60, maxWidth: 175)
             }
+            HStack {
+                if geometry.size.width >= 580 { Toggle("Локальные файлы", isOn: $localVisible).toggleStyle(.button) }
+                else { Picker("Файлы", selection: $localVisible) { Text("Сервер").tag(false); Text("На Mac").tag(true) }.pickerStyle(.segmented).frame(maxWidth: 220) }
+                Text("Сервер: " + model.path).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Spacer()
+            }
+            HStack(spacing: 8) {
+            if localVisible {
+                LocalFilesPane(model: model).frame(maxWidth: .infinity, maxHeight: .infinity)
+                if geometry.size.width >= 580 { Divider() }
+            }
+            if !localVisible || geometry.size.width >= 580 {
             Table(filtered, selection: $selection) {
                 TableColumn("Имя") { entry in Label(entry.name, systemImage: entry.icon).lineLimit(1).help(entry.name) }
                 TableColumn("Размер") { entry in Text(entry.attributes.isDirectory ? "—" : entry.attributes.size.map(bytes) ?? "—").monospacedDigit() }.width(100)
@@ -204,8 +273,11 @@ struct SFTPView: View {
                 let entries = filtered.filter { ids.contains($0.id) }
                 if entries.count == 1, let entry = entries.first {
                     if entry.attributes.isDirectory || entry.attributes.isLink { Button("Открыть папку") { open(entry) }.disabled(!available) }
+                    Button("Переименовать…") { renaming = entry; renameName = entry.name }.disabled(!available)
                     Button("Копировать путь") { if let path = try? SFTPConnection.child(model.path, entry.name) { store.copy(path) } }
                 }
+                Button("Удалить…", role: .destructive) { selection = ids; deleting = true }.disabled(!available || entries.isEmpty)
+                Button("Скачать в локальную панель") { model.download(entries, to: model.localPath) }.disabled(!available || entries.isEmpty || !entries.allSatisfy { $0.attributes.isRegular || $0.attributes.isDirectory })
                 Button("Скачать…") { chooseDownload(entries) }.disabled(!available || entries.isEmpty || !entries.allSatisfy { $0.attributes.isRegular || $0.attributes.isDirectory })
             } primaryAction: { ids in
                 guard available, ids.count == 1, let entry = filtered.first(where: { ids.contains($0.id) }) else { return }
@@ -219,6 +291,23 @@ struct SFTPView: View {
             .dropDestination(for: URL.self) { urls, _ in
                 guard model.connected, urls.allSatisfy(\.isFileURL) else { return false }; model.upload(urls); return true
             } isTargeted: { targeted = $0 }
+            }
+            }
+            if !model.failed.isEmpty {
+                DisclosureGroup("Неудачные передачи: \(model.failed.count)") {
+                    ScrollView { ForEach(model.failed) { item in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(item.job.uploads.first?.lastPathComponent ?? item.job.downloads.first?.name ?? item.job.title).lineLimit(1)
+                                Text(item.reason).foregroundStyle(.red).lineLimit(2)
+                            }
+                            Spacer()
+                            Button("Повторить") { model.retry(item.id) }.disabled(!model.connected || model.busy)
+                            Button { model.dismissFailure(item.id) } label: { Image(systemName: "xmark") }
+                        }
+                    } }.frame(maxHeight: 90)
+                }.font(.caption)
+            }
             if !model.pending.isEmpty {
                 DisclosureGroup("В очереди: \(model.pending.count)") {
                     ScrollView { ForEach(model.pending) { job in HStack { Text(job.title).lineLimit(1); Spacer(); Button { model.removePending(job.id) } label: { Image(systemName: "xmark") }.buttonStyle(.plain) } } }.frame(maxHeight: 65)
@@ -249,15 +338,26 @@ struct SFTPView: View {
                 Text(model.connected ? "Подключено · Объектов: \(filtered.count)" : model.busy ? "Подключение…" : "Соединение закрыто")
                 Spacer()
                 if geometry.size.width > 550 { Text("Файлы и папки из Finder").foregroundStyle(.secondary) }
-            }.font(.caption)
+            }.font(.caption).lineLimit(1)
         }
+        .onAppear { if geometry.size.width < 580 { localVisible = false } }
         .controlSize(.small).padding(12).frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
         }
-        .onAppear { pathInput = model.path; model.startIfNeeded() }
-        .onChange(of: model.path) { _, path in pathInput = path; selection = [] }
+        .onAppear { pathInput = model.path; model.refreshLocal(); model.startIfNeeded() }
+        .onChange(of: model.localPath) { _, _ in store.saveWorkspace() }
+        .onChange(of: model.path) { _, path in pathInput = path; selection = []; store.saveWorkspace() }
         .onChange(of: model.connected) { _, connected in
             if connected && !recorded { store.recordConnection(model.entry, kind: .sftp); recorded = true }
         }
+        .alert("Переименовать", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("Новое имя", text: $renameName)
+            Button("Отмена", role: .cancel) { renaming = nil }
+            Button("Сохранить") { if let entry = renaming { model.rename(entry, to: renameName) }; renaming = nil }.disabled(!SFTPConnection.validName(renameName))
+        }
+        .confirmationDialog("Удалить выбранные объекты с сервера?", isPresented: $deleting, titleVisibility: .visible) {
+            Button("Удалить безвозвратно", role: .destructive) { model.delete(selectedEntries) }
+            Button("Отмена", role: .cancel) {}
+        } message: { Text("Папки будут удалены вместе с содержимым. Объектов: \(selectedEntries.count).") }
         .alert("Новая папка", isPresented: $folderPrompt) {
             TextField("Название папки", text: $folderName)
             Button("Создать") { model.newFolder(folderName) }.disabled(!SFTPConnection.validName(folderName))

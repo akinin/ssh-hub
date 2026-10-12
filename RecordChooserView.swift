@@ -33,7 +33,10 @@ struct RecordChooserView: View {
         if let kind { RecordEditorView(kind: kind, back: { self.kind = nil }).environmentObject(store) }
         else {
             VStack(spacing: 0) {
-                HStack { Text("Новая запись").font(.title2).bold(); Spacer() }.padding(20)
+                HStack {
+                    Text("Новая запись").font(.title2).bold(); Spacer()
+                    Button("Из шаблона…", systemImage: "square.stack") { dismiss(); DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { store.showingTemplates = true } }
+                }.padding(20)
                 Divider()
                 HStack(spacing: 0) {
                     VStack(spacing: 4) {

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 
 private final class TreeItem: NSObject {
     let node: ConnectionTreeNode
@@ -47,6 +48,7 @@ struct ConnectionTreeView: NSViewRepresentable {
     @MainActor final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
         let store: AliasStore
         weak var outline: NSOutlineView?
+        private var availabilitySubscription: AnyCancellable?
         private var roots: [TreeItem] = []
         private var updating = false
         private var contextItem: TreeItem?
@@ -55,7 +57,11 @@ struct ConnectionTreeView: NSViewRepresentable {
             get { Set((try? JSONDecoder().decode([String].self, from: UserDefaults.standard.data(forKey: "collapsedFolders.v1") ?? Data())) ?? []) }
             set { UserDefaults.standard.set(try? JSONEncoder().encode(Array(newValue).sorted()), forKey: "collapsedFolders.v1") }
         }
-        init(store: AliasStore) { self.store = store }
+        init(store: AliasStore) {
+            self.store = store
+            super.init()
+            availabilitySubscription = store.availability.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.refresh() } }
+        }
         func refresh() {
             guard let outline else { return }
             let selectedID = (outline.item(atRow: outline.selectedRow) as? TreeItem)?.node.id
@@ -99,7 +105,16 @@ struct ConnectionTreeView: NSViewRepresentable {
                 icon.contentTintColor = appearance.logo == nil ? .systemYellow : nil
                 cell.toolTip = String(item.node.id.dropFirst("folder:".count))
             }
-            let stack = NSStackView(views: [icon, text]); stack.orientation = .horizontal; stack.spacing = 7; stack.alignment = .centerY
+            var views: [NSView] = [icon, text]
+            if let entry = item.node.entry, store.availability.selected.contains(entry.favoriteID) {
+                let status = NSImageView(); status.image = NSImage(systemSymbolName: "circle.fill", accessibilityDescription: "Доступность TCP")
+                status.contentTintColor = store.availability.results[entry.favoriteID].map { $0.reachable ? NSColor.systemGreen : NSColor.systemOrange } ?? .secondaryLabelColor
+                status.toolTip = store.availability.results[entry.favoriteID]?.detail ?? "Проверка…"
+                status.translatesAutoresizingMaskIntoConstraints = false
+                status.widthAnchor.constraint(equalToConstant: 7).isActive = true; status.heightAnchor.constraint(equalToConstant: 7).isActive = true
+                views.append(status)
+            }
+            let stack = NSStackView(views: views); stack.orientation = .horizontal; stack.spacing = 7; stack.alignment = .centerY
             stack.translatesAutoresizingMaskIntoConstraints = false; icon.translatesAutoresizingMaskIntoConstraints = false
             cell.addSubview(stack); cell.imageView = icon; cell.textField = text
             NSLayoutConstraint.activate([icon.widthAnchor.constraint(equalToConstant: 16), icon.heightAnchor.constraint(equalToConstant: 16),
@@ -140,6 +155,7 @@ struct ConnectionTreeView: NSViewRepresentable {
                     add("Панель управления", "dashboard")
                     menu.addItem(.separator()); add("Документация", "documentation"); add("Вложения", "attachments"); add("Редактировать…", "edit"); add("Название и логотип…", "appearance"); add("Переместить в папку…", "group")
                     add(store.isFavorite(entry) ? "Убрать из избранного" : "В избранное", "favorite")
+                    if entry.canSSH { add("Сохранить как шаблон", "template") }
                     add("Дублировать…", "duplicate"); if entry.canSSH { add("Копировать команду", "copy") }; add("Экспорт…", "export")
                     menu.addItem(.separator()); add("Удалить…", "delete")
                 } else { add("Логотип папки…", "folderLogo"); add("Вложенная папка…", "subfolder") }
@@ -163,6 +179,7 @@ struct ConnectionTreeView: NSViewRepresentable {
                 case "appearance": store.stylingAlias = entry
                 case "group": store.groupingAlias = entry
                 case "favorite": store.toggleFavorite(entry)
+                case "template": store.saveTemplate(from: entry)
                 case "duplicate": store.duplicate(entry)
                 case "copy": store.copy(entry.command)
                 case "export": store.export(entries: [entry])

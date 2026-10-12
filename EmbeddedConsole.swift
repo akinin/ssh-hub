@@ -23,6 +23,22 @@ final class ConsoleTerminalDelegate: TerminalViewDelegate {
 }
 
 final class HubTerminalView: LocalProcessTerminalView {
+    var onOutput: ((Data) -> Void)?
+    var onShortcut: ((Int) -> Void)?
+    var onFind: (() -> Void)?
+    var onZoom: ((Double) -> Void)?
+    override func dataReceived(slice: ArraySlice<UInt8>) { onOutput?(Data(slice)); super.dataReceived(slice: slice) }
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if modifiers == [.command, .option], let text = event.charactersIgnoringModifiers, let number = Int(text), (1...9).contains(number) { onShortcut?(number); return true }
+        if modifiers == .command, let key = event.charactersIgnoringModifiers {
+            if key == "f" { onFind?(); return true }
+            if key == "+" || key == "=" { onZoom?(0.1); return true }
+            if key == "-" { onZoom?(-0.1); return true }
+            if key == "0" { onZoom?(0); return true }
+        }
+        return super.performKeyEquivalent(with: event)
+    }
     override func menu(for event: NSEvent) -> NSMenu? { consoleMenu() }
     override func rightMouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
@@ -39,7 +55,7 @@ final class HubTerminalView: LocalProcessTerminalView {
 }
 
 @MainActor final class ConsoleSession: NSObject, ObservableObject, Identifiable, LocalProcessTerminalViewDelegate {
-    let id = UUID()
+    let id: UUID
     let entry: SSHAlias
     @Published var title: String
     let config: URL
@@ -48,19 +64,69 @@ final class HubTerminalView: LocalProcessTerminalView {
     private(set) var view: LocalProcessTerminalView?
     private var bridge: ConsoleTerminalDelegate?
     private var login: SSHLoginServer?
-    init(entry: SSHAlias, title: String, config: URL) { self.entry = entry; self.title = title; self.config = config }
+    @Published var awaitingConnection = false
+    @Published var zoom = 1.0
+    @Published var showSearch = false
+    @Published var recording = false
+    @Published var loggingError: String?
+    private var outputLog: SessionOutputLog?
+    private var diagnosticTail = Data()
+    private var event: SessionEvent?
+    func resume() { awaitingConnection = false; objectWillChange.send() }
+    func changeZoom(_ delta: Double) { zoom = delta == 0 ? 1 : min(3, max(0.5, zoom + delta)); if let view { ConsolePreferences.shared.apply(to: view, zoom: zoom) } }
+    func execute(_ command: SavedConsoleCommand) {
+        guard !awaitingConnection, !finished, let terminal = view else { return }
+        do {
+            let value = try SavedCommandsRepository().load(entry.favoriteID)
+            let input = try value.input(for: command, entry: entry)
+            ConsoleStore.shared.selected = id; terminal.window?.makeFirstResponder(terminal)
+            terminal.send(data: Array(input)[...])
+        } catch { loggingError = error.localizedDescription }
+    }
+    func toggleRecording() {
+        if recording { outputLog?.close(); outputLog = nil; recording = false; return }
+        do {
+            let output = try SessionOutputLog(id: id); outputLog = output; recording = true
+            event?.logName = output.url.lastPathComponent; if let event { SessionJournal.shared.update(event) }
+        } catch { loggingError = error.localizedDescription }
+    }
+    func received(_ data: Data) {
+        diagnosticTail.append(data); if diagnosticTail.count > 65536 { diagnosticTail.removeFirst(diagnosticTail.count - 65536) }
+        if let outputLog {
+            do { try outputLog.append(data) }
+            catch { self.outputLog?.close(); self.outputLog = nil; recording = false; loggingError = error.localizedDescription }
+        }
+    }
+    private func finishEvent() {
+        outputLog?.close(); outputLog = nil; recording = false
+        event?.ended = Date(); event?.result = status
+        if let event { SessionJournal.shared.update(event) }
+    }
+    init(entry: SSHAlias, title: String, config: URL, id: UUID = UUID(), restored: Bool = false) {
+        self.entry = entry; self.title = title; self.config = config; self.id = id
+        awaitingConnection = restored
+        if restored { status = "Восстановленная вкладка · подключение по кнопке" }
+    }
     func terminal() -> LocalProcessTerminalView {
         if let view { return view }
         let terminal = HubTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 460))
-        terminal.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        terminal.nativeBackgroundColor = NSColor(srgbRed: 0.055, green: 0.065, blue: 0.08, alpha: 1)
-        terminal.nativeForegroundColor = NSColor(srgbRed: 0.88, green: 0.90, blue: 0.93, alpha: 1)
+        ConsolePreferences.shared.apply(to: terminal, zoom: zoom)
+        terminal.onOutput = { [weak self] data in self?.received(data) }
+        terminal.onFind = { [weak self] in self?.showSearch = true }
+        terminal.onZoom = { [weak self] delta in self?.changeZoom(delta) }
+        terminal.onShortcut = { [weak self] number in
+            guard let self, let value = try? SavedCommandsRepository().load(self.entry.favoriteID),
+                  let command = value.commands.first(where: { $0.shortcut == number }) else { return }
+            self.execute(command)
+        }
+        event = SessionEvent(id: id, key: entry.favoriteID, title: title, started: Date(), result: "Запуск сеанса")
+        if let event { SessionJournal.shared.update(event) }
         terminal.processDelegate = self
         let bridge = ConsoleTerminalDelegate(); bridge.view = terminal; terminal.terminalDelegate = bridge
         self.bridge = bridge; view = terminal
         let launch: ConsoleLaunch
         if entry.recordKind == .serial {
-            guard let helper = Bundle.main.url(forAuxiliaryExecutable: "SSHSerial"), let settings = entry.serial, settings.validation == nil else { status = "Некорректные параметры serial port"; finished = true; return terminal }
+            guard let helper = Bundle.main.url(forAuxiliaryExecutable: "SSHSerial"), let settings = entry.serial, settings.validation == nil else { status = "Некорректные параметры serial port"; finished = true; finishEvent(); return terminal }
             launch = ConsoleLaunch(executable: helper.path, arguments: settings.arguments)
         } else { launch = ConsoleLaunch.ssh(entry, config: config) }
         var environment = launch.environment
@@ -76,10 +142,10 @@ final class HubTerminalView: LocalProcessTerminalView {
         terminal.startProcess(executable: launch.executable, args: launch.arguments,
                               environment: environment.map { "\($0.key)=\($0.value)" }, currentDirectory: NSHomeDirectory())
         if terminal.process.running { status = entry.recordKind == .serial ? "Serial · " + (entry.serial?.summary ?? "") : "SSH · \(entry.user)@\(entry.host)" }
-        else { status = "Не удалось запустить подключение"; finished = true; login?.stop(); login = nil }
+        else { status = "Не удалось запустить подключение"; finished = true; login?.stop(); login = nil; finishEvent() }
         return terminal
     }
-    func disconnect() { login?.stop(); login = nil; if let view { ConsoleProcess.stop(view.process) }; finished = true; status = "Отключено" }
+    func disconnect() { guard !finished else { return }; login?.stop(); login = nil; if let view { ConsoleProcess.stop(view.process) }; finished = true; status = "Отключено пользователем"; finishEvent() }
     nonisolated func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
     nonisolated func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
     nonisolated func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
@@ -88,7 +154,12 @@ final class HubTerminalView: LocalProcessTerminalView {
             guard let self else { return }
             self.login?.stop(); self.login = nil; self.finished = true
             let code = ConsoleProcess.exitCode(fromWaitStatus: exitCode)
-            self.status = code == 0 ? "Сеанс завершён" : "Сеанс завершён · код \(code.map(String.init) ?? "—")"
+            if code == 0 { self.status = "Сеанс завершён" }
+            else if self.entry.canSSH {
+                let result = ConnectionResult.classify(status: code ?? 255, log: String(decoding: self.diagnosticTail, as: UTF8.self))
+                self.status = result.title + " · " + result.detail
+            } else { self.status = "Serial завершён · код \(code.map(String.init) ?? "—")" }
+            self.finishEvent()
         }
     }
 }
@@ -101,7 +172,7 @@ final class HubTerminalView: LocalProcessTerminalView {
     var onReplacement: ((UUID, UUID) -> Void)?
     @Published var selected: UUID? { didSet { if oldValue != selected, let active { onSelection?(active) } } }
     var active: ConsoleSession? { sessions.first { $0.id == selected } }
-    var hasSessions: Bool { sessions.contains { !$0.finished } }
+    var hasSessions: Bool { sessions.contains { !$0.finished && !$0.awaitingConnection } }
     func connect(_ entry: SSHAlias, title: String, config: URL, newSession: Bool = false) {
         if !newSession, let existing = sessions.first(where: { $0.entry.favoriteID == entry.favoriteID && !$0.finished }) { selected = existing.id; return }
         let session = ConsoleSession(entry: entry, title: title, config: config)
@@ -162,23 +233,81 @@ struct ConsolePane: View {
     @ObservedObject var session: ConsoleSession
     @ObservedObject private var consoles = ConsoleStore.shared
     @EnvironmentObject var store: AliasStore
+    @ObservedObject private var preferences = ConsolePreferences.shared
+    @State private var search = ""
+    @State private var matchCase = false
+    @State private var matchFound = true
+    @State private var appearance = false
+    @FocusState private var searchFocused: Bool
     var body: some View {
         VStack(spacing: 0) {
+            ViewThatFits(in: .horizontal) { toolbar(compact: false); toolbar(compact: true) }
+                .padding(.horizontal, 10).padding(.vertical, 8).background(.bar)
+            if session.showSearch {
+                HStack {
+                    TextField("Найти в выводе", text: $search).focused($searchFocused).textFieldStyle(.roundedBorder).onSubmit { find(next: true) }
+                    Toggle("Аа", isOn: $matchCase).toggleStyle(.button).help("Учитывать регистр")
+                    if !matchFound { Text("Нет совпадений").font(.caption).foregroundStyle(.secondary) }
+                    Button { find(next: false) } label: { Image(systemName: "chevron.up") }
+                    Button { find(next: true) } label: { Image(systemName: "chevron.down") }
+                    Button { session.showSearch = false; session.view?.clearSearch() } label: { Image(systemName: "xmark") }
+                }.controlSize(.small).padding(8)
+            }
+            if session.awaitingConnection {
+                VStack(spacing: 16) {
+                    Label("Вкладка восстановлена", systemImage: "terminal").font(.headline)
+                    Text("\(session.entry.user)@\(session.entry.host)").foregroundStyle(.secondary)
+                    Button("Подключиться") { session.resume() }.buttonStyle(.borderedProminent)
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                EmbeddedTerminalView(session: session, isActive: consoles.selected == session.id).id(session.id).frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            if session.recording { Text("● Вывод записывается локально. Он может содержать секреты сервера.").font(.caption).foregroundStyle(.red).padding(4) }
+            if let error = session.loggingError { Text(error).font(.caption).foregroundStyle(.red).padding(4) }
+            Divider()
+            ConsoleCommandBar(entry: session.entry, session: session, workspace: store.savedCommands)
+        }
+        .onReceive(preferences.objectWillChange) { _ in DispatchQueue.main.async { if let view = session.view { preferences.apply(to: view, zoom: session.zoom) } } }
+        .onChange(of: search) { _, _ in find(next: true) }
+        .onChange(of: matchCase) { _, _ in session.view?.clearSearch(); find(next: true) }
+        .onChange(of: session.showSearch) { _, value in searchFocused = value }
+        .onChange(of: session.zoom) { _, _ in store.saveWorkspace() }
+    }
+    private func toolbar(compact: Bool) -> some View {
             HStack(spacing: 10) {
-                Circle().fill(session.finished ? Color.secondary : Color.green).frame(width: 6, height: 6)
+                Circle().fill(session.finished || session.awaitingConnection ? Color.secondary : Color.green).frame(width: 6, height: 6)
                 Text(session.status).font(.system(size: 11)).lineLimit(1)
                 Spacer()
+                Button { session.showSearch.toggle() } label: { Image(systemName: "magnifyingglass") }.help("Поиск по выводу · ⌘F")
+                if compact {
+                    Menu {
+                        Button("Шрифт и цвета…") { appearance = true }
+                        Button("Увеличить масштаб") { session.changeZoom(0.1) }
+                        Button("Уменьшить масштаб") { session.changeZoom(-0.1) }
+                        Button("Сбросить масштаб") { session.changeZoom(0) }
+                        Button(session.recording ? "Остановить запись вывода" : "Записывать вывод") { session.toggleRecording() }.disabled(session.awaitingConnection || session.finished)
+                        Button("Дублировать SSH-сеанс") { consoles.connect(session.entry, title: session.title, config: session.config, newSession: true) }.disabled(session.entry.recordKind == .serial)
+                    } label: { Image(systemName: "ellipsis.circle") }.menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 24)
+                } else {
+                Button { appearance.toggle() } label: { Image(systemName: "textformat.size") }.help("Шрифт и цвета")
+                Button { session.changeZoom(-0.1) } label: { Image(systemName: "minus.magnifyingglass") }.help("Уменьшить масштаб · ⌘−")
+                Button("\(Int(session.zoom * 100))%") { session.changeZoom(0) }.help("Сбросить масштаб · ⌘0")
+                Button { session.changeZoom(0.1) } label: { Image(systemName: "plus.magnifyingglass") }.help("Увеличить масштаб · ⌘+")
+                Button { session.toggleRecording() } label: { Image(systemName: session.recording ? "record.circle.fill" : "record.circle").foregroundStyle(session.recording ? Color.red : Color.primary) }.help("Сохранять вывод сеанса в журнал (до 50 МБ)").disabled(session.awaitingConnection || session.finished)
                 Button("Дублировать", systemImage: "plus.square.on.square") { consoles.connect(session.entry, title: session.title, config: session.config, newSession: true) }.labelStyle(.iconOnly).help("Дублировать SSH-сеанс").disabled(session.entry.recordKind == .serial)
+                }
                 if session.finished {
                     Button("Подключиться снова", systemImage: "arrow.clockwise") { store.connect(session.entry, newSession: true) }.labelStyle(.iconOnly).help("Подключиться снова")
                 } else {
                     Button("Отключиться", systemImage: "stop.circle") { session.disconnect() }.labelStyle(.iconOnly).help("Отключиться")
                 }
-            }.controlSize(.small).padding(.horizontal, 12).padding(.vertical, 8).background(.bar)
-            EmbeddedTerminalView(session: session, isActive: consoles.selected == session.id).id(session.id).frame(maxWidth: .infinity, maxHeight: .infinity)
-            Divider()
-            ConsoleCommandBar(entry: session.entry, session: session, workspace: store.savedCommands)
-        }
+            }.controlSize(.small).popover(isPresented: $appearance) { ConsolePreferencesView() }
+    }
+    private func find(next: Bool) {
+        guard let terminal = session.view else { return }
+        if search.isEmpty { terminal.clearSearch(); matchFound = true; return }
+        let options = SearchOptions(caseSensitive: matchCase)
+        matchFound = next ? terminal.findNext(search, options: options) : terminal.findPrevious(search, options: options)
     }
 }
 
@@ -203,7 +332,7 @@ struct ConsoleTab: View {
                 Button("Закрыть", systemImage: "xmark") { consoles.close(session) }
                 Button("Закрыть все вкладки", systemImage: "xmark.square") { store.closeAllTabs() }
                 Button("Закрыть другие вкладки") { store.keepConsole(session) }.disabled(consoles.sessions.count + store.pages.count < 2)
-                Button("Закрыть вкладки справа") { consoles.closeRight(of: session) }.disabled(consoles.sessions.last?.id == session.id)
+                Button("Закрыть вкладки справа") { store.closeTabsRight(of: .console(session.id)) }.disabled(store.workspace.pane(for: .console(session.id)).map { store.workspace.tabs(in: $0).last == .console(session.id) } ?? true)
                 Divider()
                 Button("Показать в дереве", systemImage: "sidebar.left") { store.reveal(entry) }
                 Button("Панель управления", systemImage: "gauge.with.dots.needle.50percent") { store.showDashboard(entry) }
@@ -228,6 +357,8 @@ struct ConsoleTab: View {
                 Button("Сохранить") { session.title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines) }
                     .disabled(newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || newTitle.count > 80 || newTitle.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }))
             } message: { Text("Имя записи и SSH-алиас останутся прежними.") }
+            .modifier(WorkspaceTabDrag(tab: .console(session.id)))
+            .onChange(of: session.title) { _, _ in store.saveWorkspace() }
             .help(session.entry.recordKind == .serial ? session.title + " · " + (session.entry.serial?.summary ?? "Serial") : "\(session.title) · \(session.entry.user)@\(session.entry.host):\(session.entry.port)")
             .foregroundStyle(session.finished ? .secondary : .primary)
             .background(store.workspace.selection(in: store.workspace.pane(for: .console(session.id)) ?? .primary) == .console(session.id) ? Color.accentColor.opacity(0.17) : Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 5))

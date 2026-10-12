@@ -71,6 +71,37 @@ import Darwin
         check(!(try! FileManager.default.contentsOfDirectory(atPath: local.path)).contains { $0.hasPrefix(".ssh-hub-") }, "directory staging cleaned")
         connection.prepareTransfer()
         check(try! connection.realpath(folder) == folder, "connection remains usable after cancellation")
+        let renamed = remote + "/renamed.bin"
+        try connection.renameEntry(in: remote, name: name, to: "renamed.bin")
+        check(try! connection.attributes(renamed).size == UInt64(payload.count), "remote rename preserves bytes")
+        rejects("rename collision") { try connection.renameEntry(in: remote, name: "renamed.bin", to: "empty") }
+        check(try! connection.attributes(renamed).size == UInt64(payload.count), "failed rename preserves original")
+        rejects("rename traversal") { try connection.renameEntry(in: remote, name: "renamed.bin", to: "../outside") }
+        let retryTree = local.appendingPathComponent("retry-source")
+        try FileManager.default.createDirectory(at: retryTree.appendingPathComponent("nested"), withIntermediateDirectories: true)
+        try payload.write(to: retryTree.appendingPathComponent("nested/large.bin"))
+        let recovery = SFTPUploadRecovery(), retryRemote = remote + "/retry-tree"
+        connection.prepareTransfer()
+        rejects("recoverable upload interruption") {
+            try connection.uploadRecovering(retryTree, to: retryRemote, recovery: recovery) { state in if state.completed > 0 { connection.cancelTransfer() } }
+        }
+        connection.prepareTransfer()
+        try connection.uploadRecovering(retryTree, to: retryRemote, recovery: recovery) { _ in }
+        let retryDownload = local.appendingPathComponent("retry-download")
+        try connection.downloadTree(retryRemote, to: retryDownload) { _ in }
+        check(try! Data(contentsOf: retryDownload.appendingPathComponent("nested/large.bin")) == payload, "retry resumes own partial directories with exact file bytes")
+        try connection.uploadRecovering(retryTree, to: retryRemote, recovery: recovery) { _ in }
+        try Data("changed".utf8).write(to: retryTree.appendingPathComponent("nested/large.bin"))
+        rejects("retry cannot silently skip changed source") { try connection.uploadRecovering(retryTree, to: retryRemote, recovery: recovery) { _ in } }
+        let remoteLink = URL(fileURLWithPath: remote).appendingPathComponent("delete-link")
+        try FileManager.default.createSymbolicLink(at: remoteLink, withDestinationURL: retryDownload)
+        try connection.deleteTree(remoteLink.path)
+        check(FileManager.default.fileExists(atPath: retryDownload.appendingPathComponent("nested/large.bin").path), "deleting link never traverses destination")
+        try connection.deleteTree(retryRemote)
+        rejects("recursive delete removes directory") { _ = try connection.attributes(retryRemote) }
+        try connection.deleteTree(renamed)
+        rejects("file delete") { _ = try connection.attributes(renamed) }
+
     }
     static func main() throws {
         if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "--ssh" {

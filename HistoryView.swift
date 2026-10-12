@@ -1,8 +1,11 @@
 import SwiftUI
+import AppKit
 
 struct HistoryView: View {
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var journal = SessionJournal.shared
+    @State private var showSessions = false
     @State private var confirmingClear = false
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -11,6 +14,27 @@ struct HistoryView: View {
                 Spacer()
                 Button("Очистить", systemImage: "trash") { confirmingClear = true }.disabled(store.history.isEmpty)
             }
+            Picker("Раздел", selection: $showSessions) { Text("Подключения").tag(false); Text("Сеансы и сохранённый вывод").tag(true) }.pickerStyle(.segmented)
+            if showSessions {
+                List(journal.events.reversed()) { event in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(event.title).font(.headline)
+                            Text(event.started.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                            Text(event.ended == nil ? "Сеанс открыт или приложение было закрыто до записи результата" : event.result).font(.caption).textSelection(.enabled)
+                        }
+                        Spacer()
+                        if let name = event.logName, let url = journal.logURL(name), FileManager.default.fileExists(atPath: url.path) {
+                            Button("Вывод") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                            Button("Сохранить…") {
+                                let panel = NSSavePanel(); panel.nameFieldStringValue = event.title.replacingOccurrences(of: "/", with: "-") + ".log"
+                                if panel.runModal() == .OK, let destination = panel.url { do { try Data(contentsOf: url).write(to: destination, options: .atomic); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path) } catch { store.error = error.localizedDescription } }
+                            }
+                        }
+                    }.padding(.vertical, 4)
+                }
+                Text("До 200 сеансов. Запись вывода включается кнопкой ● в консоли; файлы хранятся локально и могут содержать секреты сервера.").font(.caption).foregroundStyle(.secondary)
+            } else {
             Text("Последние запуски SSH и SFTP. Запись означает открытие терминала, а не успешную авторизацию на сервере.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if store.history.isEmpty {
@@ -37,6 +61,7 @@ struct HistoryView: View {
                             .help("Показать алиас в приложении").disabled(store.alias(for: record) == nil)
                     }.padding(.vertical, 5)
                 }.listStyle(.inset)
+            }
             }
             HStack {
                 Text("До 50 записей. Повторный запуск поднимает подключение вверх.")
