@@ -6,6 +6,26 @@ import Network
     static func check(_ value: @autoclosure () -> Bool, _ message: String) { if !value() { fatalError(message) } }
     static func rejects(_ message: String, _ action: () throws -> Void) { do { try action(); fatalError("Expected rejection: " + message) } catch {} }
     static func main() async throws {
+        var profiles = HubProfiles(); profiles.discover(["existing"])
+        check(profiles.contains("existing") && !profiles.contains("existing", in: HubProfiles.workID), "existing records migrate to Home only")
+        let lab = try profiles.add("Lab"); try profiles.rename(lab, name: "Servers")
+        profiles.assign("existing", to: lab, enabled: true); profiles.active = lab; profiles.discover(["new"])
+        check(profiles.contains("new") && !profiles.contains("new", in: HubProfiles.homeID), "new records belong to the selected profile")
+        let decodedProfiles = try JSONDecoder().decode(HubProfiles.self, from: JSONEncoder().encode(profiles))
+        check(decodedProfiles == profiles && profiles.valid, "profile persistence and shared membership")
+        profiles.remove(lab)
+        check(profiles.contains("new", in: HubProfiles.homeID) && profiles.contains("existing", in: HubProfiles.homeID), "deleting profile preserves orphaned records")
+        profiles.remove(HubProfiles.workID); profiles.remove(HubProfiles.homeID)
+        check(profiles.profiles.count == 1, "cannot delete the last profile")
+        check(WorkspaceTabStyle(pinned: true, name: "Console", color: "green").valid && !WorkspaceTabStyle(name: "bad\nname").valid, "tab appearance validation")
+        var legacySettings = ConnectionSettings(); legacySettings.rdpClipboard = nil
+        let legacyJSON = try JSONEncoder().encode(legacySettings)
+        let settings = try JSONDecoder().decode(ConnectionSettings.self, from: legacyJSON)
+        check(settings.rdpMonitors == nil && settings.tunnel == nil && settings.validation == nil, "old transport settings read without new fields")
+        var monitors = settings; monitors.rdpMonitors = 4; monitors.width = 3840
+        check(monitors.validation != nil, "monitor framebuffer bound")
+        monitors.width = Int.max; monitors.height = Int.max
+        check(monitors.validation != nil, "untrusted dimensions reject before multiplication")
         let a = WorkspaceTab.page(UUID()), b = WorkspaceTab.console(UUID()), c = WorkspaceTab.page(UUID())
         var layout = WorkspaceLayout(); layout.select(a); layout.select(b); layout.select(c)
         layout.insert(c, in: .primary, before: a)
@@ -131,6 +151,16 @@ import Network
         check(afterFailure == currentRecords, "failed restore leaves record manifest unchanged")
         let failedEntry = failureBackup.records[0].record.entry(config: configURL, privateConfig: repository.privateConfig(failureBackup.records[0].id))
         check(!FileManager.default.fileExists(atPath: docs.url(for: failedEntry.favoriteID).path) && !FileManager.default.fileExists(atPath: saved.file(failedEntry.favoriteID).path) && !FileManager.default.fileExists(atPath: attachments.folder(failedEntry.favoriteID).path), "failed restore removes only its staged materials")
+        var routedBackup = decrypted
+        var gatewayRecord = routedBackup.records[0]; gatewayRecord.record.id = UUID(); gatewayRecord.record.kind = .ssh; gatewayRecord.record.host = "gateway.example"; gatewayRecord.record.user = "fixture"; gatewayRecord.record.port = "22"; gatewayRecord.record.serial = nil; gatewayRecord.record.title = "Gateway"
+        var desktopRecord = gatewayRecord; desktopRecord.record.id = UUID(); desktopRecord.record.kind = .rdp; desktopRecord.record.port = "3389"; desktopRecord.record.host = "desktop.example"; desktopRecord.record.transport = ConnectionSettings(); desktopRecord.record.transport?.tunnel = RecordTunnelSettings(sshID: "original-gateway"); desktopRecord.tunnelGatewayID = gatewayRecord.id
+        routedBackup.records = [gatewayRecord, desktopRecord]
+        let routed = try BackupRestoration.install(routedBackup, selected: [gatewayRecord.id,desktopRecord.id], localRepository: repository, documents: docs, commands: saved, attachments: attachments, templates: templates, writeTemplates: { templates = $0 })
+        check(routed[1].1.transport?.tunnel?.sshID == routed[0].1.favoriteID, "backup restores route to the restored SSH gateway")
+        let routedCopies = try BackupRestoration.install(routedBackup, selected: [gatewayRecord.id,desktopRecord.id], localRepository: repository, documents: docs, commands: saved, attachments: attachments, templates: templates, writeTemplates: { templates = $0 })
+        check(routedCopies[0].1.favoriteID != routed[0].1.favoriteID && routedCopies[1].1.transport?.tunnel?.sshID == routedCopies[0].1.favoriteID, "ID conflicts remap gateway references to the correct new copy")
+        let missingGateway = try BackupRestoration.install(routedBackup, selected: [desktopRecord.id], localRepository: repository, documents: docs, commands: saved, attachments: attachments, templates: templates, writeTemplates: { templates = $0 })
+        check(missingGateway[0].1.transport?.tunnel?.sshID.hasPrefix("missing:") == true, "unselected gateway cannot silently reuse another server or bypass tunnel")
         let logID = UUID(), logRoot = root.appendingPathComponent("logs")
         let logger = try SessionOutputLog(id: logID, root: logRoot)
         try logger.append(Data("output-one\n".utf8)); logger.close()

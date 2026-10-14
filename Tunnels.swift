@@ -64,12 +64,12 @@ struct TunnelReport {
 }
 
 enum TunnelCommands {
-    static func temporaryConfig(original: URL, directory: URL) throws -> URL {
+    static func temporaryConfig(original: URL, directory: URL, interactive: Bool = false) throws -> URL {
         // The prepended defaults also apply to the SSH processes used by ProxyJump.
         let text = """
         Host *
-            BatchMode yes
-            StrictHostKeyChecking yes
+            BatchMode \(interactive ? "no" : "yes")
+            StrictHostKeyChecking \(interactive ? "ask" : "yes")
             UpdateHostKeys no
             ControlMaster no
             ControlPath none
@@ -147,7 +147,7 @@ final class TunnelSession: @unchecked Sendable {
     }
     func run(profile: TunnelProfile, alias: String, config: URL,
              executable: URL = URL(fileURLWithPath: "/usr/bin/ssh"), timeout: TimeInterval = 35,
-             root: URL = URL(fileURLWithPath: "/private/tmp"), update: (TunnelReport) -> Void) -> TunnelReport {
+             root: URL = URL(fileURLWithPath: "/private/tmp"), loginEnvironment: [String: String] = [:], update: (TunnelReport) -> Void) -> TunnelReport {
         if let error = profile.validation { return TunnelReport(phase: .failed, detail: error) }
         guard SSHConfig.matches(alias, "^[A-Za-z0-9_][A-Za-z0-9_.-]*$") else { return TunnelReport(phase: .failed, detail: "Для туннеля нужно обычное имя SSH-алиаса.") }
         let directory = root.appendingPathComponent("ssh-t-" + UUID().uuidString.prefix(12))
@@ -167,7 +167,7 @@ final class TunnelSession: @unchecked Sendable {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
             let socket = directory.appendingPathComponent("s")
             guard socket.path.utf8.count < 104 else { throw ConfigError.message("Слишком длинный путь к управляющему сокету.") }
-            let wrapper = try TunnelCommands.temporaryConfig(original: config, directory: directory)
+            let wrapper = try TunnelCommands.temporaryConfig(original: config, directory: directory, interactive: !loginEnvironment.isEmpty)
             reader = pipe.fileHandleForReading
             let fd = pipe.fileHandleForReading.fileDescriptor
             _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
@@ -176,6 +176,7 @@ final class TunnelSession: @unchecked Sendable {
             // Two processes share this writer, so pass the FileHandle explicitly.
             task.standardInput = FileHandle.nullDevice; task.standardOutput = pipe.fileHandleForWriting; task.standardError = pipe.fileHandleForWriting
             var environment = ProcessInfo.processInfo.environment; environment["SSH_ASKPASS_REQUIRE"] = "never"
+            environment.merge(loginEnvironment) { _, new in new }
             task.environment = environment
             try launch(task, asMaster: true)
             update(TunnelReport(phase: .starting))

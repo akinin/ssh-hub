@@ -51,7 +51,7 @@ struct QuickAccessView: View {
     @State private var error: String?
     @State private var copied = false
     private var entries: [SSHAlias] {
-        QuickAliasSearch.results(store.aliases, query: query, scope: scope, favorites: store.favorites, groups: store.groups, history: store.history, names: store.appearances.mapValues(\.name))
+        QuickAliasSearch.results(store.profileEntries, query: query, scope: scope, favorites: store.favorites, groups: store.groups, history: store.history, names: store.appearances.mapValues(\.name))
     }
     private var current: SSHAlias? { entries.first { $0.id == selected } ?? entries.first }
     var body: some View {

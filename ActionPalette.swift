@@ -16,6 +16,7 @@ struct ActionPalette: View {
     @FocusState private var focused: Bool
     private var actions: [PaletteAction] {
         var values: [PaletteAction] = [
+            PaletteAction(id: "profiles", title: "Профили", detail: "Наборы записей и рабочие области", icon: "person.crop.rectangle.stack", run: { store.showingProfiles = true }),
             PaletteAction(id: "new", title: "Новая запись", detail: "⌘N", icon: "plus", run: { store.creatingAlias = true }),
             PaletteAction(id: "templates", title: "Шаблоны записей", detail: "Proxmox, UniFi, Wiren Board и свои", icon: "square.stack", run: { store.showingTemplates = true }),
             PaletteAction(id: "commands", title: "Библиотека команд", detail: "Поиск, описания, свои команды и встроенные заготовки", icon: "books.vertical", run: { store.showingCommandLibrary = true }),
@@ -28,7 +29,7 @@ struct ActionPalette: View {
             PaletteAction(id: "single", title: "Одна панель", detail: "Рабочая область", icon: "rectangle", run: { store.arrangeWorkspace(.none) }),
             PaletteAction(id: "scanner", title: "Nmap", detail: "Открыть инструмент", icon: "network", run: { store.openScanner() })
         ]
-        for entry in store.ordered {
+        for entry in store.profileEntries {
             let title = store.title(entry), detail = [entry.name, entry.host, entry.user, store.group(entry)].joined(separator: " · ")
             func append(_ action: String, _ verb: String, _ icon: String, _ run: @escaping () -> Void) { values.append(PaletteAction(id: entry.favoriteID + ":" + action, title: verb + " · " + title, detail: detail, icon: icon, run: run)) }
             if entry.canConnect { append("connect", "Подключиться", "terminal") { store.connect(entry) } }

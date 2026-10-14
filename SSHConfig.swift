@@ -84,11 +84,26 @@ struct ConnectionSettings: Codable, Equatable {
     var height = 800
     var ftpsImplicit = false
     var certificateAuthority = ""
+    var tunnel: RecordTunnelSettings? = nil
+    var rdpClipboard: Bool? = nil
+    var rdpSharedFolder: String? = nil
+    var rdpMonitors: Int? = nil
+    var rdpAutoResize: Bool? = nil
     var validation: String? {
+        guard (320...3840).contains(width), (200...2160).contains(height) else { return "Проверь размер рабочего стола." }
+        if let tunnel, let error = tunnel.validation { return error }
+        let monitors = rdpMonitors ?? 1
+        guard (1...4).contains(monitors), width * monitors <= 8192, width * height * monitors <= 33_000_000,
+              rdpSharedFolder.map({ $0.isEmpty || ($0.hasPrefix("/") && $0.utf8.count <= 4096 && !$0.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })) }) ?? true else { return "Проверь число мониторов, разрешение и общую папку RDP (до 8192 пикселей по ширине и 33 Мп)." }
         let fields = [domain, path, shell, workingDirectory, device, container, namespace, context, containerShell, certificateAuthority]
-        guard fields.allSatisfy({ $0.utf8.count <= 4096 && !$0.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) }), (320...3840).contains(width), (200...2160).contains(height) else { return "Проверь параметры подключения и размер рабочего стола." }
+        guard fields.allSatisfy({ $0.utf8.count <= 4096 && !$0.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) }) else { return "Проверь параметры подключения и размер рабочего стола." }
         return nil
     }
+}
+
+struct RecordTunnelSettings: Codable, Equatable {
+    var sshID: String
+    var validation: String? { sshID.isEmpty || sshID.utf8.count > 4096 || sshID.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) ? "Выбери SSH-запись для туннеля." : nil }
 }
 
 struct SSHSnapshot {

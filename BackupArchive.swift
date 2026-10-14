@@ -16,6 +16,8 @@ struct BackupRecord: Codable, Identifiable {
     var commands: SavedCommandSet
     var document: ConnectionDocument
     var attachments: [BackupAttachment]
+    var profileIDs: [UUID]? = nil
+    var tunnelGatewayID: UUID? = nil
 }
 struct HubBackup: Codable {
     var version = 1
@@ -25,9 +27,15 @@ struct HubBackup: Codable {
     var folderAppearances: [String: ConnectionAppearance]
     var templates: [RecordTemplate]
     var commandLibrary: [SavedConsoleCommand]? = nil
+    var profiles: [HubProfile]? = nil
     static let maximumBytes = 350_000_000
     func validate() throws {
         try CommandCatalog.validate(commandLibrary ?? [])
+        if let profiles {
+            guard profiles.count <= 50, Set(profiles.map(\.id)).count == profiles.count, profiles.allSatisfy({ HubProfiles.validName($0.name) }), Set(profiles.map { $0.name.lowercased() }).count == profiles.count else { throw ConfigError.message("Некорректные профили архива.") }
+            let valid = Set(profiles.map(\.id))
+            guard records.allSatisfy({ Set($0.profileIDs ?? []).isSubset(of: valid) }) else { throw ConfigError.message("Неизвестный профиль записи в архиве.") }
+        }
         guard version == 1, records.count <= 1000, Set(records.map(\.id)).count == records.count,
               folders.count <= 1000, folders.allSatisfy(ConnectionTree.validPath),
               folderAppearances.count <= 1000, folderAppearances.allSatisfy({ ConnectionTree.validPath($0.key) && $0.value.validation == nil }),

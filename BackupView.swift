@@ -5,9 +5,11 @@ import UniformTypeIdentifiers
 extension AliasStore {
     func captureBackup() throws -> HubBackup {
         var records: [BackupRecord] = []
+        let exportIDs = Dictionary(uniqueKeysWithValues: ordered.map { ($0.favoriteID, $0.localID ?? UUID()) })
         var bytes = 0
         for entry in ordered {
             var record = localRecords.first(where: { $0.id == entry.localID }) ?? LocalConnectionRecord()
+            record.id = exportIDs[entry.favoriteID]!
             record.kind = entry.recordKind ?? .ssh; record.title = title(entry)
             record.aliasName = nil; record.aliasSource = nil
             record.host = entry.host; record.user = entry.user; record.port = entry.port
@@ -22,14 +24,20 @@ extension AliasStore {
                 guard info.isRegularFile == true, info.isSymbolicLink != true, info.fileSize == Int(item.size), bytes <= 256_000_000 else { throw ConfigError.message("Вложения повреждены или превышают 256 МБ для одного архива.") }
                 return BackupAttachment(metadata: item, data: try Data(contentsOf: url))
             }
-            records.append(BackupRecord(record: record, appearance: appearance(entry), group: group(entry), favorite: isFavorite(entry), commands: try savedCommands.repository.load(entry.favoriteID), document: try DocumentationRepository().load(entry.favoriteID), attachments: attachments))
+            records.append(BackupRecord(record: record, appearance: appearance(entry), group: group(entry), favorite: isFavorite(entry), commands: try savedCommands.repository.load(entry.favoriteID), document: try DocumentationRepository().load(entry.favoriteID), attachments: attachments, profileIDs: Array(profiles.membership[entry.favoriteID] ?? [profiles.active]), tunnelGatewayID: record.transport?.tunnel.flatMap { exportIDs[$0.sshID] }))
         }
         if let error = CommandLibrary.shared.error { throw ConfigError.message(error) }
-        let backup = HubBackup(records: records, folders: folders, folderAppearances: folderAppearances, templates: TemplateLibrary.shared.custom, commandLibrary: CommandLibrary.shared.custom)
+        let backup = HubBackup(records: records, folders: folders, folderAppearances: folderAppearances, templates: TemplateLibrary.shared.custom, commandLibrary: CommandLibrary.shared.custom, profiles: profiles.profiles)
         try backup.validate(); return backup
     }
     func restoreBackup(_ backup: HubBackup, selected: Set<UUID>) throws {
         try backup.validate()
+        var restoredProfiles = profiles
+        var profileMap: [UUID: UUID] = [:]
+        for source in backup.profiles ?? [] {
+            if let existing = restoredProfiles.profiles.first(where: { $0.name.caseInsensitiveCompare(source.name) == .orderedSame }) { profileMap[source.id] = existing.id }
+            else { profileMap[source.id] = try restoredProfiles.add(source.name) }
+        }
         let activeConnection = connectionSessions.values.contains { session in
             session.files?.busy == true || session.desktop?.connected == true || session.desktop?.starting == true
         }
@@ -40,9 +48,12 @@ extension AliasStore {
             library: CommandLibrary.shared.custom, writeLibrary: CommandLibrary.shared.replace)
         reload()
         for (value, entry) in metadata {
+            let assigned = Set((value.profileIDs ?? []).compactMap { profileMap[$0] })
+            restoredProfiles.membership[entry.favoriteID] = assigned.isEmpty ? [restoredProfiles.active] : assigned
             setAppearance(value.appearance, for: entry); setGroup(value.group, for: entry)
             if value.favorite { favorites.insert(entry.favoriteID) }
         }
+        profiles = restoredProfiles; persistProfiles()
         folders = Array(Set(folders + backup.folders)).sorted()
         for (path, value) in backup.folderAppearances where folderAppearances[path] == nil { folderAppearances[path] = value }
         UserDefaults.standard.set(folders, forKey: "folderPaths.v1")

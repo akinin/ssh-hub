@@ -15,19 +15,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
-static BOOL post(freerdp_peer* peer) { (void)peer; return TRUE; }
+#include "RDPFixtureChannels.h"
+static BOOL extended = FALSE;
+static BOOL post(freerdp_peer* peer) { (void)peer; return !extended || fixture_channels_start(); }
 static BOOL activate(freerdp_peer* peer) {
     OPAQUE_RECT_ORDER rect = {0}; rect.nWidth = 320; rect.nHeight = 200; rect.color = 0x112233;
     peer->context->update->BeginPaint(peer->context);
     peer->context->update->primary->OpaqueRect(peer->context, &rect);
     peer->context->update->EndPaint(peer->context);
-    puts("ACTIVE"); fflush(stdout); return TRUE;
+    printf("MONITORS %u %u %u\n",freerdp_settings_get_uint32(peer->context->settings,FreeRDP_MonitorCount),freerdp_settings_get_uint32(peer->context->settings,FreeRDP_DesktopWidth),freerdp_settings_get_uint32(peer->context->settings,FreeRDP_DesktopHeight)); puts("ACTIVE"); fflush(stdout); return TRUE;
 }
 static BOOL mouse(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y) { (void)input; printf("MOUSE %u %u %u\n",flags,x,y); fflush(stdout); return TRUE; }
 static BOOL keyboard(rdpInput* input, UINT16 flags, UINT8 code) { (void)input; printf("KEY %u %u\n",flags,code); fflush(stdout); return TRUE; }
 static BOOL unicode_key(rdpInput* input, UINT16 flags, UINT16 code) { (void)input; printf("UNICODE %u %u\n",flags,code); fflush(stdout); return TRUE; }
 int main(int argc, char** argv) {
-    if (argc != 3 && argc != 4) return 2;
+    if (argc != 3 && argc != 4 && argc != 5) return 2;
+    extended = argc == 5;
     signal(SIGPIPE,SIG_IGN);
     WLog_SetLogLevel(WLog_GetRoot(), WLOG_ERROR); WLog_ConfigureAppender(WLog_GetLogAppender(WLog_GetRoot()),"outputstream","stderr");
     int listener = socket(AF_INET, SOCK_STREAM, 0); struct sockaddr_in address = {0}; address.sin_family = AF_INET; address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -42,13 +45,16 @@ int main(int argc, char** argv) {
     freerdp_settings_set_bool(s,FreeRDP_ExtSecurity,FALSE); freerdp_settings_set_bool(s,FreeRDP_RdstlsSecurity,FALSE);
     if (argc == 4) { freerdp_settings_set_bool(s,FreeRDP_NlaSecurity,TRUE); freerdp_settings_set_string(s,FreeRDP_NtlmSamFile,argv[3]); }
     freerdp_settings_set_uint32(s,FreeRDP_DesktopWidth,640); freerdp_settings_set_uint32(s,FreeRDP_DesktopHeight,480); freerdp_settings_set_uint32(s,FreeRDP_ColorDepth,32);
+    if (extended && !fixture_channels_init(p)) return 2;
     p->PostConnect = post; p->Activate = activate;
     if (!p->Initialize(p)) return 2;
     p->context->input->MouseEvent = mouse; p->context->input->KeyboardEvent = keyboard; p->context->input->UnicodeKeyboardEvent = unicode_key;
     while (1) {
         HANDLE handles[64]; DWORD count = p->GetEventHandles(p,handles,64); if (!count) break;
-        DWORD status = WaitForMultipleObjects(count,handles,FALSE,1000); if (status == WAIT_FAILED) break;
+        DWORD status = WaitForMultipleObjects(count,handles,FALSE,20); if (status == WAIT_FAILED) break;
         if (status != WAIT_TIMEOUT && !p->CheckFileDescriptor(p)) break;
+        if (extended && !fixture_channels_check()) break;
     }
+    if (extended) fixture_channels_stop();
     p->Disconnect(p); freerdp_peer_context_free(p); freerdp_peer_free(p); return 0;
 }

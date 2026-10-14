@@ -4,6 +4,10 @@ import UniformTypeIdentifiers
 import ConsoleSupport
 
 @MainActor final class AliasStore: ObservableObject {
+    @Published var profiles = HubProfiles()
+    @Published var showingProfiles = false
+    @Published var tabStyles: [String: WorkspaceTabStyle] = [:]
+    @Published var editingTab: TabEditTarget?
     @Published var aliases: [SSHAlias] = []
     @Published var localRecords: [LocalConnectionRecord] = []
     var rawAliases: [SSHAlias] = []
@@ -78,6 +82,7 @@ import ConsoleSupport
         } else if let testPath = Bundle.main.object(forInfoDictionaryKey: "SSHConfigPath") as? String {
             config = SSHConfig(url: URL(fileURLWithPath: testPath))
         } else { config = SSHConfig() }
+        if let data = UserDefaults.standard.data(forKey: profilesKey), data.count <= 2_000_000, let value = try? JSONDecoder().decode(HubProfiles.self, from: data), value.valid { profiles = value }
         favorites = Set(UserDefaults.standard.stringArray(forKey: "favoriteAliases.v1") ?? [])
         folderAppearances = ConnectionAppearance.decode(UserDefaults.standard.data(forKey: "folderAppearance.v1"))
         folders = (UserDefaults.standard.stringArray(forKey: "folderPaths.v1") ?? []).filter(ConnectionTree.validPath)
@@ -85,7 +90,7 @@ import ConsoleSupport
         history = ConnectionHistory.decode(UserDefaults.standard.data(forKey: "connectionHistory.v1"))
         appearances = ConnectionAppearance.decode(UserDefaults.standard.data(forKey: "connectionAppearance.v1"))
         ConsoleStore.shared.onSelection = { [weak self] session in self?.selectConsole(session) }
-        ConsoleStore.shared.onClose = { [weak self] id in self?.removeDetached(.console(id)); self?.workspace.remove(.console(id)); self?.syncWorkspaceSelection() }
+        ConsoleStore.shared.onClose = { [weak self] id in self?.tabStyles.removeValue(forKey: WorkspaceTab.console(id).dragToken); self?.removeDetached(.console(id)); self?.workspace.remove(.console(id)); self?.syncWorkspaceSelection() }
         ConsoleStore.shared.onReplacement = { [weak self] old, new in self?.replaceConsoleTab(old, with: new) }
         reload()
         restoreWorkspace()
@@ -104,7 +109,7 @@ import ConsoleSupport
         (groupFilter == "recent" ? recentAliases : ordered).filter { entry in
             let matchesGroup = groupFilter == "all" || groupFilter == "recent" || (groupFilter == "favorites" && isFavorite(entry)) || (groupFilter == "ungrouped" && group(entry).isEmpty) || (groupFilter.hasPrefix("group:") && (ConnectionTree.normalized(group(entry)) == String(groupFilter.dropFirst(6)) || ConnectionTree.normalized(group(entry)).hasPrefix(String(groupFilter.dropFirst(6)) + "/")))
             let matchesAvailability = (groupFilter == "available" || groupFilter == "unavailable") && availability.selected.contains(entry.favoriteID) && availability.results[entry.favoriteID]?.reachable == (groupFilter == "available")
-            return (matchesGroup || matchesAvailability) && (query.isEmpty || "\(title(entry)) \(entry.name) \(entry.host) \(entry.user) \(entry.website ?? "") \(group(entry))".localizedCaseInsensitiveContains(query))
+            return profiles.contains(entry.favoriteID) && (matchesGroup || matchesAvailability) && (query.isEmpty || "\(title(entry)) \(entry.name) \(entry.host) \(entry.user) \(entry.website ?? "") \(group(entry))".localizedCaseInsensitiveContains(query))
         }
     }
     func showDocumentation(_ entry: SSHAlias) {
@@ -139,7 +144,7 @@ import ConsoleSupport
         if let data = try? JSONEncoder().encode(appearances) { UserDefaults.standard.set(data, forKey: "connectionAppearance.v1") }
     }
     func group(_ entry: SSHAlias) -> String { groups[entry.favoriteID] ?? "" }
-    var groupNames: [String] { Set(aliases.map { ConnectionTree.normalized(group($0)) }.filter { !$0.isEmpty } + folders).sorted { $0.localizedStandardCompare($1) == .orderedAscending } }
+    var groupNames: [String] { Set(profileEntries.map { ConnectionTree.normalized(group($0)) }.filter { !$0.isEmpty } + folders).sorted { $0.localizedStandardCompare($1) == .orderedAscending } }
     func folderAppearance(_ path: String) -> ConnectionAppearance { folderAppearances[ConnectionTree.normalized(path)] ?? ConnectionAppearance() }
     func setFolderAppearance(_ value: ConnectionAppearance, path: String) {
         guard value.validation == nil else { return }
@@ -154,7 +159,7 @@ import ConsoleSupport
         folderParent = ""
     }
     var countText: String {
-        let count = aliases.count, last = count % 10, teen = (11...14).contains(count % 100)
+        let count = profileEntries.count, last = count % 10, teen = (11...14).contains(count % 100)
         return "\(count) " + (!teen && last == 1 ? "запись" : !teen && (2...4).contains(last) ? "записи" : "записей")
     }
     func setGroup(_ name: String, for entry: SSHAlias) {
@@ -233,10 +238,16 @@ import ConsoleSupport
     }
     private func persistFavorites() { UserDefaults.standard.set(Array(favorites).sorted(), forKey: "favoriteAliases.v1") }
     private func moveFavorite(from: SSHAlias, to: SSHAlias) {
+        if let membership = profiles.membership.removeValue(forKey: from.favoriteID) { profiles.membership[to.favoriteID] = membership; persistProfiles() }
         if favorites.remove(from.favoriteID) != nil { favorites.insert(to.favoriteID); persistFavorites() }
         if let name = groups.removeValue(forKey: from.favoriteID) { setGroup(name, for: to) }
         history = ConnectionHistory.moving(history, from: from, to: to); persistHistory()
         TunnelManager.shared.moveAlias(from: from, to: to)
+        do {
+            let before = try localRepository.load(); var after = before
+            for index in after.indices where after[index].transport?.tunnel?.sshID == from.favoriteID { after[index].transport?.tunnel?.sshID = to.favoriteID }
+            if after != before { try localRepository.write(after, expected: before); localRecords = after }
+        } catch { self.error = "Не удалось обновить SSH-запись в туннелях: " + error.localizedDescription }
         appearances = ConnectionAppearance.moving(from: from.favoriteID, to: to.favoriteID, in: appearances); persistAppearances()
         for index in pages.indices where pages[index].key == from.favoriteID { pages[index].key = to.favoriteID }
         documentation.copy(from: from.favoriteID, to: to.favoriteID)
@@ -331,12 +342,23 @@ import ConsoleSupport
             aliases = snapshot.aliases.filter { item in !linked.contains(where: { $0.id == item.id }) } + records.map { record in
                 record.entry(config: config.url, privateConfig: localRepository.privateConfig(record.id), alias: linked.first { $0.name == record.aliasName && $0.source == record.aliasSource })
             }
+            profiles.discover(aliases.map(\.favoriteID)); persistProfiles()
+            for (id, session) in Array(connectionSessions) {
+                guard let entry = aliases.first(where: { $0.favoriteID == session.entry.favoriteID }) else { continue }
+                let gateway = aliases.first { $0.favoriteID == entry.transport?.tunnel?.sshID && $0.canSSH }
+                let changedGateway = session.gateway?.options.map { $0.key + "=" + $0.value } != gateway?.options.map { $0.key + "=" + $0.value }
+                if !session.matches(entry) || changedGateway {
+                    session.stop()
+                    let replacement = ConnectionPageSession(entry: entry, config: config.url, restored: true)
+                    replacement.gateway = gateway; connectionSessions[id] = replacement
+                }
+            }
             availability.configure(entries: aliases)
             data = snapshot.data
             warnings = snapshot.warnings
             if let name { selected = aliases.first { $0.name == name }?.id }
             if current == nil { selected = filtered.first?.id }
-            pages.filter { $0.key != nil && entry(for: $0) == nil }.forEach { closePage($0) }
+            pages.filter { $0.key != nil && entry(for: $0) == nil }.forEach { closePage($0, force: true) }
         } catch { self.error = error.localizedDescription }
     }
     func copy(_ text: String) {
@@ -656,6 +678,7 @@ struct MainView: View {
                         Text(store.countText).font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
+                    ProfileSelector().environmentObject(store).font(.caption).frame(width: 86)
                     Button { store.folderParent = ""; store.creatingFolder = true } label: { Image(systemName: "folder.badge.plus") }
                         .buttonStyle(.plain).help("Новая папка").accessibilityLabel("Новая папка")
                 }.padding(.horizontal, 14).padding(.vertical, 12)
@@ -704,6 +727,7 @@ struct MainView: View {
                     toolbarButton("Обновить", symbol: "arrow.clockwise", help: "Обновить · ⌘R") { store.reload() }
                     toolbarButton("Палитра действий", symbol: "command", help: "Палитра действий · ⌘P") { store.showingPalette = true }
                     Menu {
+                        Button("Профили…", systemImage: "person.crop.rectangle.stack") { store.showingProfiles = true }
                         Button("Библиотека команд…", systemImage: "books.vertical") { store.showingCommandLibrary = true }
                         Button("Резервное копирование…", systemImage: "externaldrive") { store.showingBackup = true }
                         Button("Шаблоны записей…", systemImage: "square.stack") { store.showingTemplates = true }
@@ -744,6 +768,8 @@ struct MainView: View {
         .sheet(item: $store.duplicatingAlias) { snapshot in CreateAliasView(duplicating: snapshot, existing: store.aliases).environmentObject(store) }
         .sheet(isPresented: $store.generatingKey) { GenerateKeyView(directory: store.config.sshDirectory) }
         .sheet(isPresented: $updater.presented) { AppUpdateView() }
+        .sheet(isPresented: $store.showingProfiles) { ProfilesView().environmentObject(store) }
+        .sheet(item: $store.editingTab) { TabCustomizationView(target: $0).environmentObject(store) }
         .sheet(isPresented: $store.showingPalette) { ActionPalette().environmentObject(store) }
         .sheet(isPresented: $store.showingCommandLibrary) { CommandLibraryView() }
         .sheet(isPresented: $store.showingBackup) { BackupView().environmentObject(store) }

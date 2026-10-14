@@ -150,6 +150,7 @@ struct RecordEditorView: View {
                     } else {
                         Text("После создания добавь инструкции в «Документации» и файлы во «Вложениях».").font(.callout).foregroundStyle(.secondary)
                     }
+                    if [.rdp, .vnc, .web].contains(kind) { tunnelFields }
                     if kind.isConsole, let original, let entry = store.aliases.first(where: { $0.localID == original.id }) { ConsoleCommandsSettingsLink(entry: entry) }
                     if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
                     else if ready && !appearance.name.isEmpty, let validation { Text(validation).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
@@ -187,6 +188,13 @@ struct RecordEditorView: View {
             TextField("Домен (необязательно)", text: settings.domain).textFieldStyle(.roundedBorder)
             HStack { Stepper("Ширина: \(settings.wrappedValue.width)", value: settings.width, in: 640...3840, step: 160); Stepper("Высота: \(settings.wrappedValue.height)", value: settings.height, in: 480...2160, step: 100) }
         }
+        if kind == .rdp {
+            Toggle("Общий текстовый буфер обмена", isOn: Binding(get: { settings.wrappedValue.rdpClipboard == true }, set: { settings.wrappedValue.rdpClipboard = $0 }))
+            Toggle("Разрешение по размеру панели", isOn: Binding(get: { settings.wrappedValue.rdpAutoResize != false }, set: { settings.wrappedValue.rdpAutoResize = $0 }))
+            Stepper("Мониторов: \(settings.wrappedValue.rdpMonitors ?? 1)", value: Binding(get: { settings.wrappedValue.rdpMonitors ?? 1 }, set: { settings.wrappedValue.rdpMonitors = $0 }), in: 1...4)
+            HStack { Text(settings.wrappedValue.rdpSharedFolder ?? "Общая папка Mac не выбрана").font(.caption).lineLimit(2); Spacer(); Button("Выбрать папку…") { let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.message = "Выбранная папка станет доступна Windows на чтение и запись как \\\\tsclient\\HubFiles. Для обмена файлами выбери отдельную папку."; if panel.runModal() == .OK { settings.wrappedValue.rdpSharedFolder = panel.url?.path } }; if settings.wrappedValue.rdpSharedFolder != nil { Button("Убрать") { settings.wrappedValue.rdpSharedFolder = nil } } }
+            Text("Мониторы расположены рядом; во вкладке можно просматривать каждый экран или все вместе. Изменение разрешения требует поддержки сервером Display Control. Общая папка доступна в Windows как сетевой диск HubFiles.").font(.caption).foregroundStyle(.secondary)
+        }
         if kind == .vnc { Text("Для macOS включи доступ VNC с паролем в настройках общего экрана. Поддерживается стандартная VNC-аутентификация; учётная запись Apple Remote Desktop не используется.").font(.caption).foregroundStyle(.secondary) }
         if kind == .ftp || kind == .ftps { TextField("Начальная папка", text: settings.path).textFieldStyle(.roundedBorder) }
         if kind == .ftps { Toggle("Неявный TLS (обычно порт 990)", isOn: settings.ftpsImplicit).onChange(of: settings.wrappedValue.ftpsImplicit) { _, enabled in if record.port == "21" || record.port == "990" { record.port = enabled ? "990" : "21" } } }
@@ -213,6 +221,19 @@ struct RecordEditorView: View {
         }
         if kind == .mosh { Text("Нужен mosh на Mac и mosh-server на сервере. Вход использует SSH с проверкой ключа; затем Mosh работает по UDP.").font(.caption).foregroundStyle(.secondary) }
         if kind == .telnet || kind == .ftp { Text("Этот протокол передаёт данные без шифрования. Используй в доверенной сети.").font(.caption).foregroundStyle(.secondary) }
+    }
+    private var tunnelFields: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+            Toggle("Подключаться через SSH-туннель", isOn: Binding(get: { settings.wrappedValue.tunnel != nil }, set: { enabled in settings.wrappedValue.tunnel = enabled ? RecordTunnelSettings(sshID: store.aliases.first(where: \.canSSH)?.favoriteID ?? "") : nil }))
+            if settings.wrappedValue.tunnel != nil {
+                Picker("SSH-запись", selection: Binding(get: { settings.wrappedValue.tunnel?.sshID ?? "" }, set: { settings.wrappedValue.tunnel = RecordTunnelSettings(sshID: $0) })) {
+                    Text("Выбери запись").tag("")
+                    ForEach(store.ordered.filter(\.canSSH)) { Text(store.title($0)).tag($0.favoriteID) }
+                }
+                Text("Туннель запускается вместе с вкладкой и завершается при её закрытии. Сервер сервиса указывай так, как он доступен с SSH-сервера. Для веба весь трафик этой вкладки проходит через SSH; вход и cookies действуют в пределах сеанса.").font(.caption).foregroundStyle(.secondary)
+            }
+        }
     }
     private var fields: some View {
         VStack(alignment: .leading, spacing: 12) {

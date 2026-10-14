@@ -331,16 +331,19 @@ struct ConsoleTab: View {
     private var entry: SSHAlias { store.aliases.first { $0.favoriteID == session.entry.favoriteID } ?? session.entry }
     var body: some View {
         HStack(spacing: 7) {
+            if store.tabStyle(.console(session.id)).isPinned { Image(systemName: "pin.fill").font(.caption2) }
             Button { consoles.selected = session.id } label: {
-                HStack(spacing: 5) { Image(systemName: "terminal"); Text(session.title).lineLimit(1).frame(maxWidth: 150) }
+                HStack(spacing: 5) { Image(systemName: "terminal"); Text(store.tabTitle(.console(session.id), fallback: session.title)).lineLimit(1).frame(maxWidth: 150) }
             }.buttonStyle(.plain)
-            Button { consoles.close(session) } label: { Image(systemName: "xmark").font(.system(size: 9)) }.buttonStyle(.plain).help("Закрыть сеанс")
+            Button { store.closeConsole(session) } label: { Image(systemName: "xmark").font(.system(size: 9)) }.buttonStyle(.plain).help("Закрыть сеанс").disabled(!store.canClose(.console(session.id)))
         }.padding(.horizontal, 10).padding(.vertical, 7)
             .contentShape(Rectangle())
             .contextMenu {
+                TabOptionsMenu(tab: .console(session.id), title: session.title)
+                Divider()
                 WorkspaceMoveMenu(tab: .console(session.id))
                 Divider()
-                Button("Закрыть", systemImage: "xmark") { consoles.close(session) }
+                Button("Закрыть", systemImage: "xmark") { store.closeConsole(session) }.disabled(!store.canClose(.console(session.id)))
                 Button("Закрыть все вкладки", systemImage: "xmark.square") { store.closeAllTabs() }
                 Button("Закрыть другие вкладки") { store.keepConsole(session) }.disabled(consoles.sessions.count + store.pages.count < 2)
                 Button("Закрыть вкладки справа") { store.closeTabsRight(of: .console(session.id)) }.disabled(store.workspace.pane(for: .console(session.id)).map { store.workspace.tabs(in: $0).last == .console(session.id) } ?? true)
@@ -352,7 +355,6 @@ struct ConsoleTab: View {
                 Divider()
                 Button("Переподключиться", systemImage: "arrow.clockwise") { consoles.reconnect(session, entry: entry); if entry.canSSH { store.recordConnection(entry, kind: .ssh) } }
                 Button("Дублировать вкладку", systemImage: "plus.square.on.square") { consoles.connect(entry, title: session.title, config: session.config, newSession: true); if entry.canSSH { store.recordConnection(entry, kind: .ssh) } }.disabled(entry.recordKind == .serial)
-                Button("Переименовать вкладку…", systemImage: "pencil") { newTitle = session.title; renaming = true }
                 Divider()
                 Menu("Буфер обмена") {
                     Button("Копировать выделенное") { session.view?.copy(NSApp as Any) }.disabled(session.view?.getSelection() == nil)
@@ -371,7 +373,7 @@ struct ConsoleTab: View {
             .modifier(WorkspaceTabDrag(tab: .console(session.id)))
             .onChange(of: session.title) { _, _ in store.saveWorkspace() }
             .help(session.entry.recordKind == .serial ? session.title + " · " + (session.entry.serial?.summary ?? "Serial") : "\(session.title) · \(session.entry.user)@\(session.entry.host):\(session.entry.port)")
-            .foregroundStyle(session.finished ? .secondary : .primary)
+            .foregroundStyle(store.tabColor(.console(session.id)) ?? (session.finished ? .secondary : .primary))
             .background(store.workspace.selection(in: store.workspace.pane(for: .console(session.id)) ?? .primary) == .console(session.id) ? Color.accentColor.opacity(0.17) : Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 5))
     }
 }

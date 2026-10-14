@@ -3,6 +3,7 @@ import AppKit
 import WebKit
 import CryptoKit
 import Security
+import Network
 
 @MainActor enum ConnectionPassword {
     static func read(_ entry: SSHAlias, config: URL) throws -> String {
@@ -20,34 +21,71 @@ import Security
     let web: WebPageModel?
     let files: RemoteFilesModel?
     let desktop: DesktopSession?
+    let tunnel = ConnectionTunnel()
+    private let config: URL
+    private var connecting: Task<Void, Never>?
+    private var generation = UUID()
+    var gateway: SSHAlias?
+    func matches(_ value: SSHAlias) -> Bool {
+        entry.recordKind == value.recordKind && entry.website == value.website && entry.transport == value.transport && entry.options.map { $0.key + "=" + $0.value } == value.options.map { $0.key + "=" + $0.value }
+    }
     init(entry: SSHAlias, config: URL, restored: Bool) {
-        self.entry = entry
+        self.entry = entry; self.config = config
         web = entry.recordKind == .web ? WebPageModel(entry: entry) : nil
         files = entry.recordKind?.isFiles == true ? RemoteFilesModel(entry: entry, config: config) : nil
         desktop = entry.recordKind?.isDesktop == true ? DesktopSession(entry: entry, config: config) : nil
-        if !restored { start() }
+        desktop?.onRequestStart = { [weak self] in self?.start() }
+        desktop?.onRequestStop = { [weak self] in self?.stop() }
+        web?.onRequestStart = { [weak self] in self?.start() }
+        tunnel.onFailure = { [weak self] error in self?.desktop?.stop(); self?.web?.stop(); self?.web?.started = false; self?.web?.error = error; self?.desktop?.status = error }
+        if !restored && entry.transport?.tunnel == nil { start() }
     }
-    func start() { if web?.started == false { web?.start() }; if files?.connected == false { files?.connect() }; desktop?.start() }
-    func stop() { web?.stop(); files?.stop(); desktop?.stop() }
+    func start() {
+        guard connecting == nil, desktop?.connected != true, desktop?.starting != true, web?.started != true else { return }
+        guard entry.transport?.tunnel != nil else { launch(); return }
+        guard let gateway else { web?.error = "SSH-запись туннеля не найдена. Выбери её в настройках записи."; desktop?.status = "SSH-запись туннеля не найдена. Выбери её в настройках записи."; return }
+        let token = UUID(); generation = token
+        connecting = Task { [weak self] in
+            guard let self else { return }; defer { if self.generation == token { self.connecting = nil } }
+            do {
+                let port = try await self.tunnel.start(entry: self.entry, gateway: gateway, config: self.config)
+                guard !Task.isCancelled, self.generation == token else { return }
+                self.desktop?.tunnelPort = port; self.web?.configureProxy(port); self.launch()
+            } catch is CancellationError {} catch { self.web?.error = error.localizedDescription; self.desktop?.status = error.localizedDescription }
+        }
+    }
+    private func launch() { if web?.started == false { web?.start() }; if files?.connected == false { files?.connect() }; desktop?.start() }
+    func stop() { generation = UUID(); connecting?.cancel(); connecting = nil; web?.stop(); files?.stop(); desktop?.stop(); tunnel.stop() }
 }
 struct ConnectionPageView: View {
     @ObservedObject var session: ConnectionPageSession
     var body: some View {
+        VStack(spacing: 0) {
+        if session.entry.transport?.tunnel != nil { ConnectionTunnelStatus(tunnel: session.tunnel, cancel: session.stop) }
         if let model = session.web { WebPageView(model: model) }
         else if let model = session.files { RemoteFilesView(model: model) }
         else if let model = session.desktop { DesktopPageView(session: model) }
+        }
     }
+}
+struct ConnectionTunnelStatus: View {
+    @ObservedObject var tunnel: ConnectionTunnel
+    let cancel: () -> Void
+    var body: some View { HStack { Label(tunnel.status.isEmpty ? "Через SSH-туннель" : tunnel.status, systemImage: "lock.shield").font(.caption).lineLimit(2); Spacer(); if !tunnel.status.isEmpty { Button("Остановить туннель", action: cancel).controlSize(.small) } }.padding(6) }
 }
 @MainActor final class WebPageModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
     let entry: SSHAlias
     let view: WKWebView
+    var onRequestStart: (() -> Void)?
+    func requestStart() { if let onRequestStart { onRequestStart() } else { start() } }
+    func configureProxy(_ port: Int) { var proxy = ProxyConfiguration(socksv5Proxy: .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!)); proxy.allowFailover = false; view.configuration.websiteDataStore.proxyConfigurations = [proxy] }
     @Published var started = false
     @Published var address = ""
     @Published var error: String?
     init(entry: SSHAlias) {
         self.entry = entry
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
+        configuration.websiteDataStore = entry.transport?.tunnel == nil ? .default() : .nonPersistent()
         view = WKWebView(frame: .zero, configuration: configuration)
         super.init(); view.navigationDelegate = self; view.uiDelegate = self; view.allowsBackForwardNavigationGestures = true
         address = entry.website ?? ""
@@ -56,8 +94,8 @@ struct ConnectionPageView: View {
         guard let url = URL(string: address), LocalConnectionRecord.validWebsite(address) else { error = "Укажи полный HTTP/HTTPS-адрес без учётных данных в URL."; return }
         started = true; error = nil; view.load(URLRequest(url: url))
     }
-    func stop() { view.stopLoading() }
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { address = webView.url?.absoluteString ?? address; objectWillChange.send() }
+    func stop() { view.stopLoading(); view.loadHTMLString("", baseURL: nil); started = false }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { if let url = webView.url, ["http", "https"].contains(url.scheme?.lowercased() ?? "") { address = url.absoluteString }; objectWillChange.send() }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { self.error = error.localizedDescription }
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url, ["http", "https", "about"].contains(url.scheme?.lowercased() ?? "") else { decisionHandler(.cancel); return }
@@ -118,14 +156,14 @@ struct WebPageView: View {
             HStack {
                 Button { model.view.goBack() } label: { Image(systemName: "chevron.left") }.disabled(!model.view.canGoBack).help("Назад")
                 Button { model.view.goForward() } label: { Image(systemName: "chevron.right") }.disabled(!model.view.canGoForward).help("Вперёд")
-                TextField("Адрес", text: $model.address).textFieldStyle(.roundedBorder).onSubmit { model.start() }
-                Button { if model.started { model.view.reload() } else { model.start() } } label: { Image(systemName: "arrow.clockwise") }.help("Обновить")
+                TextField("Адрес", text: $model.address).textFieldStyle(.roundedBorder).onSubmit { if model.started { model.start() } else { model.requestStart() } }
+                Button { if model.started { model.view.reload() } else { model.requestStart() } } label: { Image(systemName: "arrow.clockwise") }.help("Обновить")
                 Button { if let url = model.view.url ?? URL(string: model.address) { NSWorkspace.shared.open(url) } } label: { Image(systemName: "arrow.up.forward.square") }.help("Открыть в браузере")
             }.padding(8).controlSize(.small)
             Divider()
             if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).padding(8) }
             if model.started { WebPageContainer(view: model.view) }
-            else { VStack(spacing: 12) { Text("Встроенная веб-панель").font(.headline); Text(model.address).foregroundStyle(.secondary); Button("Открыть") { model.start() } }.frame(maxWidth: .infinity, maxHeight: .infinity) }
+            else { VStack(spacing: 12) { Text("Встроенная веб-панель").font(.headline); Text(model.address).foregroundStyle(.secondary); Button("Открыть") { model.requestStart() } }.frame(maxWidth: .infinity, maxHeight: .infinity) }
         }
     }
 }

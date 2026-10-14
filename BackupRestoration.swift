@@ -21,6 +21,13 @@ enum BackupRestoration {
             metadata.append((value, record.entry(config: localRepository.config, privateConfig: localRepository.privateConfig(record.id))))
         }
         guard after.count <= 1000 else { throw ConfigError.message("После восстановления будет больше 1000 локальных записей.") }
+        let restoredGateways = Dictionary(uniqueKeysWithValues: metadata.filter { $0.1.canSSH }.map { ($0.0.id, $0.1.favoriteID) })
+        for index in metadata.indices {
+            let (value, entry) = metadata[index]
+            guard value.record.transport?.tunnel != nil, let recordIndex = after.firstIndex(where: { $0.id == entry.localID }) else { continue }
+            after[recordIndex].transport?.tunnel?.sshID = value.tunnelGatewayID.flatMap { restoredGateways[$0] } ?? "missing:" + (value.tunnelGatewayID?.uuidString ?? UUID().uuidString)
+            metadata[index].1 = after[recordIndex].entry(config: localRepository.config, privateConfig: localRepository.privateConfig(after[recordIndex].id))
+        }
         var newTemplates = templates
         for var template in backup.templates {
             if newTemplates.contains(template) { continue }

@@ -15,7 +15,7 @@ extension AliasStore {
         let page = pages.first { $0.key == key && $0.section == section } ?? EntryPage(key: key, section: section)
         if !pages.contains(where: { $0.id == page.id }) {
             pages.append(page)
-            if section == .connection, let entry { connectionSessions[page.id] = ConnectionPageSession(entry: entry, config: config.url, restored: false) }
+            if section == .connection, let entry { let session = ConnectionPageSession(entry: entry, config: config.url, restored: true); session.gateway = aliases.first { $0.favoriteID == entry.transport?.tunnel?.sshID && $0.canSSH }; connectionSessions[page.id] = session; session.start() }
             if section == .sftp, let entry { sftpModels[page.id] = SFTPModel(entry: entry, config: config.url) }
         } else if section == .connection {
             connectionSessions[page.id]?.start()
@@ -38,7 +38,9 @@ extension AliasStore {
         case nil: ConsoleStore.shared.selected = nil; selectedPage = nil
         }
     }
-    func closePage(_ page: EntryPage) {
+    func closePage(_ page: EntryPage, force: Bool = false) {
+        guard force || canClose(.page(page.id)) else { return }
+        tabStyles.removeValue(forKey: WorkspaceTab.page(page.id).dragToken)
         removeDetached(.page(page.id))
         sftpModels.removeValue(forKey: page.id)?.disconnect()
         connectionSessions.removeValue(forKey: page.id)?.stop()
@@ -46,9 +48,9 @@ extension AliasStore {
         if page.section == .scanner { scanner.cancel() }
         syncWorkspaceSelection()
     }
-    func closeAllTabs() { launchTasks.values.forEach { $0.cancel() }; pages.forEach { closePage($0) }; ConsoleStore.shared.closeAll(); workspace = WorkspaceLayout(); syncWorkspaceSelection() }
-    func keepPage(_ page: EntryPage) { ConsoleStore.shared.closeAll(); pages.filter { $0.id != page.id }.forEach { closePage($0) }; arrangeWorkspace(.none); selectPage(page) }
-    func keepConsole(_ session: ConsoleSession) { pages.forEach { closePage($0) }; ConsoleStore.shared.closeOthers(keeping: session); arrangeWorkspace(.none); selectConsole(session) }
+    func closeAllTabs(force: Bool = false) { launchTasks.values.forEach { $0.cancel() }; pages.forEach { closePage($0, force: force) }; for session in Array(ConsoleStore.shared.sessions) where force || canClose(.console(session.id)) { ConsoleStore.shared.close(session) }; if force { workspace = WorkspaceLayout() }; syncWorkspaceSelection() }
+    func keepPage(_ page: EntryPage) { for session in Array(ConsoleStore.shared.sessions) { closeConsole(session) }; pages.filter { $0.id != page.id }.forEach { closePage($0) }; arrangeWorkspace(.none); selectPage(page) }
+    func keepConsole(_ session: ConsoleSession) { pages.forEach { closePage($0) }; for other in Array(ConsoleStore.shared.sessions) where other.id != session.id { closeConsole(other) }; arrangeWorkspace(.none); selectConsole(session) }
     func openScanner(_ entry: SSHAlias? = nil) {
         if let entry, entry.canSSH, !scanner.running { scanner.target = entry.host }
         openPage(nil, section: .scanner)
@@ -58,18 +60,22 @@ struct WorkspacePageTab: View {
     let page: EntryPage
     @EnvironmentObject var store: AliasStore
     @ObservedObject private var consoles = ConsoleStore.shared
-    private var title: String { (page.section == .connection ? store.entry(for: page)?.recordKind?.title ?? page.section.title : page.section.title) + (store.entry(for: page).map { " · " + store.title($0) } ?? "") }
+    private var title: String { store.tabTitle(.page(page.id), fallback: (page.section == .connection ? store.entry(for: page)?.recordKind?.title ?? page.section.title : page.section.title) + (store.entry(for: page).map { " · " + store.title($0) } ?? "")) }
     var body: some View {
         HStack(spacing: 6) {
+            if store.tabStyle(.page(page.id)).isPinned { Image(systemName: "pin.fill").font(.caption2) }
             Button { store.selectPage(page) } label: { Label(title, systemImage: page.section.icon).lineLimit(1).frame(maxWidth: 175) }.buttonStyle(.plain)
-            Button { store.closePage(page) } label: { Image(systemName: "xmark").font(.system(size: 9)) }.buttonStyle(.plain).help("Закрыть вкладку «" + title + "»").accessibilityLabel("Закрыть: " + title)
+            Button { store.closePage(page) } label: { Image(systemName: "xmark").font(.system(size: 9)) }.buttonStyle(.plain).disabled(!store.canClose(.page(page.id))).help("Закрыть вкладку «" + title + "»").accessibilityLabel("Закрыть: " + title)
         }.font(.system(size: 11)).padding(.horizontal, 9).frame(height: 28)
             .contentShape(Rectangle()).onTapGesture { store.selectPage(page) }
+            .foregroundStyle(store.tabColor(.page(page.id)) ?? .primary)
             .background(store.workspace.selection(in: store.workspace.pane(for: .page(page.id)) ?? .primary) == .page(page.id) ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
             .contextMenu {
+                TabOptionsMenu(tab: .page(page.id), title: title)
+                Divider()
                 WorkspaceMoveMenu(tab: .page(page.id))
                 Divider()
-                Button("Закрыть") { store.closePage(page) }
+                Button("Закрыть") { store.closePage(page) }.disabled(!store.canClose(.page(page.id)))
                 Button("Закрыть другие вкладки") { store.keepPage(page) }
                 Button("Закрыть все вкладки") { store.closeAllTabs() }
                 Divider()
@@ -147,7 +153,7 @@ struct WorkspacePaneView: View {
                 ScrollViewReader { proxy in
                 ScrollView(.horizontal) {
                     HStack(spacing: 3) {
-                        ForEach(store.workspace.tabs(in: pane), id: \.self) { tab in
+                        ForEach(store.orderedTabs(in: pane), id: \.self) { tab in
                             Group { switch tab {
                             case .page(let id): if let page = store.pages.first(where: { $0.id == id }) { WorkspacePageTab(page: page) }
                             case .console(let id): if let session = consoles.sessions.first(where: { $0.id == id }) { ConsoleTab(session: session) }

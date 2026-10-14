@@ -5,14 +5,14 @@ import Darwin
 
 final class RDPBridge: @unchecked Sendable {
     private let process = Process(), input = Pipe(), output = Pipe(), diagnostic = Pipe()
-    private let lock = NSLock()
+    private let lock = NSLock(), inputLock = NSLock()
     private var stopped = false, errors = Data()
-    func start(entry: SSHAlias, password: String, frame: @escaping @Sendable (Int, Int, Data) -> Void, trust: @escaping @Sendable (String) -> Bool, finished: @escaping @Sendable (String) -> Void) throws {
+    func start(entry: SSHAlias, password: String, proxyPort: Int = 0, clipboard: @escaping @Sendable (String) -> Void, channelStatus: @escaping @Sendable (String) -> Void, frame: @escaping @Sendable (Int, Int, Data) -> Void, trust: @escaping @Sendable (String) -> Bool, finished: @escaping @Sendable (String) -> Void) throws {
         guard let helper = Bundle.main.url(forAuxiliaryExecutable: "SSHRDP") else { throw ConfigError.message("Не найден встроенный RDP-движок.") }
         let s = entry.transport ?? ConnectionSettings()
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases").appendingPathComponent("RDP")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        process.executableURL = helper; process.arguments = [entry.host, entry.port, entry.user, s.domain, String(s.width), String(s.height), root.path]
+        process.executableURL = helper; process.arguments = [entry.host, entry.port, entry.user, s.domain, String(s.width), String(s.height), root.path, String(s.rdpMonitors ?? 1), s.rdpClipboard == true ? "1" : "0", s.rdpSharedFolder ?? "", String(proxyPort)]
         process.standardInput = input; process.standardOutput = output; process.standardError = diagnostic
         diagnostic.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let bytes = handle.availableData; guard let self else { return }; self.lock.lock(); defer { self.lock.unlock() }
@@ -20,22 +20,24 @@ final class RDPBridge: @unchecked Sendable {
         }
         try process.run()
         let secret = Data(password.utf8); guard secret.count <= 4096 else { stop(); throw ConfigError.message("Пароль RDP слишком длинный.") }
-        try input.fileHandleForWriting.write(contentsOf: DesktopWire.be32(UInt32(secret.count)) + secret)
+        try write(DesktopWire.be32(UInt32(secret.count)) + secret)
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             do {
                 while true {
                     let header = try read(8), type = DesktopWire.u32(header), length = Int(DesktopWire.u32(header, 4))
-                    guard length <= 34_000_008 else { throw ConfigError.message("Некорректный размер кадра RDP.") }
+                    guard length <= 132_000_008 else { throw ConfigError.message("Некорректный размер кадра RDP.") }
                     let data = try read(length)
                     if type == 1 {
                         guard length >= 8 else { throw ConfigError.message("Повреждённый кадр RDP.") }
                         let w = Int(DesktopWire.u32(data)), h = Int(DesktopWire.u32(data, 4))
-                        guard (1...3840).contains(w), (1...2160).contains(h), length == w * h * 4 + 8 else { throw ConfigError.message("Некорректный кадр RDP.") }
+                        guard (1...8192).contains(w), (1...2160).contains(h), w * h <= 33_000_000, length == w * h * 4 + 8 else { throw ConfigError.message("Некорректный кадр RDP.") }
                         frame(w, h, Data(data.dropFirst(8)))
                     } else if type == 2, length <= 4096 {
                         let approved = trust(String(decoding: data, as: UTF8.self))
-                        try input.fileHandleForWriting.write(contentsOf: DesktopWire.be32(approved ? 1 : 0))
-                    } else { throw ConfigError.message("Неизвестное сообщение RDP-движка.") }
+                        try write(DesktopWire.be32(approved ? 1 : 0))
+                    } else if type == 3, length <= 1_048_576, let text = String(data: data, encoding: .utf8) { clipboard(text) }
+                    else if type == 4, length <= 4096 { channelStatus(String(decoding: data, as: UTF8.self)) }
+                    else { throw ConfigError.message("Неизвестное сообщение RDP-движка.") }
                 }
             } catch {
                 if process.isRunning { process.terminate() }
@@ -53,12 +55,28 @@ final class RDPBridge: @unchecked Sendable {
         }
         return data
     }
-    func event(_ type: UInt32, _ a: UInt32, _ b: UInt32 = 0, _ c: UInt32 = 0) { try? input.fileHandleForWriting.write(contentsOf: [type,a,b,c].reduce(into: Data()) { $0.append(DesktopWire.be32($1)) }) }
+    private func write(_ data: Data) throws { inputLock.lock(); defer { inputLock.unlock() }; try input.fileHandleForWriting.write(contentsOf: data) }
+    func clipboard(_ text: String) { let bytes = Data(text.utf8); guard bytes.count <= 1_048_576 else { return }; try? write([5,UInt32(bytes.count),0,0].reduce(into: Data()) { $0.append(DesktopWire.be32($1)) } + bytes) }
+    func event(_ type: UInt32, _ a: UInt32, _ b: UInt32 = 0, _ c: UInt32 = 0) { try? write([type,a,b,c].reduce(into: Data()) { $0.append(DesktopWire.be32($1)) }) }
     func stop() {
         lock.lock(); stopped = true; lock.unlock()
-        try? input.fileHandleForWriting.close()
+        inputLock.lock(); try? input.fileHandleForWriting.close(); inputLock.unlock()
         if process.isRunning { process.terminate(); DispatchQueue.global().asyncAfter(deadline: .now() + 1) { [self] in if process.isRunning { _ = Darwin.kill(process.processIdentifier, SIGKILL) } } }
     }
+}
+
+// Keep only the newest pending frame while the main actor is busy with layout or a dialog.
+final class DesktopFrameDelivery: @unchecked Sendable {
+    private let lock = NSLock()
+    private var latest: (Int,Int,Data)?
+    private var scheduled = false
+    private let receive: @MainActor @Sendable (Int,Int,Data) -> Void
+    init(_ receive: @escaping @MainActor @Sendable (Int,Int,Data) -> Void) { self.receive = receive }
+    func submit(_ w: Int, _ h: Int, _ data: Data) {
+        lock.lock(); latest = (w,h,data); let schedule = !scheduled; scheduled = true; lock.unlock()
+        if schedule { Task { @MainActor in if let frame = self.take() { self.receive(frame.0,frame.1,frame.2) } } }
+    }
+    private func take() -> (Int,Int,Data)? { lock.lock(); defer { lock.unlock() }; let value = latest; latest = nil; scheduled = false; return value }
 }
 
 @MainActor final class DesktopSession: ObservableObject {
@@ -67,6 +85,31 @@ final class RDPBridge: @unchecked Sendable {
     @Published var status = "Подключение по кнопке"
     @Published var connected = false
     @Published var starting = false
+    var onRequestStart: (() -> Void)?
+    var onRequestStop: (() -> Void)?
+    var tunnelPort = 0
+    @Published var monitor = -1
+    @Published var displayControl = false
+    private var clipboardChange = -1
+    private var clipboardFocused = false
+    private var resizeTask: Task<Void, Never>?
+    private var lastSize = NSSize.zero
+    var monitorCount: Int { entry.recordKind == .rdp ? entry.transport?.rdpMonitors ?? 1 : 1 }
+    var displayImage: CGImage? { guard let image else { return nil }; guard monitor >= 0, monitor < monitorCount else { return image }; let width = image.width / monitorCount; return image.cropping(to: CGRect(x: monitor * width, y: 0, width: width, height: image.height)) }
+    var monitorOffset: Int { monitor >= 0 ? (image?.width ?? 0) / monitorCount * monitor : 0 }
+    func requestStart() { if let onRequestStart { onRequestStart() } else { start() } }
+    func requestStop() { if let onRequestStop { onRequestStop() } else { stop() } }
+    func receiveClipboard(_ text: String) { guard entry.transport?.rdpClipboard == true, clipboardFocused, NSApp.isActive else { return }; NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string); clipboardChange = NSPasteboard.general.changeCount }
+    func syncClipboard(focused: Bool) { clipboardFocused = focused; guard focused, NSApp.isActive, connected, entry.transport?.rdpClipboard == true else { return }; let board = NSPasteboard.general; if board.changeCount != clipboardChange { clipboardChange = board.changeCount; if let text = board.string(forType: .string) { bridge?.clipboard(text) } } }
+    func sendClipboard() { guard entry.transport?.rdpClipboard == true, let text = NSPasteboard.general.string(forType: .string) else { return }; bridge?.clipboard(text); clipboardChange = NSPasteboard.general.changeCount }
+    func requestClipboard() { clipboardFocused = true; bridge?.event(6,0) }
+    func viewport(_ size: NSSize) {
+        guard connected, displayControl, entry.recordKind == .rdp, entry.transport?.rdpAutoResize != false, size.width >= 100, size.height >= 100 else { return }
+        let width = min(3840, 8192 / monitorCount, max(320, Int(size.width) / (monitor < 0 ? monitorCount : 1))) / 2 * 2
+        let height = min(2160, max(200, Int(size.height)))
+        let value = NSSize(width: width, height: height); guard value != lastSize else { return }; lastSize = value
+        resizeTask?.cancel(); resizeTask = Task { [weak self] in try? await Task.sleep(for: .milliseconds(350)); guard !Task.isCancelled, let self else { return }; self.bridge?.event(7, UInt32(width), UInt32(height), UInt32(self.monitorCount)) }
+    }
     private var bridge: RDPBridge?
     private var vnc: VNCConnection?
     private var task: Task<Void, Never>?
@@ -76,19 +119,20 @@ final class RDPBridge: @unchecked Sendable {
         guard !starting, !connected else { return }
         do {
             let password = try ConnectionPassword.read(entry, config: config)
-            generation = UUID(); let token = generation; starting = true; status = "Подключение…"; image = nil
+            generation = UUID(); let token = generation; displayControl = false; lastSize = .zero; clipboardChange = -1; starting = true; status = "Подключение…"; image = nil
+            let frames = DesktopFrameDelivery { [weak self] w,h,data in if self?.generation == token { self?.update(w,h,data) } }
             if entry.recordKind == .rdp {
                 let bridge = RDPBridge(); self.bridge = bridge
-                try bridge.start(entry: entry, password: password, frame: { [weak self] w,h,data in Task { @MainActor in if self?.generation == token { self?.update(w,h,data) } } }, trust: { [weak self] certificate in
+                try bridge.start(entry: entry, password: password, proxyPort: tunnelPort, clipboard: { [weak self] text in Task { @MainActor in if self?.generation == token { self?.receiveClipboard(text) } } }, channelStatus: { [weak self] _ in Task { @MainActor in if self?.generation == token { self?.displayControl = true } } }, frame: { w,h,data in frames.submit(w,h,data) }, trust: { [weak self] certificate in
                     var accepted = false
                     DispatchQueue.main.sync { if self?.generation == token { accepted = self?.trust(certificate) == true } }
                     return accepted
                 }, finished: { [weak self] text in Task { @MainActor in if self?.generation == token { self?.status = text; self?.connected = false; self?.starting = false } } })
             } else {
                 guard let port = UInt16(entry.port), port > 0 else { throw ConfigError.message("Некорректный порт VNC.") }
-                let client = VNCConnection(host: entry.host, port: port); vnc = client
+                let client = VNCConnection(host: tunnelPort == 0 ? entry.host : "127.0.0.1", port: tunnelPort == 0 ? port : UInt16(tunnelPort)); vnc = client
                 task = Task { [weak self] in
-                    do { try await client.run(password: password) { [weak self] w,h,data in Task { @MainActor in if self?.generation == token { self?.update(w,h,data) } } } }
+                    do { try await client.run(password: password) { w,h,data in frames.submit(w,h,data) } }
                     catch { if self?.generation == token { self?.status = error.localizedDescription; self?.connected = false; self?.starting = false } }
                 }
             }
@@ -108,7 +152,7 @@ final class RDPBridge: @unchecked Sendable {
         image = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo.byteOrder32Little.union(CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue)), provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
         starting = false; connected = true; status = "\(entry.recordKind?.title ?? "") · \(w) × \(h)"
     }
-    func stop() { generation = UUID(); task?.cancel(); task = nil; vnc?.stop(); vnc = nil; bridge?.stop(); bridge = nil; starting = false; connected = false; status = "Сеанс завершён" }
+    func stop() { resizeTask?.cancel(); resizeTask = nil; clipboardFocused = false; generation = UUID(); task?.cancel(); task = nil; vnc?.stop(); vnc = nil; bridge?.stop(); bridge = nil; starting = false; connected = false; status = "Сеанс завершён" }
     func pointer(_ x: Int, _ y: Int, buttons: UInt8, changed: UInt8 = 0, down: Bool = false, wheel: Int = 0) {
         guard connected else { return }
         if let vnc {
@@ -142,39 +186,59 @@ struct DesktopPageView: View {
     @ObservedObject var session: DesktopSession
     var body: some View {
         VStack(spacing: 0) {
-            HStack { Text(session.status).font(.caption).lineLimit(2); Spacer(); if session.starting { ProgressView().controlSize(.small); Button("Отмена") { session.stop() } } else if !session.connected { Button("Подключиться") { session.start() } }; Button("Ctrl+Alt+Del") { session.ctrlAltDelete() }.disabled(!session.connected) }.padding(8).controlSize(.small)
+            HStack { Text(session.status).font(.caption).lineLimit(2); Spacer(); if session.starting { ProgressView().controlSize(.small); Button("Отмена") { session.requestStop() } } else if !session.connected { Button("Подключиться") { session.requestStart() } }; Button("Ctrl+Alt+Del") { session.ctrlAltDelete() }.disabled(!session.connected) }.padding(8).controlSize(.small)
+            if session.entry.recordKind == .rdp {
+                ViewThatFits(in: .horizontal) {
+                    rdpControls
+                    ScrollView(.horizontal) { rdpControls }
+                }.padding(.horizontal, 8).padding(.bottom, 6).controlSize(.small)
+            }
             Divider()
             if session.image != nil { DesktopSurface(session: session) }
             else { VStack(spacing: 12) { Image(systemName: "desktopcomputer").font(.system(size: 38)); Text(session.entry.recordKind?.title ?? "Рабочий стол").font(.headline); Text("Управление мышью и клавиатурой во вкладке").foregroundStyle(.secondary) }.frame(maxWidth: .infinity, maxHeight: .infinity) }
         }
     }
 }
+private extension DesktopPageView {
+    var rdpControls: some View {
+        HStack {
+            if session.monitorCount > 1 { Picker("Экран", selection: $session.monitor) { Text("Все мониторы").tag(-1); ForEach(0..<session.monitorCount, id: \.self) { Text("Монитор \($0 + 1)").tag($0) } }.frame(width: 180) }
+            if session.entry.transport?.rdpClipboard == true { Button("Вставить с Mac") { session.sendClipboard() }.disabled(!session.connected); Button("Копировать с Windows") { session.requestClipboard() }.disabled(!session.connected) }
+            if session.entry.transport?.rdpSharedFolder != nil { Label("HubFiles", systemImage: "folder").help("Папка Mac в Windows: \\\\tsclient\\HubFiles") }
+            if session.entry.transport?.rdpAutoResize != false { Text(session.displayControl ? "Авторазрешение" : "Ожидание Display Control").font(.caption).foregroundStyle(.secondary) }
+        }
+    }
+}
 struct DesktopSurface: NSViewRepresentable {
     @ObservedObject var session: DesktopSession
     func makeNSView(context: Context) -> DesktopCanvas { DesktopCanvas(session: session) }
-    func updateNSView(_ view: DesktopCanvas, context: Context) { view.needsDisplay = true }
+    func updateNSView(_ view: DesktopCanvas, context: Context) { view.needsDisplay = true; session.viewport(view.bounds.size) }
 }
 final class DesktopCanvas: NSView {
     let session: DesktopSession
     private var buttons: UInt8 = 0
     private var modifiers = Set<UInt16>()
     private var pressed: [UInt16:(String?,Bool)] = [:]
+    private var clipboardTimer: Timer?
+    override func layout() { super.layout(); session.viewport(bounds.size) }
+    override func becomeFirstResponder() -> Bool { clipboardTimer?.invalidate(); clipboardTimer = Timer.scheduledTimer(withTimeInterval: 0.7, repeats: true) { [weak self] _ in Task { @MainActor in guard let self else { return }; self.session.syncClipboard(focused: self.window?.firstResponder === self && self.window?.isKeyWindow == true) } }; session.syncClipboard(focused: true); return true }
     init(session: DesktopSession) { self.session = session; super.init(frame: .zero); wantsLayer = true }
+    deinit { clipboardTimer?.invalidate() }
     required init?(coder: NSCoder) { return nil }
     override var acceptsFirstResponder: Bool { true }
     private var displayRect: NSRect {
-        guard let image = session.image else { return bounds }
+        guard let image = session.displayImage else { return bounds }
         let scale = min(bounds.width / CGFloat(image.width), bounds.height / CGFloat(image.height))
         let size = NSSize(width: CGFloat(image.width) * scale, height: CGFloat(image.height) * scale)
         return NSRect(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2, width: size.width, height: size.height)
     }
-    override func draw(_ dirtyRect: NSRect) { NSColor.black.setFill(); bounds.fill(); if let image = session.image { NSGraphicsContext.current?.cgContext.draw(image, in: displayRect) } }
+    override func draw(_ dirtyRect: NSRect) { NSColor.black.setFill(); bounds.fill(); if let image = session.displayImage { NSGraphicsContext.current?.cgContext.draw(image, in: displayRect) } }
     private func pointer(_ event: NSEvent, changed: UInt8 = 0, down: Bool = false, wheel: Int = 0) {
-        guard let image = session.image else { return }; let rect = displayRect, p = convert(event.locationInWindow, from: nil)
+        guard let image = session.displayImage else { return }; let rect = displayRect, p = convert(event.locationInWindow, from: nil)
         if changed != 0 { if down { buttons |= changed } else { buttons &= ~changed } }
         let x = min(image.width - 1, max(0, Int((p.x - rect.minX) * CGFloat(image.width) / max(1, rect.width))))
         let y = min(image.height - 1, max(0, Int((rect.maxY - p.y) * CGFloat(image.height) / max(1, rect.height))))
-        session.pointer(x,y,buttons: buttons,changed: changed,down: down,wheel: wheel)
+        session.pointer(x + session.monitorOffset,y,buttons: buttons,changed: changed,down: down,wheel: wheel)
     }
     override func mouseDown(with event: NSEvent) { window?.makeFirstResponder(self); pointer(event, changed: 1, down: true) }
     override func mouseUp(with event: NSEvent) { pointer(event, changed: 1) }
@@ -187,12 +251,12 @@ final class DesktopCanvas: NSView {
     override func scrollWheel(with event: NSEvent) { if event.scrollingDeltaY != 0 { pointer(event, wheel: event.scrollingDeltaY > 0 ? 1 : -1) } }
     override func mouseMoved(with event: NSEvent) { pointer(event) }
     override func updateTrackingAreas() { for area in trackingAreas { removeTrackingArea(area) }; addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved,.activeInKeyWindow,.inVisibleRect], owner: self)) }
-    override func keyDown(with event: NSEvent) { let physical = !event.modifierFlags.intersection([.control,.option,.command]).isEmpty; let text = physical ? event.charactersIgnoringModifiers : event.characters; pressed[event.keyCode] = (text,physical); session.key(event.keyCode, text: text, down: true, physical: physical) }
+    override func keyDown(with event: NSEvent) { session.syncClipboard(focused: true); let physical = !event.modifierFlags.intersection([.control,.option,.command]).isEmpty; let text = physical ? event.charactersIgnoringModifiers : event.characters; pressed[event.keyCode] = (text,physical); session.key(event.keyCode, text: text, down: true, physical: physical) }
     override func keyUp(with event: NSEvent) { let value = pressed.removeValue(forKey: event.keyCode); session.key(event.keyCode, text: value?.0 ?? event.characters, down: false, physical: value?.1 ?? false) }
     override func flagsChanged(with event: NSEvent) {
         let flags: [UInt16:NSEvent.ModifierFlags] = [56:.shift,60:.shift,59:.control,62:.control,58:.option,61:.option,55:.command,54:.command]
         guard let flag = flags[event.keyCode] else { return }; let down = event.modifierFlags.contains(flag) && !modifiers.contains(event.keyCode)
         if down { modifiers.insert(event.keyCode) } else { modifiers.remove(event.keyCode) }; session.key(event.keyCode, text: nil, down: down)
     }
-    override func resignFirstResponder() -> Bool { for (code,value) in pressed { session.key(code,text: value.0,down: false,physical: value.1) }; pressed = [:]; for code in modifiers { session.key(code, text: nil, down: false) }; modifiers = []; if buttons != 0 { for button in [UInt8(1),2,4] where buttons & button != 0 { session.pointer(0,0,buttons: 0,changed: button) }; buttons = 0 }; return super.resignFirstResponder() }
+    override func resignFirstResponder() -> Bool { clipboardTimer?.invalidate(); clipboardTimer = nil; session.syncClipboard(focused: false); for (code,value) in pressed { session.key(code,text: value.0,down: false,physical: value.1) }; pressed = [:]; for code in modifiers { session.key(code, text: nil, down: false) }; modifiers = []; if buttons != 0 { for button in [UInt8(1),2,4] where buttons & button != 0 { session.pointer(0,0,buttons: 0,changed: button) }; buttons = 0 }; return super.resignFirstResponder() }
 }

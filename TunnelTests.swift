@@ -29,6 +29,10 @@ import Darwin
         }
         let hop = try capture("/usr/bin/ssh", ["-G", "-F", wrapper.path, "hop"])
         try check(hop.contains("batchmode yes") && hop.contains("stricthostkeychecking true") && !hop.contains("controlpath "), "ProxyJump uses protected defaults")
+        let interactiveDirectory = root.appendingPathComponent("interactive"); try fm.createDirectory(at: interactiveDirectory, withIntermediateDirectories: true)
+        let interactive = try TunnelCommands.temporaryConfig(original: config, directory: interactiveDirectory, interactive: true)
+        let loginSettings = try capture("/usr/bin/ssh", ["-G", "-F", interactive.path, "test"])
+        try check(loginSettings.contains("batchmode no") && loginSettings.contains("stricthostkeychecking ask") && loginSettings.contains("permitlocalcommand no"), "automatic tunnel supports askpass while preserving host-key confirmation and local-command protection")
         let forwarding = try capture("/usr/bin/ssh", ["-G"] + TunnelCommands.forward(profile, socket: socket, alias: "test"))
         try check(forwarding.contains("9101") && !forwarding.contains("9888"), "control forward excludes config forwards")
         profile.kind = .socks

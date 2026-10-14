@@ -21,20 +21,22 @@ if [[ ! -d "$cache_dir/freerdp-3.32.2" ]]; then tar -xzf "$cache_dir/freerdp-3.3
 "$cmake_bin" -S "$cache_dir/freerdp-3.32.2" -B "$cache_dir/build" -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_SYSROOT="$sdk" \
   -DCMAKE_EXPORT_NO_PACKAGE_REGISTRY=ON -DCMAKE_EXPORT_PACKAGE_REGISTRY=OFF \
-  -DBUILD_SHARED_LIBS=OFF -DWITH_CLIENT_COMMON=OFF -DWITH_CLIENT=OFF -DWITH_SERVER=OFF -DWITH_CHANNELS=OFF \
+  -DBUILD_SHARED_LIBS=OFF -DWITH_CLIENT_COMMON=ON -DWITH_CLIENT=OFF -DWITH_SERVER=ON -DWITH_PROXY=OFF -DWITH_SHADOW=OFF -DWITH_PLATFORM_SERVER=OFF -DWITH_CHANNELS=ON -DWITH_CLIENT_CHANNELS=ON -DWITH_SERVER_CHANNELS=ON \
   -DWITH_SAMPLE=OFF -DWITH_FFMPEG=OFF -DWITH_SWSCALE=OFF -DWITH_OPENH264=OFF -DWITH_JPEG=OFF -DWITH_X11=OFF -DWITH_WAYLAND=OFF \
   -DWITH_KRB5=OFF -DWITH_GSSAPI=OFF -DWITH_AAD=OFF -DWITH_PKCS11=OFF -DWITH_SMARTCARD_PCSC=OFF -DWITH_PCSC=OFF \
-  -DWITH_CUPS=OFF -DWITH_WINPR_TOOLS=OFF -DWITH_MANPAGES=OFF -DWITH_JSON_DISABLED=ON -DWITH_INTERNAL_MD4=ON -DWITH_INTERNAL_RC4=ON \
+  -DCHANNEL_AINPUT=OFF -DCHANNEL_AUDIN=OFF -DCHANNEL_ECHO=OFF -DCHANNEL_ENCOMSP=OFF -DCHANNEL_GEOMETRY=OFF -DCHANNEL_GFXREDIR=OFF -DCHANNEL_LOCATION=OFF -DCHANNEL_PARALLEL=OFF -DCHANNEL_PRINTER=OFF -DCHANNEL_RAIL=OFF -DCHANNEL_RDP2TCP=OFF -DCHANNEL_RDPECAM=OFF -DCHANNEL_RDPEAR=OFF -DCHANNEL_RDPEI=OFF -DCHANNEL_RDPEMSC=OFF -DCHANNEL_RDPEWA=OFF -DCHANNEL_RDPGFX=OFF -DCHANNEL_RDPSND=OFF -DCHANNEL_REMDESK=OFF -DCHANNEL_SERIAL=OFF -DCHANNEL_SMARTCARD=OFF -DCHANNEL_SSHAGENT=OFF -DCHANNEL_TELEMETRY=OFF -DCHANNEL_TSMF=OFF -DCHANNEL_URBDRC=OFF -DCHANNEL_VIDEO=OFF -DCHANNEL_CLIPRDR=ON -DCHANNEL_DISP=ON -DCHANNEL_DRDYNVC=ON -DCHANNEL_RDPDR=ON -DCHANNEL_DRIVE=ON -DWITH_FUSE=OFF -DWITH_CUPS=OFF -DWITH_WINPR_TOOLS=OFF -DWITH_MANPAGES=OFF -DWITH_JSON_DISABLED=ON -DWITH_INTERNAL_MD4=ON -DWITH_INTERNAL_RC4=ON \
   -DOPENSSL_INCLUDE_DIR="$cache_dir/openssl-3.6.4/include" -DOPENSSL_SSL_LIBRARY="$cache_dir/openssl-3.6.4/libssl.a" \
   -DOPENSSL_CRYPTO_LIBRARY="$cache_dir/openssl-3.6.4/libcrypto.a" -DOPENSSL_USE_STATIC_LIBS=ON
-"$cmake_bin" --build "$cache_dir/build" -j6 --target freerdp
+"$cmake_bin" --build "$cache_dir/build" -j6 --target freerdp-client freerdp-server
 compile_bridge() {
+local -a extra_sources extra_libraries
+if [[ "$1" == RDPHelper.c ]]; then extra_sources=(RDPChannels.c); else extra_sources=(RDPFixtureChannels.c); extra_libraries=("$cache_dir/build/server/common/libfreerdp-server3.a"); fi
 clang -arch arm64 -mmacosx-version-min=14.0 -isysroot "$sdk" -O2 -Wno-deprecated-declarations \
   -I"$cache_dir/freerdp-3.32.2/include" -I"$cache_dir/freerdp-3.32.2/winpr/include" \
   -I"$cache_dir/build/include" -I"$cache_dir/build/winpr/include" \
-  "$1" "$cache_dir/build/libfreerdp/libfreerdp3.a" "$cache_dir/build/winpr/libwinpr/libwinpr3.a" \
+  "$1" "${extra_sources[@]}" "${extra_libraries[@]}" "$cache_dir/build/client/common/libfreerdp-client3.a" "$cache_dir/build/libfreerdp/libfreerdp3.a" "$cache_dir/build/winpr/libwinpr/libwinpr3.a" \
   "$cache_dir/openssl-3.6.4/libssl.a" "$cache_dir/openssl-3.6.4/libcrypto.a" \
-  -lz -liconv -framework Foundation -framework Security -o "$2"
+  -lz -liconv -framework Foundation -framework Security -framework CoreServices -o "$2"
 }
 compile_bridge RDPHelper.c "$output"
 if [[ -n "${4:-}" ]]; then compile_bridge RDPFixture.c "${4:A}"; fi
