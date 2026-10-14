@@ -18,7 +18,6 @@ struct BackupRecord: Codable, Identifiable {
     var attachments: [BackupAttachment]
     var profileIDs: [UUID]? = nil
     var tunnelGatewayID: UUID? = nil
-    var knowledgeIDs: [UUID]? = nil
 }
 struct HubBackup: Codable {
     var version = 1
@@ -29,13 +28,11 @@ struct HubBackup: Codable {
     var templates: [RecordTemplate]
     var commandLibrary: [SavedConsoleCommand]? = nil
     var profiles: [HubProfile]? = nil
-    var knowledgeItems: [KnowledgeItem]? = nil
+    var nmapTemplates: [NmapTemplate]? = nil
     static let maximumBytes = 350_000_000
     func validate() throws {
         try CommandCatalog.validate(commandLibrary ?? [])
-        try KnowledgeState(items: knowledgeItems ?? []).validate()
-        let knownMaterials = Set((knowledgeItems ?? []).map(\.id) + KnowledgeCatalog.presets.map(\.id))
-        guard records.allSatisfy({ ($0.knowledgeIDs ?? []).count <= 100 && Set($0.knowledgeIDs ?? []).isSubset(of: knownMaterials) }) else { throw ConfigError.message("Неизвестный материал библиотеки в архиве.") }
+        try NmapTemplates.validate(nmapTemplates ?? [])
         if let profiles {
             guard profiles.count <= 50, Set(profiles.map(\.id)).count == profiles.count, profiles.allSatisfy({ HubProfiles.validName($0.name) }), Set(profiles.map { $0.name.lowercased() }).count == profiles.count else { throw ConfigError.message("Некорректные профили архива.") }
             let valid = Set(profiles.map(\.id))

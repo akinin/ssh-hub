@@ -161,20 +161,27 @@ import Network
         check(routedCopies[0].1.favoriteID != routed[0].1.favoriteID && routedCopies[1].1.transport?.tunnel?.sshID == routedCopies[0].1.favoriteID, "ID conflicts remap gateway references to the correct new copy")
         let missingGateway = try BackupRestoration.install(routedBackup, selected: [desktopRecord.id], localRepository: repository, documents: docs, commands: saved, attachments: attachments, templates: templates, writeTemplates: { templates = $0 })
         check(missingGateway[0].1.transport?.tunnel?.sshID.hasPrefix("missing:") == true, "unselected gateway cannot silently reuse another server or bypass tunnel")
-        var knowledge = KnowledgeState(), material = KnowledgeItem(); material.title = "Shared runbook"; material.content = "Original"; material.assets = [KnowledgeAsset(name: "fixture.txt", data: Data("asset".utf8))]
-        var knowledgeBackup = decrypted; knowledgeBackup.records[0].record.id = UUID(); knowledgeBackup.knowledgeItems = [material]; knowledgeBackup.records[0].knowledgeIDs = [material.id, KnowledgeCatalog.presets[0].id]
-        let encryptedKnowledge = try BackupEncryption.open(BackupEncryption.seal(knowledgeBackup, password: "fixture-password"), password: "fixture-password")
-        check(encryptedKnowledge.knowledgeItems == [material], "encrypted archive includes library assets and contents")
-        let restoredKnowledge = try BackupRestoration.install(encryptedKnowledge, selected: [knowledgeBackup.records[0].id], localRepository: repository, documents: docs, commands: saved, attachments: attachments, templates: templates, writeTemplates: { templates = $0 }, knowledge: knowledge, writeKnowledge: { knowledge = $0 })
-        check(knowledge.items == [material] && knowledge.assignments[restoredKnowledge[0].1.favoriteID] == [material.id, KnowledgeCatalog.presets[0].id], "library assignments remapped to restored records")
-        material.content = "Existing local edit"; try knowledge.save(material)
-        let conflict = try BackupRestoration.install(encryptedKnowledge, selected: [knowledgeBackup.records[0].id], localRepository: repository, documents: docs, commands: saved, attachments: attachments, templates: templates, writeTemplates: { templates = $0 }, knowledge: knowledge, writeKnowledge: { knowledge = $0 })
-        let copiedMaterial = knowledge.items.first { $0.content == "Original" }!
-        check(copiedMaterial.id != material.id && knowledge.assignments[conflict[0].1.favoriteID]?.contains(copiedMaterial.id) == true && knowledge.items.contains(where: { $0.content == "Existing local edit" }), "conflicting library item gets independent ID and correct references")
-        let beforeKnowledge = knowledge, beforeKnowledgeRecords = try repository.load()
-        rejects("library restore persistence failure") { _ = try BackupRestoration.install(encryptedKnowledge, selected: [knowledgeBackup.records[0].id], localRepository: repository, documents: docs, commands: saved, attachments: attachments, templates: templates, writeTemplates: { templates = $0 }, knowledge: knowledge, writeKnowledge: { value in if value != beforeKnowledge { throw ConfigError.message("fixture write failure") }; knowledge = value }) }
-        let afterKnowledgeRecords = try repository.load()
-        check(knowledge == beforeKnowledge && afterKnowledgeRecords == beforeKnowledgeRecords, "library failure rolls back new record materials and preserves state")
+        var legacyArchive = try JSONSerialization.jsonObject(with: JSONEncoder().encode(decrypted)) as! [String: Any]
+        legacyArchive["knowledgeItems"] = [["obsolete": "ignored"]]
+        var legacyRecords = legacyArchive["records"] as! [[String: Any]]
+        legacyRecords[0]["knowledgeIDs"] = [UUID().uuidString]; legacyArchive["records"] = legacyRecords
+        let stripped = try JSONDecoder().decode(HubBackup.self, from: JSONSerialization.data(withJSONObject: legacyArchive))
+        try stripped.validate()
+        let strippedJSON = String(decoding: try JSONEncoder().encode(stripped), as: UTF8.self)
+        check(!strippedJSON.contains("knowledgeItems") && !strippedJSON.contains("knowledgeIDs"), "old archives read but removed libraries are discarded")
+        var nmapBackup = decrypted; nmapBackup.records = []; nmapBackup.templates = []; nmapBackup.commandLibrary = []
+        var nmapTemplate = NmapTemplates.presets[0]; nmapTemplate.id = UUID(); nmapTemplate.title = "Fixture scan"
+        nmapBackup.nmapTemplates = [nmapTemplate]
+        let nmapDecrypted = try BackupEncryption.open(BackupEncryption.seal(nmapBackup, password: "fixture-password"), password: "fixture-password")
+        check(nmapDecrypted.nmapTemplates == [nmapTemplate], "Nmap template encrypted roundtrip")
+        var nmapTemplates: [NmapTemplate] = []
+        _ = try BackupRestoration.install(nmapDecrypted, selected: [], localRepository: repository, documents: docs, commands: saved, attachments: attachments, templates: templates, writeTemplates: { templates = $0 }, nmapTemplates: nmapTemplates, writeNmapTemplates: { nmapTemplates = $0 })
+        nmapTemplates[0].description = "Existing edit"
+        _ = try BackupRestoration.install(nmapDecrypted, selected: [], localRepository: repository, documents: docs, commands: saved, attachments: attachments, templates: templates, writeTemplates: { templates = $0 }, nmapTemplates: nmapTemplates, writeNmapTemplates: { nmapTemplates = $0 })
+        check(nmapTemplates.count == 2 && Set(nmapTemplates.map(\.id)).count == 2 && nmapTemplates[0].description == "Existing edit", "Nmap conflict creates independent copy")
+        let priorNmap = nmapTemplates
+        rejects("Nmap restore write failure") { _ = try BackupRestoration.install(nmapDecrypted, selected: [], localRepository: repository, documents: docs, commands: saved, attachments: attachments, templates: templates, writeTemplates: { templates = $0 }, nmapTemplates: priorNmap, writeNmapTemplates: { value in if value != priorNmap { throw ConfigError.message("fixture write failure") }; nmapTemplates = value }) }
+        check(nmapTemplates == priorNmap, "Nmap restore failure preserves original templates")
         let logID = UUID(), logRoot = root.appendingPathComponent("logs")
         let logger = try SessionOutputLog(id: logID, root: logRoot)
         try logger.append(Data("output-one\n".utf8)); logger.close()

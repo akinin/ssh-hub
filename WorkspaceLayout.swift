@@ -3,7 +3,7 @@ import Foundation
 enum WorkspaceMetrics { static let footerHeight: CGFloat = 44 }
 
 enum EntryDetailSection: String, Codable { case overview, documentation, attachments, scanner, sftp, connection
-    var title: String { switch self { case .overview: return "Панель"; case .documentation: return "Документация"; case .attachments: return "Вложения"; case .sftp: return "SFTP"; case .scanner: return "Nmap"; case .connection: return "Подключение" } }
+    var title: String { switch self { case .overview: return "Панель"; case .documentation: return "Документация"; case .attachments: return "Вложения"; case .sftp: return "SFTP"; case .scanner: return "Инструменты"; case .connection: return "Подключение" } }
     var icon: String { switch self { case .overview: return "gauge.with.dots.needle.50percent"; case .documentation: return "doc.richtext"; case .attachments: return "paperclip"; case .sftp: return "folder"; case .scanner: return "network"; case .connection: return "link" } }
 }
 struct EntryPage: Identifiable, Codable {

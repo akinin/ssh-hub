@@ -7,37 +7,8 @@ import Security
     static func main() async throws {
         let args = CommandLine.arguments
         if args.count > 1 { try await network(args); return }
-        check(KnowledgeCatalog.presets.count >= 30, "substantial preset catalog")
-        for item in KnowledgeCatalog.presets { check(item.validation == nil, "preset validation: " + item.title + ": " + (item.validation ?? "")) }
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ssh-hub-toolkit-tests-" + UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false); defer { try? FileManager.default.removeItem(at: root) }
-        let repository = KnowledgeRepository(file: root.appendingPathComponent("library.json"))
-        var item = KnowledgeItem(); item.title = "Runbook"; item.content = "First"; item.assets = [KnowledgeAsset(name: "note.txt", data: Data("fixture".utf8))]
-        var state = KnowledgeState(); try state.save(item); state.assignments["record"] = [item.id]; try repository.write(state)
-        check(try repository.load() == state, "library persists including assignments and assets")
-        check((try FileManager.default.attributesOfItem(atPath: repository.file.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600, "private library permissions")
-        item.content = "Second"; try state.save(item); check(state.items[0].revisions.first?.content == "First", "old text preserved in history")
-        state.move("record", to: "copy", copy: true); check(state.assignments["record"] == state.assignments["copy"], "duplicate shares linked instructions")
-        state.move("record", to: "renamed"); check(state.assignments["record"] == nil && state.assignments["renamed"] == [item.id], "rename preserves assignments")
-        for index in 0..<30 { item.content = String(index); try state.save(item) }; check(state.items[0].revisions.count == 20, "bounded history")
-        state.remove(item.id); check(state.items.isEmpty && state.assignments.values.allSatisfy(\.isEmpty), "deletion removes assignments")
-        var bad = item; bad.kind = .diagnostic; check(bad.validation != nil, "empty diagnostic rejected"); bad.steps = [KnowledgeStep(title: "Bad", command: "echo x\nreboot")]; check(bad.validation != nil, "control characters rejected")
-        bad = item; bad.assets = [KnowledgeAsset(name: "../escape", data: Data())]; check(bad.validation != nil, "asset traversal rejected")
-        check(KnowledgeCatalog.ports("443,80,443") == [80,443] && KnowledgeCatalog.ports("0,443") == nil && KnowledgeCatalog.ports("22,,80") == nil, "port sets validated")
-        let value = "a'; touch /tmp/should-never-exist; '"; let variables = [KnowledgeVariable(name: "value", value: value)]
-        let command = KnowledgeCatalog.render("printf '%s' {{value}}", entry: nil, variables: variables, values: [:], shell: true)
-        let output = try await ToolkitProcess().run("/bin/sh", ["-c", command]); check(output.output == value, "substitutions cannot execute shell syntax")
-        check(KnowledgeCatalog.render("{{a}} {{b}}", entry: nil, variables: [KnowledgeVariable(name: "a", value: "{{b}}"), KnowledgeVariable(name: "b", value: "value")], values: [:]) == "{{b}} value", "single-pass substitution")
-        check(try ToolkitText.diff("a\nb", "a\nc", hideSecrets: false).contains("+ c"), "line differences")
-        check(try ToolkitText.diff("password=one", "password=two", hideSecrets: true) == "Различий нет", "masked secrets never enter diff")
-        let hidden = ToolkitText.redacted("api_key=abc\n-----BEGIN RSA PRIVATE KEY-----\nkeydata\n-----END RSA PRIVATE KEY-----\nurl=https://user:password@example.test")
-        check(!hidden.contains("abc") && !hidden.contains("keydata") && !hidden.contains("user:password"), "common secrets and private keys masked")
-        let file = root.appendingPathComponent("config"); try Data("old".utf8).write(to: file)
-        let backup = try ToolkitText.replace(file, expected: "old", with: "new")
-        check(try ToolkitText.read(file) == "new" && ToolkitText.read(backup) == "old", "replace keeps exact prior contents")
-        rejects("external edit") { _ = try ToolkitText.replace(file, expected: "old", with: "lost") }
-        let link = root.appendingPathComponent("link"); try FileManager.default.createSymbolicLink(at: link, withDestinationURL: file)
-        rejects("symlink") { _ = try ToolkitText.read(link) }
+        check(ToolkitText.ports("443,80,443") == [80,443] && ToolkitText.ports("22,,80") == nil, "port sets validated")
+        try IPNetworkTests.run()
         rejects("DNS injection") { _ = try ToolkitText.dnsArguments(host: "-f", type: "A", resolver: "") }
         rejects("resolver injection") { _ = try ToolkitText.dnsArguments(host: "example.test", type: "A", resolver: "127.0.0.1 -f bad") }
         let failure = try await ToolkitProcess().run("/bin/sh", ["-c", "printf output; printf diagnostic >&2; exit 42"])
@@ -45,10 +16,10 @@ import Security
         let timeout = try await ToolkitProcess().run("/bin/sleep", ["5"], timeout: 0.1); check(timeout.timedOut, "bounded subprocess duration")
         let worker = ToolkitProcess(); let task = Task { try await worker.run("/bin/sleep", ["5"]) }; try await Task.sleep(for: .milliseconds(80)); task.cancel()
         do { _ = try await task.value; fatalError("expected cancellation") } catch is CancellationError {}
-        print("PASS Toolkit: catalog, linked assignments/history/assets, private persistence, validation, one-pass shell quoting, diff/redaction/backup, external edit/symlink refusal, process exit/timeout/cancellation")
+        print("PASS Toolkit: IP calculator, retired library cleanup, ports validation, process exit/timeout/cancellation")
     }
     static func network(_ args: [String]) async throws {
-        guard args.count == 6 else { fatalError("config tls-port dns-port cert.der root") }
+        guard args.count == 8 else { fatalError("config tls-port dns-port cert.der root http-port wol-port") }
         let config = URL(fileURLWithPath: args[1]), tlsPort = Int(args[2])!, dnsPort = args[3], root = URL(fileURLWithPath: args[5])
         let snapshot = try SSHConfig(url: config).load(), entry = snapshot.aliases.first { $0.name == "through-hop" }!
         let result = try await ToolkitProcess().ssh("printf TOOLKIT_SSH_OK", entry: entry, config: config)
@@ -66,6 +37,64 @@ import Security
         let mismatch = try await TLSInspector().inspect(host: "127.0.0.1", port: tlsPort, anchors: [cert])
         check(mismatch.contains("Доверие: ошибка"), "hostname mismatch never trusted")
         let tcp = await TCPAvailabilityProbe().run(host: "127.0.0.1", port: UInt16(tlsPort)); check(tcp.reachable, "TCP fixture reachable")
-        print("PASS Toolkit localhost integration: SSH/ProxyJump isolation, output/status/timeout, DNS answer, TLS chain/fingerprint/expiry, trust rejection, valid anchor, hostname mismatch, TCP")
+        let ping = try await ToolkitProcess().run("/sbin/ping", try ToolkitText.pingArguments("127.0.0.1", ipv6: false), timeout: 10)
+        check(ping.status == 0 && ping.output.contains("0.0% packet loss"), "IPv4 ping loopback")
+        let ping6 = try await ToolkitProcess().run("/sbin/ping6", try ToolkitText.pingArguments("::1", ipv6: true), timeout: 10)
+        check(ping6.status == 0 && ping6.output.contains("0.0% packet loss"), "IPv6 ping loopback")
+        let trace = try await ToolkitProcess().run("/usr/sbin/traceroute", try ToolkitText.traceArguments("127.0.0.1"), timeout: 25)
+        check(trace.status == 0 && trace.output.contains("127.0.0.1"), "bounded localhost traceroute")
+        let base = "http://127.0.0.1:" + args[6]
+        let http = try await ToolkitProcess().run("/usr/bin/curl", try ToolkitText.httpArguments(base + "/redirect", headOnly: false), timeout: 20)
+        check(http.status == 0 && http.output.contains("302 Found") && http.output.contains("HTTP 200") && http.output.contains("перенаправлений: 1") && !http.output.contains("BODY_NOT_SAVED"), "HTTP redirect headers/timings without response body")
+        let head = try await ToolkitProcess().run("/usr/bin/curl", try ToolkitText.httpArguments(base + "/final", headOnly: true))
+        check(head.status == 0 && head.output.contains("HTTP 200"), "HTTP HEAD")
+        let loop = try await ToolkitProcess().run("/usr/bin/curl", try ToolkitText.httpArguments(base + "/loop", headOnly: true))
+        check(loop.status != 0 && loop.output.contains("перенаправлений: 5"), "redirect loop bounded")
+        let fileRedirect = try await ToolkitProcess().run("/usr/bin/curl", try ToolkitText.httpArguments(base + "/file", headOnly: true))
+        check(fileRedirect.status != 0 && !fileRedirect.output.contains("root:"), "redirect cannot read local file")
+        let badTLS = try await ToolkitProcess().run("/usr/bin/curl", try ToolkitText.httpArguments("https://localhost:" + String(tlsPort), headOnly: true))
+        check(badTLS.status == 60, "HTTP rejects untrusted TLS")
+        let wake = try WakeOnLAN.send(mac: "00:11:22:33:44:55", broadcast: "127.0.0.1", port: Int(args[7])!)
+        check(wake.contains("102 байт"), "WOL sends exact packet to own UDP listener")
+        print("PASS Toolkit localhost integration: SSH/ProxyJump isolation, output/status/timeout, DNS answer, TLS chain/fingerprint/expiry, trust rejection, valid anchor, hostname mismatch, TCP, IPv4/IPv6 ping, traceroute, HTTP redirects/protocol limits/trust/body isolation, WOL")
+    }
+}
+
+enum IPNetworkTests {
+    static func run() throws {
+        func check(_ value: Bool, _ message: String) { ToolkitTests.check(value, message) }
+        let v4 = try IPNetwork("192.168.1.15/24")
+        check(v4.cidr == "192.168.1.0/24" && v4.count == "256" && v4.report.contains("192.168.1.255") && v4.report.contains("Адресов узлов: 254"), "IPv4 network/mask/range/hosts")
+        check(try IPNetwork("192.168.1.15/255.255.255.0") == v4, "dotted netmask")
+        check(try v4.subnets(prefix: 26) == ["192.168.1.0/26","192.168.1.64/26","192.168.1.128/26","192.168.1.192/26"], "subnet boundaries")
+        check(v4.contains("192.168.1.250") == true && v4.contains("192.168.2.1") == false && v4.contains("::1") == nil, "membership and address families")
+        check(try IPNetwork("0.0.0.0/0").count == "4294967296", "IPv4 full range without overflow")
+        check(try IPNetwork("192.0.2.0/31").report.contains("Адресов узлов: 2") && IPNetwork("192.0.2.1/32").report.contains("Адресов узлов: 1"), "RFC3021 and host prefix")
+        let v6 = try IPNetwork("2001:db8::abcd/64")
+        check(v6.cidr == "2001:db8::/64" && v6.count == "18446744073709551616", "IPv6 network and 64-bit count")
+        check(try IPNetwork("::/0").count == "340282366920938463463374607431768211456", "IPv6 128-bit exact count")
+        check(try v6.subnets(prefix: 66) == ["2001:db8::/66","2001:db8:0:0:4000::/66","2001:db8:0:0:8000::/66","2001:db8:0:0:c000::/66"], "IPv6 subnet arithmetic")
+        check(try IPNetwork("::/0").subnets(prefix: 128).count == 256, "bounded subnet preview")
+        for invalid in ["", "example.test/24", "192.0.2.999/24", "192.0.2.1/33", "::1/129", "192.0.2.1/255.0.255.0", "::1/-1"] { ToolkitTests.rejects("invalid IP network") { _ = try IPNetwork(invalid) } }
+        ToolkitTests.rejects("supernet instead of subdivision") { _ = try v4.subnets(prefix: 23) }
+        let packet = try WakeOnLAN.packet(mac: "00-11-22-33-44-55")
+        check(packet.count == 102 && packet.prefix(6) == Data(repeating: 255, count: 6) && packet.suffix(6) == Data([0,17,34,51,68,85]), "magic packet bytes")
+        ToolkitTests.rejects("invalid MAC") { _ = try WakeOnLAN.packet(mac: "00:11:22:33:44:GG") }
+        ToolkitTests.rejects("ping options injection") { _ = try ToolkitText.pingArguments("-f", ipv6: false) }
+        ToolkitTests.rejects("traceroute options injection") { _ = try ToolkitText.traceArguments("localhost;echo") }
+        ToolkitTests.rejects("HTTP file URL") { _ = try ToolkitText.httpArguments("file:///etc/passwd", headOnly: true) }
+        ToolkitTests.rejects("HTTP user credentials") { _ = try ToolkitText.httpArguments("https://user:secret@example.test", headOnly: false) }
+        let http = try ToolkitText.httpArguments("https://example.test/?q=a%20b", headOnly: true)
+        check(http.first == "--disable" && http.contains("--head") && !http.contains("--insecure") && http.suffix(2) == ["--url","https://example.test/?q=a%20b"], "HTTP bounded args with trust checks and no curlrc")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ssh-hub-retired-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false); defer { try? FileManager.default.removeItem(at: root) }
+        let retired = root.appendingPathComponent("KnowledgeLibrary.json"), commands = root.appendingPathComponent("CommandLibrary.json")
+        try Data("obsolete assets".utf8).write(to: retired); try Data("commands".utf8).write(to: commands)
+        try RetiredLibraryData.remove(root: root); try RetiredLibraryData.remove(root: root)
+        check(try !FileManager.default.fileExists(atPath: retired.path) && Data(contentsOf: commands) == Data("commands".utf8), "purge is idempotent and preserves command library")
+        try FileManager.default.createSymbolicLink(at: retired, withDestinationURL: commands); try RetiredLibraryData.remove(root: root)
+        check(FileManager.default.fileExists(atPath: commands.path), "purge unlinks only exact legacy symlink")
+        try FileManager.default.createDirectory(at: retired, withIntermediateDirectories: false)
+        ToolkitTests.rejects("unexpected directory is never traversed") { try RetiredLibraryData.remove(root: root) }
     }
 }

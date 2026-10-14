@@ -45,14 +45,17 @@ extension AliasStore {
         sftpModels.removeValue(forKey: page.id)?.disconnect()
         connectionSessions.removeValue(forKey: page.id)?.stop()
         pages.removeAll { $0.id == page.id }; workspace.remove(.page(page.id))
-        if page.section == .scanner { scanner.cancel() }
+        if page.section == .scanner { scanner.cancel(); tools.stop() }
         syncWorkspaceSelection()
     }
     func closeAllTabs(force: Bool = false) { launchTasks.values.forEach { $0.cancel() }; pages.forEach { closePage($0, force: force) }; for session in Array(ConsoleStore.shared.sessions) where force || canClose(.console(session.id)) { ConsoleStore.shared.close(session) }; if force { workspace = WorkspaceLayout() }; syncWorkspaceSelection() }
     func keepPage(_ page: EntryPage) { for session in Array(ConsoleStore.shared.sessions) { closeConsole(session) }; pages.filter { $0.id != page.id }.forEach { closePage($0) }; arrangeWorkspace(.none); selectPage(page) }
     func keepConsole(_ session: ConsoleSession) { pages.forEach { closePage($0) }; for other in Array(ConsoleStore.shared.sessions) where other.id != session.id { closeConsole(other) }; arrangeWorkspace(.none); selectConsole(session) }
-    func openScanner(_ entry: SSHAlias? = nil) {
-        if let entry, entry.canSSH, !scanner.running { scanner.target = entry.host }
+    func openScanner(_ entry: SSHAlias? = nil, tool: NetworkTool? = nil) {
+        if let entry, !scanner.running, !tools.runner.busy {
+            tools.setEntry(entry); scanner.target = tools.host
+        }
+        if let tool { tools.section = tool }
         openPage(nil, section: .scanner)
     }
 }
@@ -187,7 +190,7 @@ struct WorkspacePaneView: View {
             if let session = consoles.sessions.first(where: { $0.id == id }) { ConsolePane(session: session).id(id) }
         case .page(let id):
             if let page = store.pages.first(where: { $0.id == id }) {
-                if page.section == .scanner { NmapView(model: store.scanner) }
+                if page.section == .scanner { NetworkToolsView(model: store.tools, scanner: store.scanner) }
                 else if page.section == .connection, let session = store.connectionSessions[id] { ConnectionPageView(session: session).id(id) }
                 else if page.section == .sftp, let model = store.sftpModels[id] { SFTPView(model: model).id(id) }
                 else if let entry = store.entry(for: page) { EntryDetailScreen(entry: entry, section: page.section).id(id) }

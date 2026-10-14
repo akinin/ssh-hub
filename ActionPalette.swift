@@ -19,7 +19,6 @@ struct ActionPalette: View {
             PaletteAction(id: "profiles", title: "Профили", detail: "Наборы записей и рабочие области", icon: "person.crop.rectangle.stack", run: { store.showingProfiles = true }),
             PaletteAction(id: "new", title: "Новая запись", detail: "⌘N", icon: "plus", run: { store.creatingAlias = true }),
             PaletteAction(id: "templates", title: "Шаблоны записей", detail: "Proxmox, UniFi, Wiren Board и свои", icon: "square.stack", run: { store.showingTemplates = true }),
-            PaletteAction(id: "knowledge", title: "Библиотеки и инструменты", detail: "Инструкции, конфигурации, диагностика, туннели, сравнение, DNS, порты, TLS", icon: "books.vertical", run: { store.openKnowledge() }),
             PaletteAction(id: "commands", title: "Библиотека команд", detail: "Поиск, описания, свои команды и встроенные заготовки", icon: "books.vertical", run: { store.showingCommandLibrary = true }),
             PaletteAction(id: "backup", title: "Резервное копирование", detail: "Архив и восстановление", icon: "externaldrive", run: { store.showingBackup = true }),
             PaletteAction(id: "availability", title: "Статус доступности", detail: "Выбранные серверы и интервал", icon: "waveform.path.ecg", run: { store.showingAvailability = true }),
@@ -28,10 +27,10 @@ struct ActionPalette: View {
             PaletteAction(id: "columns", title: "Две панели рядом", detail: "Рабочая область", icon: "rectangle.split.2x1", run: { store.arrangeWorkspace(.columns) }),
             PaletteAction(id: "rows", title: "Две панели одна под другой", detail: "Рабочая область", icon: "rectangle.split.1x2", run: { store.arrangeWorkspace(.rows) }),
             PaletteAction(id: "single", title: "Одна панель", detail: "Рабочая область", icon: "rectangle", run: { store.arrangeWorkspace(.none) }),
-            PaletteAction(id: "scanner", title: "Nmap", detail: "Открыть инструмент", icon: "network", run: { store.openScanner() })
+            PaletteAction(id: "scanner", title: "Инструменты", detail: "Nmap, DNS, TCP, TLS, IP, Ping, HTTP, Wake-on-LAN", icon: "network", run: { store.openScanner() })
         ]
-        for section in ToolkitSection.allCases {
-            values.append(PaletteAction(id: "knowledge:" + section.rawValue, title: section.title, detail: "Библиотеки и инструменты", icon: section.kind?.icon ?? "network", run: { store.openKnowledge(section: section) }))
+        for section in NetworkTool.allCases {
+            values.append(PaletteAction(id: "tool:" + section.rawValue, title: section.title, detail: "Инструменты", icon: section.icon, run: { store.openScanner(tool: section) }))
         }
         for entry in store.profileEntries {
             let title = store.title(entry), detail = [entry.name, entry.host, entry.user, store.group(entry)].joined(separator: " · ")
@@ -40,7 +39,7 @@ struct ActionPalette: View {
             if entry.recordKind == .website { append("website", "Открыть сайт", "globe") { store.openWebsite(entry) } }
             if entry.canSSH { append("sftp", "SFTP", "folder") { store.openSFTP(entry) }; append("check", "Проверить SSH", "checkmark.shield") { store.check(entry) } }
             append("dashboard", "Панель", "gauge.with.dots.needle.50percent") { store.showDashboard(entry) }
-            append("knowledge", "Библиотеки и инструменты", "books.vertical") { store.openKnowledge(entry) }
+            append("tools", "Инструменты", "network") { store.openScanner(entry) }
             append("documentation", "Документация", "doc.text") { store.showDocumentation(entry) }
             append("attachments", "Вложения", "paperclip") { store.showAttachments(entry) }
             append("edit", "Редактировать", "pencil") { store.edit(entry) }

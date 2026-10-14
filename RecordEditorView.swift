@@ -29,7 +29,6 @@ extension AliasStore {
         if let template, template.localID != entry.localID {
             documentation.copy(from: template.favoriteID, to: entry.favoriteID)
             savedCommands.copy(from: template.favoriteID, to: entry.favoriteID)
-            KnowledgeLibrary.shared.move(template.favoriteID, to: entry.favoriteID, copy: true)
             do { try attachmentsRepository.copy(from: template.favoriteID, to: entry.favoriteID) }
             catch { self.error = "Запись создана, но вложения не скопированы: " + error.localizedDescription }
         }

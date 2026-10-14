@@ -68,47 +68,25 @@ final class ToolkitProcess: @unchecked Sendable {
     }
 }
 enum ToolkitText {
-    static func read(_ url: URL) throws -> String {
-        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
-        guard values.isRegularFile == true, values.isSymbolicLink != true, (values.fileSize ?? 0) <= 262144, let text = String(data: try Data(contentsOf: url), encoding: .utf8), !text.contains("\0") else { throw ConfigError.message("Выбери обычный UTF-8 файл до 256 КБ без символической ссылки.") }
-        return text
-    }
-    static func redacted(_ text: String) -> String {
-        var inKey = false
-        return text.components(separatedBy: "\n").map { line in
-            if line.contains("-----BEGIN ") && line.contains("PRIVATE KEY-----") { inKey = true; return "[ПРИВАТНЫЙ КЛЮЧ СКРЫТ]" }
-            if inKey { if line.contains("-----END ") { inKey = false }; return "[СКРЫТО]" }
-            let pattern = "(?i)(password|passwd|secret|token|authorization|api[_-]?key|private[_-]?key)\\s*[:=]"
-            if let range = line.range(of: pattern, options: .regularExpression) { return String(line[..<range.upperBound]) + " [СКРЫТО]" }
-            return line.replacingOccurrences(of: "(?i)(https?://)[^/@\\s:]+:[^/@\\s]+@", with: "$1[СКРЫТО]@", options: .regularExpression)
-        }.joined(separator: "\n")
-    }
-    static func diff(_ left: String, _ right: String, hideSecrets: Bool) throws -> String {
-        guard left.utf8.count <= 262144, right.utf8.count <= 262144 else { throw ConfigError.message("Каждый текст — до 256 КБ.") }
-        let a = (hideSecrets ? redacted(left) : left).components(separatedBy: "\n"), b = (hideSecrets ? redacted(right) : right).components(separatedBy: "\n")
-        guard a.count <= 1500, b.count <= 1500 else { throw ConfigError.message("Для сравнения — до 1500 строк на файл.") }
-        var matrix = [UInt16](repeating: 0, count: (a.count + 1) * (b.count + 1)); let stride = b.count + 1
-        if !a.isEmpty && !b.isEmpty { for i in (0..<a.count).reversed() { for j in (0..<b.count).reversed() { matrix[i * stride + j] = a[i] == b[j] ? 1 + matrix[(i + 1) * stride + j + 1] : max(matrix[(i + 1) * stride + j], matrix[i * stride + j + 1]) } } }
-        var i = 0, j = 0, rows = ["--- Слева", "+++ Справа"], changes = 0
-        while i < a.count || j < b.count {
-            if i < a.count && j < b.count && a[i] == b[j] { rows.append("  " + a[i]); i += 1; j += 1 }
-            else if j < b.count && (i == a.count || matrix[i * stride + j + 1] >= matrix[(i + 1) * stride + j]) { rows.append("+ " + b[j]); j += 1; changes += 1 }
-            else { rows.append("- " + a[i]); i += 1; changes += 1 }
-        }
-        return changes == 0 ? "Различий нет" : rows.joined(separator: "\n")
-    }
-    static func replace(_ url: URL, expected: String, with text: String) throws -> URL {
-        guard try read(url) == expected, text.utf8.count <= 262144 else { throw ConfigError.message("Файл изменился извне или новый текст слишком большой. Сравни заново.") }
-        let backup = url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent + ".backup-" + UUID().uuidString)
-        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-        try FileManager.default.copyItem(at: url, to: backup)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backup.path)
-        guard try read(backup) == expected, try read(url) == expected else { throw ConfigError.message("Файл изменился во время создания копии. Сравни заново.") }
-        try Data(text.utf8).write(to: url, options: .atomic)
-        if let permissions = attributes[.posixPermissions] { try FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: url.path) }
-        return backup
+    static func ports(_ text: String) -> [Int]? {
+        let parts = text.split(separator: ",", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+        let values = parts.compactMap(Int.init)
+        guard !parts.isEmpty, parts.count <= 20, parts.count == values.count, values.allSatisfy({ (1...65535).contains($0) }) else { return nil }
+        return Array(Set(values)).sorted()
     }
     static func hostValid(_ host: String) -> Bool { !host.hasPrefix("-") && host.utf8.count <= 253 && SSHConfig.matches(host, "^[A-Za-z0-9_:.%\\-]+$") }
+    static func pingArguments(_ host: String, ipv6: Bool) throws -> [String] {
+        guard hostValid(host) else { throw ConfigError.message("Проверь адрес Ping.") }
+        return ["-n", "-c", "4"] + (ipv6 ? [] : ["-W", "1000"]) + [host]
+    }
+    static func traceArguments(_ host: String) throws -> [String] {
+        guard hostValid(host) else { throw ConfigError.message("Проверь адрес маршрута.") }
+        return ["-n", "-m", "16", "-q", "1", "-w", "1", host]
+    }
+    static func httpArguments(_ text: String, headOnly: Bool) throws -> [String] {
+        guard text.utf8.count <= 4096, !text.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains), let url = URLComponents(string: text), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), let host = url.host, !host.isEmpty, url.user == nil, url.password == nil, url.port.map({ (1...65535).contains($0) }) ?? true else { throw ConfigError.message("Укажи HTTP/HTTPS URL без логина и пароля.") }
+        return ["--disable", "--silent", "--show-error", "--connect-timeout", "5", "--max-time", "15", "--location", "--max-redirs", "5", "--proto", "=http,https", "--proto-redir", "=http,https", "--dump-header", "-", "--output", "/dev/null"] + (headOnly ? ["--head"] : []) + ["--write-out", "\nHTTP %{http_code} · %{url_effective}\nIP: %{remote_ip} · перенаправлений: %{num_redirects}\nВремя, с: DNS %{time_namelookup} · TCP %{time_connect} · TLS %{time_appconnect} · первый байт %{time_starttransfer} · всего %{time_total}\n", "--url", text]
+    }
     static func dnsArguments(host: String, type: String, resolver: String) throws -> [String] {
         guard hostValid(host), ["A","AAAA","CNAME","MX","TXT","NS","SOA"].contains(type), resolver.isEmpty || hostValid(resolver) else { throw ConfigError.message("Проверь домен, DNS-сервер и тип записи.") }
         return (resolver.isEmpty ? [] : ["@" + resolver]) + [host, type, "+time=3", "+tries=1", "+noall", "+comments", "+answer", "+stats"]

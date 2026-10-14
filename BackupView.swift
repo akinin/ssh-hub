@@ -24,11 +24,11 @@ extension AliasStore {
                 guard info.isRegularFile == true, info.isSymbolicLink != true, info.fileSize == Int(item.size), bytes <= 256_000_000 else { throw ConfigError.message("Вложения повреждены или превышают 256 МБ для одного архива.") }
                 return BackupAttachment(metadata: item, data: try Data(contentsOf: url))
             }
-            records.append(BackupRecord(record: record, appearance: appearance(entry), group: group(entry), favorite: isFavorite(entry), commands: try savedCommands.repository.load(entry.favoriteID), document: try DocumentationRepository().load(entry.favoriteID), attachments: attachments, profileIDs: Array(profiles.membership[entry.favoriteID] ?? [profiles.active]), tunnelGatewayID: record.transport?.tunnel.flatMap { exportIDs[$0.sshID] }, knowledgeIDs: Array(KnowledgeLibrary.shared.state.assignments[entry.favoriteID] ?? [])))
+            records.append(BackupRecord(record: record, appearance: appearance(entry), group: group(entry), favorite: isFavorite(entry), commands: try savedCommands.repository.load(entry.favoriteID), document: try DocumentationRepository().load(entry.favoriteID), attachments: attachments, profileIDs: Array(profiles.membership[entry.favoriteID] ?? [profiles.active]), tunnelGatewayID: record.transport?.tunnel.flatMap { exportIDs[$0.sshID] }))
         }
         if let error = CommandLibrary.shared.error { throw ConfigError.message(error) }
-        if let error = KnowledgeLibrary.shared.error { throw ConfigError.message(error) }
-        let backup = HubBackup(records: records, folders: folders, folderAppearances: folderAppearances, templates: TemplateLibrary.shared.custom, commandLibrary: CommandLibrary.shared.custom, profiles: profiles.profiles, knowledgeItems: KnowledgeLibrary.shared.state.items)
+        if let error = scanner.templateError { throw ConfigError.message(error) }
+        let backup = HubBackup(records: records, folders: folders, folderAppearances: folderAppearances, templates: TemplateLibrary.shared.custom, commandLibrary: CommandLibrary.shared.custom, profiles: profiles.profiles, nmapTemplates: scanner.customTemplates)
         try backup.validate(); return backup
     }
     func restoreBackup(_ backup: HubBackup, selected: Set<UUID>) throws {
@@ -42,12 +42,12 @@ extension AliasStore {
         let activeConnection = connectionSessions.values.contains { session in
             session.files?.busy == true || session.desktop?.connected == true || session.desktop?.starting == true
         }
-        guard !ConsoleStore.shared.hasSessions, !SFTPRegistry.shared.hasSessions, !activeConnection, !ToolkitSession.pending else { throw ConfigError.message("Заверши активные консольные, графические, файловые сеансы и инструменты перед восстановлением.") }
+        guard !ConsoleStore.shared.hasSessions, !SFTPRegistry.shared.hasSessions, !activeConnection, !scanner.running, !ToolkitSession.pending else { throw ConfigError.message("Заверши активные консольные, графические, файловые сеансы и инструменты перед восстановлением.") }
         let metadata = try BackupRestoration.install(backup, selected: selected, localRepository: localRepository,
             documents: DocumentationRepository(), commands: savedCommands.repository, attachments: attachmentsRepository,
             templates: TemplateLibrary.shared.custom, writeTemplates: TemplateLibrary.shared.replace,
-            library: CommandLibrary.shared.custom, writeLibrary: CommandLibrary.shared.replace, knowledge: KnowledgeLibrary.shared.state, writeKnowledge: KnowledgeLibrary.shared.replace)
-        reload()
+            library: CommandLibrary.shared.custom, writeLibrary: CommandLibrary.shared.replace, nmapTemplates: scanner.customTemplates, writeNmapTemplates: scanner.repository.write)
+        reload(); scanner.reloadTemplates()
         for (value, entry) in metadata {
             let assigned = Set((value.profileIDs ?? []).compactMap { profileMap[$0] })
             restoredProfiles.membership[entry.favoriteID] = assigned.isEmpty ? [restoredProfiles.active] : assigned
@@ -100,7 +100,7 @@ struct BackupView: View {
                     Button("Восстановить выбранные (\(selection.count))") {
                         do { try store.restoreBackup(backup, selected: selection); self.backup = nil; success = "Восстановление завершено"; password = ""; confirmation = "" }
                         catch { self.error = error.localizedDescription }
-                    }.disabled(busy || (selection.isEmpty && backup.templates.isEmpty && (backup.commandLibrary ?? []).isEmpty && (backup.knowledgeItems ?? []).isEmpty && backup.folders.isEmpty)).buttonStyle(.borderedProminent)
+                    }.disabled(busy || (selection.isEmpty && backup.templates.isEmpty && (backup.commandLibrary ?? []).isEmpty && (backup.nmapTemplates ?? []).isEmpty && backup.folders.isEmpty)).buttonStyle(.borderedProminent)
                 }
             }
             if busy { ProgressView("Обработка зашифрованного архива…") }

@@ -159,7 +159,7 @@ struct DetachedWorkspaceView: View {
             case .page(let id): if let page = store.pages.first(where: { $0.id == id }) {
                 if page.section == .sftp, let model = store.sftpModels[id] { SFTPView(model: model).id(id) }
                 else if page.section == .connection, let session = store.connectionSessions[id] { ConnectionPageView(session: session).id(id) }
-                else if page.section == .scanner { NmapView(model: store.scanner) }
+                else if page.section == .scanner { NetworkToolsView(model: store.tools, scanner: store.scanner) }
                 else if let entry = store.entry(for: page) { EntryDetailScreen(entry: entry, section: page.section).id(id) }
             }
             }
