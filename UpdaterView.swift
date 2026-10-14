@@ -8,7 +8,6 @@ import AppKit
     @Published private(set) var available: AvailableUpdate?
     @Published private(set) var message = "Проверь, есть ли новая версия в GitHub Releases."
     @Published private(set) var error: String?
-    @Published private(set) var backup: String?
     private var task: Task<Void, Never>?
     private var started = false
     let installed = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
@@ -16,8 +15,11 @@ import AppKit
     private var statusURL: URL { stateDirectory.appendingPathComponent("last-update.json") }
     init() {
         if let data = try? Data(contentsOf: statusURL), let outcome = try? JSONDecoder().decode(UpdateOutcome.self, from: data) {
-            backup = outcome.backup
             if !outcome.success { error = outcome.message }
+        }
+        if Bundle.main.bundleIdentifier == UpdateTransport.bundleID {
+            let destination = Bundle.main.bundleURL
+            DispatchQueue.global(qos: .utility).async { UpdateInstaller.cleanupBackups(destination: destination) }
         }
     }
     func checkAutomatically() {
@@ -93,9 +95,6 @@ struct AppUpdateView: View {
                 Link("Открыть релиз " + update.version.string, destination: update.releaseURL)
             }
             if let error = updater.error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
-            if let backup = updater.backup {
-                Button("Показать предыдущую сборку в Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: backup)]) }.font(.caption)
-            }
             Text("Проверяется стабильный релиз akinin/ssh-hub. Перед заменой проверяются SHA-256 и подпись приложения. Записи и настройки сохраняются.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 Button("Проверить снова") { updater.check() }.disabled(updater.busy)

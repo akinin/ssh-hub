@@ -9,6 +9,7 @@ extension AliasStore {
     func switchProfile(_ id: UUID) {
         guard id != profiles.active, profiles.profiles.contains(where: { $0.id == id }) else { return }
         saveWorkspace(); restoringWorkspace = true
+        ToolkitSession.stopAll(); showingKnowledge = false
         closeAllTabs(force: true); tabStyles = [:]; selected = nil
         profiles.active = id; persistProfiles(); query = ""; groupFilter = "all"
         restoreWorkspace(); restoringWorkspace = false

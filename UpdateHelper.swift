@@ -18,7 +18,8 @@ import Darwin
         var backup: URL?
         do {
             backup = try UpdateInstaller.install(job)
-            report(UpdateOutcome(success: true, message: "Обновлено до " + job.version, backup: backup?.path))
+            UpdateInstaller.cleanupBackups(destination: job.destination)
+            report(UpdateOutcome(success: true, message: "Обновлено до " + job.version, backup: nil))
         } catch {
             report(UpdateOutcome(success: false, message: error.localizedDescription, backup: backup?.path))
         }

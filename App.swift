@@ -25,6 +25,10 @@ import ConsoleSupport
     @Published var detachedTabs: Set<WorkspaceTab> = []
     @Published var showingPalette = false
     @Published var showingCommandLibrary = false
+    @Published var showingKnowledge = false
+    var knowledgeEntry: SSHAlias?
+    var knowledgeSection = ToolkitSection.instruction
+    func openKnowledge(_ entry: SSHAlias? = nil, section: ToolkitSection = .instruction) { knowledgeEntry = entry; knowledgeSection = section; showingKnowledge = true }
     @Published var showingBackup = false
     @Published var showingTemplates = false
     @Published var showingAvailability = false
@@ -243,6 +247,7 @@ import ConsoleSupport
         if let name = groups.removeValue(forKey: from.favoriteID) { setGroup(name, for: to) }
         history = ConnectionHistory.moving(history, from: from, to: to); persistHistory()
         TunnelManager.shared.moveAlias(from: from, to: to)
+        KnowledgeLibrary.shared.move(from.favoriteID, to: to.favoriteID)
         do {
             let before = try localRepository.load(); var after = before
             for index in after.indices where after[index].transport?.tunnel?.sshID == from.favoriteID { after[index].transport?.tunnel?.sshID = to.favoriteID }
@@ -269,6 +274,7 @@ import ConsoleSupport
             setAppearance(appearance(original), for: entry)
             documentation.copy(from: original.favoriteID, to: entry.favoriteID)
             savedCommands.copy(from: original.favoriteID, to: entry.favoriteID)
+            KnowledgeLibrary.shared.move(original.favoriteID, to: entry.favoriteID, copy: true)
         }
         notice = "Создан дубликат «\(name)». Можно отменить изменение."
     }
@@ -469,6 +475,7 @@ import ConsoleSupport
                     Button("Палитра действий…") { store.showingPalette = true }.keyboardShortcut("p", modifiers: .command)
                     Button("Резервное копирование…") { store.showingBackup = true }
                     Button("Шаблоны записей…") { store.showingTemplates = true }
+                    Button("Библиотеки и инструменты…") { store.openKnowledge() }
                     Button("Библиотека команд…") { store.showingCommandLibrary = true }
                     Button("Статус доступности…") { store.showingAvailability = true }
                     Button("Быстрое подключение…") { QuickAccessController.shared.show() }.keyboardShortcut("p", modifiers: [.command, .shift])
@@ -508,11 +515,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppDelegate.storeForTermination?.finishWorkspace()
         ConsoleStore.shared.closeAll()
         SFTPRegistry.shared.closeAll()
+        ToolkitSession.stopAll()
         let tunnels = TunnelManager.shared
-        guard tunnels.hasSessions || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 else { return .terminateNow }
+        guard tunnels.hasSessions || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending else { return .terminateNow }
         tunnels.stopAll()
         UpdateTermination.finishAfterCleanup(sender) {
-            tunnels.hasSessions || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0
+            tunnels.hasSessions || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending
         }
         return .terminateLater
     }
@@ -728,6 +736,7 @@ struct MainView: View {
                     toolbarButton("Палитра действий", symbol: "command", help: "Палитра действий · ⌘P") { store.showingPalette = true }
                     Menu {
                         Button("Профили…", systemImage: "person.crop.rectangle.stack") { store.showingProfiles = true }
+                        Button("Библиотеки и инструменты…", systemImage: "books.vertical") { store.openKnowledge() }
                         Button("Библиотека команд…", systemImage: "books.vertical") { store.showingCommandLibrary = true }
                         Button("Резервное копирование…", systemImage: "externaldrive") { store.showingBackup = true }
                         Button("Шаблоны записей…", systemImage: "square.stack") { store.showingTemplates = true }
@@ -771,6 +780,7 @@ struct MainView: View {
         .sheet(isPresented: $store.showingProfiles) { ProfilesView().environmentObject(store) }
         .sheet(item: $store.editingTab) { TabCustomizationView(target: $0).environmentObject(store) }
         .sheet(isPresented: $store.showingPalette) { ActionPalette().environmentObject(store) }
+        .sheet(isPresented: $store.showingKnowledge) { KnowledgeLibraryView(initialEntry: store.knowledgeEntry, initialSection: store.knowledgeSection).environmentObject(store) }
         .sheet(isPresented: $store.showingCommandLibrary) { CommandLibraryView() }
         .sheet(isPresented: $store.showingBackup) { BackupView().environmentObject(store) }
         .sheet(isPresented: $store.showingTemplates) { TemplatesView().environmentObject(store) }
@@ -847,6 +857,7 @@ struct AliasDetail: View {
                     }
                     tile("Документация", detail: "Заметки и инструкции", icon: "doc.richtext") { store.showDocumentation(entry) }
                     tile("Вложения", detail: "Файлы записи", icon: "paperclip") { store.showAttachments(entry) }
+                    tile("Библиотеки", detail: "Инструкции и инструменты", icon: "books.vertical") { store.openKnowledge(entry) }
                     tile("Редактировать", detail: "Параметры записи", icon: "pencil") { store.edit(entry) }
                     tile("Группа", detail: store.group(entry).isEmpty ? "Без группы" : store.group(entry), icon: "folder.badge.gearshape") { store.groupingAlias = entry }
                     if entry.canSSH {

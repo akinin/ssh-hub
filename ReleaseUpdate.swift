@@ -156,6 +156,21 @@ struct UpdateOutcome: Codable {
     let success: Bool, message: String, backup: String?
 }
 enum UpdateInstaller {
+    // Only UUID-named backups of this app, beside a validated current installation.
+    static func cleanupBackups(destination: URL) {
+        let fm = FileManager.default, app = destination.standardizedFileURL
+        guard app == app.resolvingSymlinksInPath(), let info = try? Data(contentsOf: app.appendingPathComponent("Contents/Info.plist")),
+              let current = try? PropertyListSerialization.propertyList(from: info, format: nil) as? [String: Any], current["CFBundleIdentifier"] as? String == UpdateTransport.bundleID,
+              let currentText = current["CFBundleShortVersionString"] as? String, let version = ReleaseVersion(currentText),
+              let files = try? fm.contentsOfDirectory(at: app.deletingLastPathComponent(), includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]) else { return }
+        for file in files where file.lastPathComponent.hasPrefix(".SSH-Hub-backup-") && file.pathExtension == "app" {
+            let token = String(file.deletingPathExtension().lastPathComponent.dropFirst(".SSH-Hub-backup-".count))
+            guard UUID(uuidString: token) != nil, file.standardizedFileURL == file.resolvingSymlinksInPath().standardizedFileURL, let attrs = try? file.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]), attrs.isDirectory == true, attrs.isSymbolicLink != true,
+                  let data = try? Data(contentsOf: file.appendingPathComponent("Contents/Info.plist")), let old = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any], old["CFBundleIdentifier"] as? String == UpdateTransport.bundleID,
+                  let text = old["CFBundleShortVersionString"] as? String, let oldVersion = ReleaseVersion(text), oldVersion <= version else { continue }
+            try? fm.removeItem(at: file)
+        }
+    }
     static func install(_ job: UpdateJob) throws -> URL {
         let fm = FileManager.default
         let destination = job.destination.standardizedFileURL

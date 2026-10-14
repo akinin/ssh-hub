@@ -4,7 +4,8 @@ enum BackupRestoration {
     static func install(_ backup: HubBackup, selected: Set<UUID>, localRepository: LocalConnectionRepository,
                         documents: DocumentationRepository, commands: SavedCommandsRepository, attachments: AttachmentsRepository,
                         templates: [RecordTemplate], writeTemplates: ([RecordTemplate]) throws -> Void,
-                        library: [SavedConsoleCommand] = [], writeLibrary: ([SavedConsoleCommand]) throws -> Void = { _ in }) throws -> [(BackupRecord, SSHAlias)] {
+                        library: [SavedConsoleCommand] = [], writeLibrary: ([SavedConsoleCommand]) throws -> Void = { _ in },
+                        knowledge: KnowledgeState = KnowledgeState(), writeKnowledge: (KnowledgeState) throws -> Void = { _ in }) throws -> [(BackupRecord, SSHAlias)] {
         try backup.validate()
         let before = try localRepository.load()
         var after = before, installed: [URL] = []
@@ -43,6 +44,20 @@ enum BackupRestoration {
             newLibrary.append(command)
         }
         try CommandCatalog.validate(newLibrary)
+        var newKnowledge = knowledge
+        var materialMap: [UUID: UUID] = Dictionary(uniqueKeysWithValues: KnowledgeCatalog.presets.map { ($0.id, $0.id) })
+        for var item in backup.knowledgeItems ?? [] {
+            let original = item.id
+            if newKnowledge.items.contains(item) { materialMap[original] = original; continue }
+            if newKnowledge.items.contains(where: { $0.id == item.id }) || KnowledgeCatalog.presets.contains(where: { $0.id == item.id }) { item.id = UUID() }
+            newKnowledge.items.append(item); materialMap[original] = item.id
+        }
+        for index in metadata.indices {
+            let mapped = Set((metadata[index].0.knowledgeIDs ?? []).compactMap { materialMap[$0] })
+            metadata[index].0.knowledgeIDs = Array(mapped)
+            if !mapped.isEmpty { newKnowledge.assignments[metadata[index].1.favoriteID] = mapped }
+        }
+        try newKnowledge.validate()
         do {
             for (value, entry) in metadata {
                 installed.append(documents.url(for: entry.favoriteID)); try documents.write(value.document, for: entry.favoriteID)
@@ -63,11 +78,13 @@ enum BackupRestoration {
             }
             try writeTemplates(newTemplates)
             try writeLibrary(newLibrary)
+            try writeKnowledge(newKnowledge)
             try localRepository.write(after, expected: before)
         } catch {
             for url in installed { try? FileManager.default.removeItem(at: url) }
             try? writeTemplates(oldTemplates)
             try? writeLibrary(library)
+            try? writeKnowledge(knowledge)
             // A failed records write can leave only app-private generated transport files.
             for record in after where !before.contains(where: { $0.id == record.id }) { try? FileManager.default.removeItem(at: localRepository.privateConfig(record.id)) }
             throw error

@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""Disposable localhost SSH, DNS and TLS fixtures; no user server, keys or trust store."""
+import pathlib, socket, ssl, struct, subprocess, sys, tempfile, threading
+from TunnelIntegrationTests import fixture
+
+with tempfile.TemporaryDirectory(prefix='ssh-hub-toolkit-', dir='/private/tmp') as name:
+    root = pathlib.Path(name)
+    cfg = root/'certificate.cnf'
+    cfg.write_text('[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n[dn]\nCN=localhost\n[ext]\nsubjectAltName=DNS:localhost\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,digitalSignature,keyEncipherment,keyCertSign\nextendedKeyUsage=serverAuth\n')
+    subprocess.run(['/usr/bin/openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1','-config',str(cfg),'-keyout',str(root/'key.pem'),'-out',str(root/'cert.pem')],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    subprocess.run(['/usr/bin/openssl','x509','-in',str(root/'cert.pem'),'-outform','DER','-out',str(root/'cert.der')],check=True)
+    tls = socket.socket(); tls.bind(('127.0.0.1',0)); tls.listen(); tls.settimeout(.2)
+    dns = socket.socket(socket.AF_INET,socket.SOCK_DGRAM); dns.bind(('127.0.0.1',0)); dns.settimeout(.2)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); context.load_cert_chain(root/'cert.pem',root/'key.pem')
+    stopping = threading.Event(); application_data = []
+    def serve_tls():
+        while not stopping.is_set():
+            try: stream,_ = tls.accept()
+            except socket.timeout: continue
+            except OSError: break
+            try:
+                stream.settimeout(2)
+                with context.wrap_socket(stream,server_side=True) as secure:
+                    data = secure.recv(128)
+                    if data: application_data.append(data)
+            except (ssl.SSLError,OSError): stream.close()
+    def serve_dns():
+        while not stopping.is_set():
+            try: query,address = dns.recvfrom(4096)
+            except socket.timeout: continue
+            except OSError: break
+            end=12
+            while query[end]: end += query[end]+1
+            end += 5
+            answer = query[:2]+struct.pack('!HHHHH',0x8180,1,1,0,0)+query[12:end]+b'\xc0\x0c'+struct.pack('!HHIH',1,1,60,4)+socket.inet_aton('192.0.2.10')
+            dns.sendto(answer,address)
+    threads=[threading.Thread(target=serve_tls,daemon=True),threading.Thread(target=serve_dns,daemon=True)]
+    for thread in threads: thread.start()
+    try:
+        with fixture(root/'ssh') as (config,_,__):
+            subprocess.run([sys.argv[1],str(config),str(tls.getsockname()[1]),str(dns.getsockname()[1]),str(root/'cert.der'),str(root/'ssh')],check=True,timeout=60)
+        assert not application_data,'TLS inspector sent application data'
+    finally:
+        stopping.set();tls.close();dns.close()
+        for thread in threads: thread.join(timeout=3)

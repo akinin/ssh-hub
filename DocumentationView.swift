@@ -247,7 +247,7 @@ private struct MarkdownEditor: NSViewRepresentable {
         func textDidChange(_ notification: Notification) { if let view = notification.object as? NSTextView { parent.text = view.string } }
     }
 }
-private struct MarkdownPreview: NSViewRepresentable {
+struct MarkdownPreview: NSViewRepresentable {
     let markdown: String
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> WKWebView {
