@@ -20,7 +20,7 @@ struct ExtraToolsView: View {
                     case .transform: transformControls
                     default: EmptyView()
                     }
-                }.textFieldStyle(.roundedBorder).disabled(runner.busy)
+                }.textFieldStyle(.roundedBorder).disabled(runner.busy).padding(6)
             }.frame(maxHeight:model.section == .transform ? 285 : 245)
             if runner.busy { HStack { ProgressView().controlSize(.small); Text(runner.progress); Spacer(); Button("Отмена") { runner.stop() } } }
             if model.section == .bonjour {

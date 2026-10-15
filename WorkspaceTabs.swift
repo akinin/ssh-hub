@@ -197,6 +197,15 @@ struct WorkspacePaneView: View {
             }
         case nil:
             VStack(spacing: 14) {
+                if store.profileEntries.isEmpty {
+                    Image(systemName: "plus.rectangle.on.folder").font(.system(size: 30)).foregroundStyle(.secondary)
+                    Text("В профиле «\(store.profileName)» пока нет записей").font(.headline).multilineTextAlignment(.center)
+                    Text("Создай первую запись для этого профиля.").font(.caption).foregroundStyle(.secondary)
+                    Button("Создать запись", systemImage: "plus") { store.creatingAlias = true }.buttonStyle(.borderedProminent)
+                    if !store.aliases.isEmpty {
+                        Button("Добавить существующие…") { store.showingProfiles = true }
+                    }
+                } else {
                 Image(systemName: "rectangle.split.2x1").font(.system(size: 30)).foregroundStyle(.secondary)
                 Text(store.workspace.split == .none ? "Выбери запись слева" : "Открой вкладку в этой панели").font(.headline)
                 if store.workspace.split == .none {
@@ -204,6 +213,7 @@ struct WorkspacePaneView: View {
                     if let entry = store.current { Button("Открыть выбранную запись") { store.showDashboard(entry) } }
                 } else {
                     Text("Перетащи вкладку сюда или открой запись из боковой панели.").font(.caption).foregroundStyle(.secondary)
+                }
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Rectangle())
         }

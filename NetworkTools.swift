@@ -104,7 +104,7 @@ struct ToolkitToolsView: View {
                     case .wake: wakeControls
                     default: EmptyView()
                     }
-                }.disabled(runner.busy && section != .tls)
+                }.disabled(runner.busy && section != .tls).padding(6)
             }.frame(maxHeight: section == .ip ? 165 : 200)
             if runner.busy { HStack { ProgressView().controlSize(.small); Text(runner.progress).lineLimit(1); Spacer(); Button("Отмена") { monitoring = false; runner.stop() } } }
             ScrollView {

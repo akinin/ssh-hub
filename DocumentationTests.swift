@@ -38,6 +38,9 @@ import Foundation
         try check(html.contains("href=\"https://example.com\"") && html.contains("a&lt;b"), "safe link and escaped code")
         try check(!DocumentationMarkdown.safeLink("file:///etc/passwd") && !DocumentationMarkdown.safeLink("data:text/html,test"), "no local or data links")
         try check(DocumentationMarkdown.page("text").contains("default-src 'none'"), "preview blocks external resources")
+        let nested = DocumentationMarkdown.body("**жирный *курсив***\n*курсив **жирный***\n| A | B |\n| --- | --- |\n| x\\|y | z |\n````\n```\n````")
+        try check(nested.contains("<strong>жирный <em>курсив</em></strong>") && nested.contains("<em>курсив <strong>жирный</strong></em>"), "nested visual formatting survives preview")
+        try check(nested.contains("<td>x|y</td><td>z</td>") && nested.contains("<pre><code>```</code></pre>"), "escaped table separators and longer code fences")
         print("Documentation tests passed: persistence, drafts, history/restore, limits, isolation, permissions, Markdown and safe preview")
     }
 }

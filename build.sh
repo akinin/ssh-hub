@@ -31,6 +31,8 @@ swiftc -swift-version 5 -module-cache-path "$build_dir/module-cache" Integration
 "$build_dir/integration-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" ConnectionDocumentation.swift DocumentationMarkdown.swift DocumentationTests.swift -o "$build_dir/documentation-tests"
 "$build_dir/documentation-tests"
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" DocumentationMarkdown.swift DocumentationVisualPage.swift DocumentationVisualTests.swift -o "$build_dir/documentation-visual-tests" -framework AppKit -framework WebKit
+"$build_dir/documentation-visual-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift ConnectionAttachments.swift ConsoleLaunch.swift TerminalLauncher.swift PublicKeys.swift RecordTests.swift -o "$build_dir/record-tests" -framework AppKit
 "$build_dir/record-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift Nmap.swift TransportTests.swift -o "$build_dir/transport-tests"

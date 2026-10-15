@@ -6,6 +6,8 @@
 
 ## Структура
 
+- В 2.13 `DocumentationVisualPage.swift` содержит локальный contenteditable-движок, `DocumentationVisual.swift` — WKWebView-мост. Документы/черновики/история остаются Markdown; смена режима не должна перезаписывать текст. Ввод и форматирование сериализуются с экранированием; вставка только plain text, drop запрещён, CSP и navigation delegate запрещают внешние ресурсы. `DocumentationVisualTests.swift` проверяет выделение/undo/поиск/замену и безопасную вставку в скрытом тестовом окне с AppKit undo manager. Не отключайте CSP и не передавайте пользовательские строки интерполяцией в JavaScript — используйте arguments.
+
 - В 2.12 `ExtraTools.swift`/`ExtraToolsView.swift` добавляют iperf3, Whois/RDAP, Bonjour, SSH и локальные преобразования. iperf3 устанавливается только по явной кнопке, не включается в bundle; тестовый экземпляр можно собирать во временной папке из официального архива с SHA-256. Синтетический TCP/UDP-трафик тестируйте только на localhost.
 - RDAP использует HTTPS bootstrap IANA и самый длинный подходящий префикс IP; plain HTTP разрешён только внутренним флагом для localhost-теста. WHOIS не шифруется. Не отключайте TLS/SSH trust checks; ключи ssh-keyscan не записывайте в known_hosts.
 - `BonjourScanner` использует DNS-SD на своей serial queue: создание/deallocate refs и callbacks на той же очереди, ограниченные время/число сервисов, отмена при закрытии вкладки. Интеграция регистрирует и ищет собственный сервис через LocalOnly, не просматривает чужую сеть. В Info.plist поддерживайте NSBonjourServices и описание локальной сети.

@@ -12,7 +12,8 @@ enum DocumentationMarkdown {
               let scheme = url.scheme?.lowercased(), ["https", "http", "mailto"].contains(scheme) else { return false }
         return scheme == "mailto" || url.host?.isEmpty == false
     }
-    static func inline(_ text: String) -> String {
+    static func inline(_ text: String, depth: Int = 0) -> String {
+        guard depth < 16 else { return escape(text) }
         var result = "", index = text.startIndex
         let markers = [("**", "strong"), ("__", "strong"), ("~~", "del"), ("*", "em"), ("_", "em")]
         while index < text.endIndex {
@@ -28,18 +29,31 @@ enum DocumentationMarkdown {
             if remaining.first == "[", let labelEnd = remaining.firstIndex(of: "]"), text.index(after: labelEnd) < text.endIndex,
                text[text.index(after: labelEnd)] == "(", let end = text[text.index(labelEnd, offsetBy: 2)...].firstIndex(of: ")") {
                 let label = String(text[text.index(after: index)..<labelEnd]), link = String(text[text.index(labelEnd, offsetBy: 2)..<end])
-                if safeLink(link) { result += "<a href=\"" + escape(link) + "\">" + escape(label) + "</a>" }
+                if safeLink(link) { result += "<a href=\"" + escape(link) + "\">" + inline(label, depth: depth + 1) + "</a>" }
                 else { result += escape(String(text[index...end])) }
                 index = text.index(after: end); continue
             }
             var matched = false
             for (marker, tag) in markers where remaining.hasPrefix(marker) {
                 let start = text.index(index, offsetBy: marker.count)
-                if let range = text.range(of: marker, range: start..<text.endIndex), range.lowerBound > start {
-                    // Escape inner content rather than recursively parse arbitrary nested input.
-                    result += "<\(tag)>" + escape(String(text[start..<range.lowerBound])) + "</\(tag)>"
-                    index = range.upperBound; matched = true; break
+                var cursor = start
+                while cursor < text.endIndex, let found = text.range(of: marker, range: cursor..<text.endIndex) {
+                    var range = found
+                    if range.lowerBound > text.startIndex && text[text.index(before: range.lowerBound)] == "\\" { cursor = range.upperBound; continue }
+                    // An outer delimiter closes at the end of a run (*** nests bold/italic).
+                    if let character = marker.first {
+                        var end = range.upperBound
+                        while end < text.endIndex && text[end] == character { end = text.index(after: end) }
+                        if marker.count == 1 && text.distance(from: range.lowerBound, to: end) == 2 { cursor = end; continue }
+                        range = text.index(end, offsetBy: -marker.count)..<end
+                    }
+                    if range.lowerBound > start {
+                        result += "<\(tag)>" + inline(String(text[start..<range.lowerBound]), depth: depth + 1) + "</\(tag)>"
+                        index = range.upperBound; matched = true
+                    }
+                    break
                 }
+                if matched { break }
             }
             if matched { continue }
             result += escape(String(text[index])); index = text.index(after: index)
@@ -52,14 +66,21 @@ enum DocumentationMarkdown {
         func cells(_ line: String) -> [String] {
             var value = line.trimmingCharacters(in: .whitespaces)
             if value.hasPrefix("|") { value.removeFirst() }; if value.hasSuffix("|") { value.removeLast() }
-            return value.components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+            var result: [String] = [], cell = "", escaped = false
+            for character in value {
+                if character == "|" && !escaped { result.append(cell.trimmingCharacters(in: .whitespaces)); cell = "" }
+                else { cell.append(character) }
+                if character == "\\" { escaped.toggle() } else { escaped = false }
+            }
+            result.append(cell.trimmingCharacters(in: .whitespaces)); return result
         }
         while index < lines.count {
             let line = lines[index], trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty { index += 1; continue }
             if trimmed.hasPrefix("```") {
+                let fence = String(trimmed.prefix { $0 == "`" })
                 index += 1; var code: [String] = []
-                while index < lines.count && !lines[index].trimmingCharacters(in: .whitespaces).hasPrefix("```") { code.append(lines[index]); index += 1 }
+                while index < lines.count && !lines[index].trimmingCharacters(in: .whitespaces).hasPrefix(fence) { code.append(lines[index]); index += 1 }
                 if index < lines.count { index += 1 }
                 html += "<pre><code>" + escape(code.joined(separator: "\n")) + "</code></pre>"; continue
             }
