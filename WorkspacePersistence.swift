@@ -33,8 +33,12 @@ extension AliasStore {
               snapshot.pages.count + snapshot.consoles.count <= 150 else { return }
         tabStyles = (snapshot.tabStyles ?? [:]).filter { WorkspaceTab(dragToken: $0.key) != nil && $0.value.valid }
         var valid = Set<WorkspaceTab>()
-        for page in snapshot.uniqueDashboardPages where !valid.contains(.page(page.id)) {
-            if page.section == .topology && pages.contains(where: { $0.section == .topology }) { continue }
+        for page in snapshot.restorablePages(profileID: profiles.active) where !valid.contains(.page(page.id)) {
+            if page.section == .topology {
+                guard let mapID = page.topologyMapID(profileID: profiles.active),
+                      canRestoreTopology(page),
+                      !pages.contains(where: { $0.topologyMapID(profileID: profiles.active) == mapID }) else { continue }
+            }
             guard page.section == .scanner || page.section == .topology || aliases.contains(where: { $0.favoriteID == page.key && profiles.contains($0.favoriteID) }) else { continue }
             pages.append(page); valid.insert(.page(page.id))
             createRecordTools(for: page)

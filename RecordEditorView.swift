@@ -76,6 +76,8 @@ struct RecordEditorView: View {
     var template: SSHAlias?
     var blueprint: RecordTemplate?
     var back: (() -> Void)?
+    var seed: LocalConnectionRecord?
+    var onSaved: ((SSHAlias) -> Void)?
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) private var dismiss
     @State private var record = LocalConnectionRecord()
@@ -292,6 +294,9 @@ struct RecordEditorView: View {
                 record.extraOptions = template.options.filter { !known.contains($0.key.lowercased()) && !["include", "host", "match"].contains($0.key.lowercased()) }
                 appearance = store.appearance(template); appearance.name = store.title(template) + " · копия"; group = store.group(template)
             }
+            if original == nil, let seed {
+                appearance.name = seed.title; record.host = seed.host; record.port = seed.port; record.website = seed.website
+            }
             ready = true
         } catch { self.error = error.localizedDescription }
     }
@@ -325,6 +330,7 @@ struct RecordEditorView: View {
             }
             try store.commitRecord(candidate, expected: expected, appearance: appearance, group: group, ssh: ssh, template: template)
             recordCommitted = true
+            onSaved?(target)
             dismiss()
         } catch {
             var detail = error.localizedDescription

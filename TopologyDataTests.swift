@@ -9,13 +9,14 @@ import Darwin
         do { try body(); fatalError("Topology accepted " + message) } catch {}
     }
     static func main() throws {
-        try compatibility(); try merging(); try validation(); try layout(); try repository()
+        try compatibility(); try merging(); try validation(); try layout(); try mapEnhancements(); try observationHistory(); try controllerReconciliation(); try multipleMaps(); try repository()
         print("Topology data tests passed: compatibility, identity, manual preservation, layout, private atomic storage")
     }
     static func compatibility() throws {
         let id = UUID(), profile = UUID()
         let minimal = Data("{\"profileID\":\"\(profile)\",\"nodes\":[{\"id\":\"\(id)\"}]}".utf8)
         let document = try JSONDecoder().decode(TopologyDocument.self, from: minimal)
+        expect(document.id == profile && document.name == "Основная карта", "legacy map identity and name defaults")
         expect(document.profileID == profile && document.nodes.count == 1 && document.links.isEmpty && document.unifi == nil && document.routers.isEmpty, "missing document defaults")
         expect(document.nodes[0].kind == .other && document.nodes[0].x == 0 && document.nodes[0].observed == nil && document.nodes[0].manualWAN == nil && document.nodes[0].checkPort == nil, "missing node defaults")
         let facts = try JSONDecoder().decode(TopologyFacts.self, from: Data("{}".utf8))
@@ -195,6 +196,221 @@ import Darwin
         expect(Set(maximum.nodes.map { "\($0.x):\($0.y)" }).count == 500, "disconnected maximum layout does not overlap")
         maximum.links = maximum.nodes.indices.dropFirst().map { TopologyLink(from: maximum.nodes[$0 - 1].id, to: maximum.nodes[$0].id) }
         TopologyLayout.arrange(&maximum); try TopologyRepository.validate(maximum)
+        maximum.links = maximum.nodes.indices.dropFirst().map { TopologyLink(from: maximum.nodes[0].id, to: maximum.nodes[$0].id) }
+        TopologyLayout.arrange(&maximum); try TopologyRepository.validate(maximum)
+        expect(Set(maximum.nodes.map { "\($0.x):\($0.y)" }).count == 500, "wide maximum branch wraps safely without losing unique positions")
+    }
+    static func mapEnhancements() throws {
+        let now = Date(timeIntervalSince1970: 10000)
+        let internet = TopologyNode(name: "ISP", kind: .internet)
+        var gateway = TopologyNode(name: "Router", address: "192.0.2.1", kind: .gateway, x: 500, y: 200)
+        gateway.observed = TopologyFacts(address: "198.51.100.1", source: .unifi, collectedAt: now, availability: .unknown,
+            controllerStatus: TopologyStatusSample(value: .online, date: now, source: .unifi))
+        let tcp = TopologyStatusSample(value: .offline, date: now, source: .tcp)
+        expect(TopologyStatus.resolve(gateway, measured: tcp, now: now) == .online, "fresh controller wins over blocked TCP service and custom management address")
+        expect(TopologyStatus.resolve(gateway, measured: tcp, now: now.addingTimeInterval(301)) == .unknown, "expired source cannot appear currently online")
+        let freshTCP = TopologyStatusSample(value: .online, date: now.addingTimeInterval(301), source: .tcp)
+        expect(TopologyStatus.resolve(gateway, measured: freshTCP, now: now.addingTimeInterval(301)) == .online, "fresh TCP independently replaces stale controller")
+        gateway.observed?.controllerStatus?.value = .unknown
+        expect(TopologyStatus.resolve(gateway, measured: tcp, now: now) == .offline, "unknown controller permits independent TCP result")
+        let backup = TopologyWAN(interface: "wan2", role: .backup, state: .standby, stateAt: now, stateSource: .unifi)
+        expect(TopologyStatus.wan(backup, now: now) == .standby && TopologyStatus.wan(backup, now: now.addingTimeInterval(301)) == .unknown, "standby backup is healthy and ages independently")
+        gateway.manualWANs = [TopologyWAN(provider: "My LTE", interface: "wan2", role: .backup)]
+        gateway.observed?.wans = [backup]
+        expect(gateway.displayWANs[0].provider == "My LTE" && gateway.displayWANs[0].state == .standby && gateway.displayWANs[0].role == .backup, "manual labels retain independent observed WAN state")
+        let oldWAN = try JSONDecoder().decode(TopologyWAN.self, from: Data("{}".utf8))
+        expect(oldWAN.role == .unknown && oldWAN.state == .unknown && oldWAN.stateAt == nil, "old WAN does not invent current state or role")
+
+        var sw = TopologyNode(sourceID: "fixture-switch", name: "Switch", kind: .switchDevice)
+        let precise = TopologyLink(from: gateway.id, to: sw.id, fromPort: "11", toPort: "26", speedMbps: 10000, source: .ssh, observedAt: now, confirmed: true)
+        let broad = TopologyLink(from: gateway.id, to: sw.id, source: .unifi, observedAt: now.addingTimeInterval(1), confirmed: false)
+        var document = TopologyDocument(profileID: UUID(), nodes: [internet, gateway, sw], links: [precise, broad])
+        _ = document.merge(imported: TopologyImport())
+        expect(document.links.count == 1 && document.links[0].id == precise.id && document.links[0].fromPort == "11" && document.links[0].speedMbps == 10000, "existing broad controller duplicate consolidated into exact physical cable")
+        expect(Set(document.links[0].observations.map(\.source)) == [.ssh, .unifi], "multiple cable source samples retained")
+        let snapshot = document
+        _ = document.merge(imported: TopologyImport())
+        expect(document == snapshot, "cable consolidation idempotent")
+        let parallel = TopologyLink(from: gateway.id, to: sw.id, fromPort: "12", toPort: "25", source: .ssh, observedAt: now)
+        document.links = [precise, parallel, broad]
+        _ = document.merge(imported: TopologyImport())
+        expect(document.links.count == 3, "ambiguous broad parent never assigned to one of two known parallel links")
+        let manual = TopologyLink(from: gateway.id, to: sw.id, kind: .wan, name: "My physical WAN", fromPort: "11", toPort: "26", notes: "Keep", source: .manual, confirmed: false)
+        document.links = [manual, broad]
+        _ = document.merge(imported: TopologyImport())
+        expect(document.links == [manual], "manual WAN suppresses duplicate controller LAN without mutation")
+        document.links = [TopologyLink(from: internet.id, to: gateway.id, kind: .wan), precise]
+        let path = TopologyPath.toInternet(from: sw.id, in: document)
+        expect(path.nodeIDs == [internet.id, gateway.id, sw.id] && path.linkIDs.count == 2 && path.unconfirmedLinkIDs.isEmpty, "actual physical path highlighted")
+        document.links[1].confirmed = false
+        expect(TopologyPath.toInternet(from: sw.id, in: document).unconfirmedLinkIDs == [precise.id], "uncertain path sections explicit")
+        document.links[1].kind = .vpn
+        expect(TopologyPath.toInternet(from: sw.id, in: document).linkIDs.isEmpty, "VPN cannot fabricate physical internet path")
+
+        sw.positionPinned = true; sw.x = 830; sw.y = 510
+        var group = TopologyGroup(name: "Garage", x: 2000, y: 1000, collapsed: true)
+        var child = TopologyNode(name: "Camera", kind: .client, x: 2200, y: 1200); child.groupID = group.id
+        document.nodes = [sw, child, gateway, internet]; document.groups = [group]; document.links = [TopologyLink(from: internet.id, to: gateway.id, kind: .wan), precise]
+        TopologyLayout.arrange(&document)
+        expect(document.nodes.first(where: { $0.id == sw.id })?.x == 830 && document.nodes.first(where: { $0.id == sw.id })?.y == 510, "manual pinned position survives arrange")
+        expect(document.nodes.first(where: { $0.id == child.id })?.x == 2200 && document.nodes.first(where: { $0.id == child.id })?.y == 1200, "collapsed region retains member positions")
+        group.collapsed = false; document.groups = [group]; TopologyLayout.arrange(&document)
+        expect(document.nodes.first(where: { $0.id == child.id })!.x >= group.x && document.nodes.first(where: { $0.id == child.id })!.y >= group.y, "expanded group arranges inside its region")
+        try TopologyRepository.validate(document)
+        expect(try JSONDecoder().decode(TopologyDocument.self, from: JSONEncoder().encode(document)) == document, "group pin provenance roundtrip")
+        let legacyGroup = try JSONDecoder().decode(TopologyGroup.self, from: Data("{\"id\":\"\(UUID())\"}".utf8))
+        expect(legacyGroup.width == 420 && !legacyGroup.collapsed, "group defaults")
+    }
+    static func controllerReconciliation() throws {
+        let time = Date(timeIntervalSince1970: 20000), scope = "unifi:fixture-controller:fixture-site"
+        let apA = TopologyNode(sourceID: scope + ":device:a", observed: TopologyFacts(name: "AP A", source: .unifi, collectedAt: time))
+        let apB = TopologyNode(sourceID: scope + ":device:b", observed: TopologyFacts(name: "AP B", source: .unifi, collectedAt: time))
+        let client = TopologyNode(sourceID: scope + ":client:one", observed: TopologyFacts(name: "Client", source: .unifi, collectedAt: time))
+        let initial = TopologyLink(from: apA.id, to: client.id, kind: .wifi, source: .unifi, observedAt: time, confirmed: false)
+        var document = TopologyDocument(profileID: UUID())
+        _ = document.merge(imported: TopologyImport(nodes: [apA, apB, client], links: [initial], catalogNamespace: scope, controllerSnapshotAt: time))
+        expect(document.links.count == 1 && document.links[0].sourceScope == scope && document.links[0].observations.first?.scope == scope, "controller link provenance scoped at first import")
+        let newLink = TopologyLink(from: apB.id, to: client.id, kind: .wifi, source: .unifi, observedAt: time.addingTimeInterval(10), confirmed: false)
+        let refresh = TopologyImport(nodes: [apA, apB, client], links: [newLink], catalogNamespace: scope, controllerSnapshotAt: time.addingTimeInterval(10))
+        let manual = TopologyLink(from: apA.id, to: apB.id, notes: "Manual backbone")
+        document.links.append(manual)
+        _ = document.merge(imported: refresh)
+        expect(document.links.count == 2 && document.links.contains(manual) && !document.links.contains(where: { $0.id == initial.id }), "client roaming retires only old scoped automatic parent")
+        expect(document.events.contains(where: { $0.kind == .linkRemoved && $0.linkID == initial.id }), "actual complete snapshot records removed parent")
+        let stable = document
+        _ = document.merge(imported: refresh); expect(document == stable, "reconciled controller refresh idempotent")
+
+        var independent = TopologyDocument(profileID: UUID(), nodes: [apA, apB, client])
+        let cable = TopologyLink(from: apA.id, to: client.id, fromPort: "eth1", toPort: "en0", speedMbps: 1000, source: .ssh, observedAt: time, confirmed: true)
+        independent.links = [cable]
+        let reported = TopologyLink(from: apA.id, to: client.id, source: .unifi, observedAt: time, confirmed: false)
+        _ = independent.merge(imported: TopologyImport(nodes: [apA, apB, client], links: [reported], catalogNamespace: scope, controllerSnapshotAt: time))
+        expect(independent.links.count == 1 && independent.links[0].observations.contains(where: { $0.scope == scope }), "merged SSH cable retains controller sample")
+        _ = independent.merge(imported: TopologyImport(nodes: [apA, apB, client], catalogNamespace: scope, controllerSnapshotAt: time.addingTimeInterval(20)))
+        expect(independent.links.count == 1 && independent.links[0].source == .ssh && independent.links[0].fromPort == "eth1" && !independent.links[0].observations.contains(where: { $0.source == .unifi }), "obsolete controller sample removed while independent SSH physical evidence preserved")
+        independent.links.append(TopologyLink(from: apB.id, to: client.id, source: .unifi, observedAt: time, sourceScope: "unifi:other-controller:site"))
+        _ = independent.merge(imported: TopologyImport(nodes: [apA, apB, client], catalogNamespace: scope, controllerSnapshotAt: time.addingTimeInterval(30)))
+        expect(independent.links.contains(where: { $0.sourceScope == "unifi:other-controller:site" }), "another controller's link is not retired")
+        try TopologyRepository.validate(independent)
+        expect(try JSONDecoder().decode(TopologyDocument.self, from: JSONEncoder().encode(independent)) == independent, "scoped cable provenance roundtrip")
+
+        var reused = TopologyDocument(profileID: UUID())
+        let old = TopologyNode(recordKey: "fixture-record", sourceID: "ssh:fixture-record", observed: TopologyFacts(address: "192.0.2.20", interfaces: [TopologyInterface(mac: "02:00:00:00:00:01")]))
+        let replacement = TopologyNode(sourceID: scope + ":client:new", observed: TopologyFacts(address: "192.0.2.20", interfaces: [TopologyInterface(mac: "02:00:00:00:00:02")]))
+        _ = reused.merge(imported: TopologyImport(nodes: [old])); _ = reused.merge(imported: TopologyImport(nodes: [replacement]))
+        expect(reused.nodes.count == 2 && reused.nodes[0].recordKey == "fixture-record" && reused.nodes[1].recordKey == nil, "reused DHCP address cannot rebind a record with conflicting MAC")
+        var multi = replacement; multi.sourceID = "fixture:multi"; multi.observed?.interfaces.append(TopologyInterface(mac: "02:00:00:00:00:01"))
+        var legitimate = TopologyDocument(profileID: UUID(), nodes: [old]); _ = legitimate.merge(imported: TopologyImport(nodes: [multi]))
+        expect(legitimate.nodes.count == 1 && legitimate.nodes[0].id == old.id, "overlapping legitimate multi-interface MAC evidence joins one device")
+        var addressOnly = TopologyDocument(profileID: UUID(), nodes: [TopologyNode(name: "Manual", address: "192.0.2.20")]); _ = addressOnly.merge(imported: TopologyImport(nodes: [replacement]))
+        expect(addressOnly.nodes.count == 1, "manual address-only node can be enriched when there is no conflicting MAC evidence")
+
+        let oldCatalog = (0..<180).map { TopologyNetwork(id: "unifi:old:network:" + String($0), name: "Old", collectedAt: time) }
+        let newCatalog = (0..<180).map { TopologyNetwork(id: scope + ":network:" + String($0), name: "New", collectedAt: time) }
+        var catalogs = TopologyDocument(profileID: UUID(), networks: oldCatalog)
+        _ = catalogs.merge(imported: TopologyImport(catalogNamespace: scope))
+        expect(catalogs.networks == oldCatalog, "unsupported optional endpoint retains previous catalog")
+        _ = catalogs.merge(imported: TopologyImport(networks: newCatalog, catalogNamespace: scope))
+        expect(catalogs.networks == newCatalog, "successful controller switch replaces prior UniFi catalog rather than overflowing global bound")
+        let manualNetworks = (0..<100).map { TopologyNetwork(id: "manual:" + String($0), name: "Manual", collectedAt: time) }
+        catalogs.networks = manualNetworks + oldCatalog.prefix(100)
+        let limited = catalogs.merge(imported: TopologyImport(networks: newCatalog, catalogNamespace: scope))
+        expect(limited.limited && catalogs.networks.count == 256 && catalogs.networks.prefix(100) == manualNetworks[...], "global catalog bound preserves independent manual entries")
+        try TopologyRepository.validate(catalogs)
+
+        let slowTCP = TopologyStatusSample(value: .online, date: time, source: .tcp), plain = TopologyNode()
+        expect(TopologyStatus.resolve(plain, measured: slowTCP, now: time.addingTimeInterval(500), measuredTTL: 600) == .online, "long monitor interval does not get rechecked with shorter controller TTL")
+        expect(TopologyStatus.resolve(plain, measured: slowTCP, now: time.addingTimeInterval(601), measuredTTL: 600) == .unknown, "TCP sample still expires at its own TTL")
+        var grouped = TopologyDocument(profileID: UUID())
+        let group = TopologyGroup(name: "Pinned region", x: 1000, y: 500)
+        let collapsed = TopologyGroup(name: "Collapsed", x: 120, y: 100, collapsed: true)
+        var pinned = TopologyNode(name: "Fixed", x: 1140, y: 600); pinned.positionPinned = true; pinned.groupID = group.id
+        var free = TopologyNode(name: "Free"); free.groupID = group.id
+        let outside = TopologyNode(name: "Outside")
+        grouped.groups = [group, collapsed]; grouped.nodes = [pinned, free, outside]
+        TopologyLayout.arrange(&grouped)
+        let placed = grouped.nodes[1], outsider = grouped.nodes[2]
+        expect(grouped.nodes[0].x == 1140 && grouped.nodes[0].y == 600 && (abs(placed.x - pinned.x) >= 225 || abs(placed.y - pinned.y) >= 135), "final group translation avoids a pinned card in the first slot")
+        expect(!(outsider.x + 115 > collapsed.x && outsider.x - 115 < collapsed.x + 220 && outsider.y + 65 > collapsed.y && outsider.y - 65 < collapsed.y + 70), "outside cards reserve collapsed region's displayed bounds")
+        let area = grouped.groups[0]
+        expect(!(outsider.x + 115 > area.x && outsider.x - 115 < area.x + area.width && outsider.y + 65 > area.y && outsider.y - 65 < area.y + area.height), "outside cards reserve expanded region's final bounds")
+        try TopologyRepository.validate(grouped)
+    }
+    static func observationHistory() throws {
+        let start = Date(timeIntervalSince1970: 1000)
+        var seed = TopologyNode(sourceID: "fixture-router", observed: TopologyFacts(address: "192.0.2.1", source: .unifi, collectedAt: start, controllerStatus: TopologyStatusSample(value: .online, date: start, source: .unifi)))
+        seed.observed?.wans = [TopologyWAN(interface: "wan2", state: .standby, stateAt: start, stateSource: .unifi)]
+        var document = TopologyDocument(profileID: UUID())
+        _ = document.merge(imported: TopologyImport(nodes: [seed]))
+        expect(document.events.count == 1 && document.events[0].kind == .discovered, "first actual sample logs discovery")
+        _ = document.merge(imported: TopologyImport(nodes: [seed]))
+        expect(document.events.count == 1, "repeat refresh does not invent events")
+        var next = seed; next.observed?.address = "192.0.2.2"; next.observed?.collectedAt = start.addingTimeInterval(10)
+        next.observed?.controllerStatus = TopologyStatusSample(value: .offline, date: start.addingTimeInterval(10), source: .unifi)
+        next.observed?.wans[0].state = .active; next.observed?.wans[0].stateAt = start.addingTimeInterval(10)
+        _ = document.merge(imported: TopologyImport(nodes: [next]))
+        expect(Set(document.events.map(\.kind)) == [.discovered, .address, .status, .wanState], "accepted address controller and WAN state changes logged")
+        let captured = document.events
+        _ = document.merge(imported: TopologyImport(nodes: [seed]))
+        expect(document.events == captured, "stale samples cannot rewrite event history")
+        let overflow = (0..<1000).map { TopologyEvent(date: start.addingTimeInterval(Double($0 + 100)), source: .tcp, nodeID: seed.id, kind: .status, current: String($0)) }
+        document.appendEvents(overflow)
+        expect(document.events.count == 500 && document.events.last?.current == "999", "history bounded by actual latest events")
+        let retained = document.events
+        document.appendEvents(Array(overflow.suffix(500)))
+        expect(document.events == retained, "event batch idempotent")
+        try TopologyRepository.validate(document)
+        var invalid = document; invalid.groups = [TopologyGroup()]; invalid.nodes[0].groupID = UUID()
+        rejects("dangling group") { try TopologyRepository.validate(invalid) }
+        invalid = document; invalid.events[0].date = Date(timeIntervalSince1970: .infinity)
+        rejects("invalid event date") { try TopologyRepository.validate(invalid) }
+        invalid = document; invalid.events.append(document.events[0])
+        rejects("event overflow or duplicate") { try TopologyRepository.validate(invalid) }
+        invalid = document; invalid.nodes[0].observed?.deviceInfo = TopologyDeviceInfo(cpuPercent: 101)
+        rejects("invalid hardware percentage") { try TopologyRepository.validate(invalid) }
+    }
+    static func multipleMaps() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ssh-hub-multimap-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repo = TopologyRepository(root: root), profile = UUID(), secondProfile = UUID()
+        let missingNamedID = UUID()
+        rejects("missing named map in missing directory") { _ = try repo.load(profile, mapID: missingNamedID) }
+        expect(try repo.load(profile) == TopologyDocument(profileID: profile), "missing primary map remains legacy-compatible blank")
+        let legacy = TopologyDocument(profileID: profile, nodes: [TopologyNode(name: "Legacy router")])
+        expect(legacy.id == profile && repo.url(for: legacy.id) == repo.url(for: profile), "legacy file and identity remain unchanged")
+        try repo.write(legacy)
+        let named = TopologyDocument(profileID: profile, nodes: [TopologyNode(name: "Independent router")], unifi: TopologyUniFiSettings(baseURL: "https://fixture.example.test", siteID: "site"), id: UUID(), name: "Гараж")
+        try repo.write(named, overwrite: false)
+        expect(try repo.load(profile) == legacy && repo.load(profile, mapID: named.id) == named && repo.loadMap(named.id) == named, "named and legacy maps load independently")
+        expect(try Set(repo.list(profileID: profile).map(\.id)) == [profile, named.id], "profile catalog returns all own maps")
+        var renamed = named; renamed.name = "Серверная"; try repo.write(renamed)
+        expect(try repo.load(profile, mapID: named.id).name == "Серверная" && repo.load(profile) == legacy, "rename touches only same named map file")
+        rejects("named map belongs to another profile") { _ = try repo.load(secondProfile, mapID: named.id) }
+        let oldJSON = Data("{\"profileID\":\"\(profile)\",\"nodes\":[]}".utf8)
+        let old = try JSONDecoder().decode(TopologyDocument.self, from: oldJSON)
+        expect(old.id == profile && old.name == "Основная карта", "old archive decodes as exact legacy map")
+        let targetProfile = UUID(), targetMap = UUID()
+        expect(old.remapped(profileID: targetProfile, recordKeys: [:]).id == targetProfile, "legacy map follows restored profile identity")
+        expect(named.remapped(profileID: targetProfile, recordKeys: [:]).id == named.id, "named map identity survives profile remap")
+        let explicit = named.remapped(profileID: targetProfile, mapID: targetMap, recordKeys: [:])
+        expect(explicit.profileID == targetProfile && explicit.id == targetMap && explicit.name == named.name, "backup collision plan can explicitly remap named map ID")
+        expect(try JSONDecoder().decode(TopologyDocument.self, from: JSONEncoder().encode(named)) == named, "named map roundtrip")
+        for name in ["", "   ", String(repeating: "x", count: 81), "bad\nname"] {
+            var invalid = named; invalid.name = name
+            rejects("invalid map name") { try TopologyRepository.validate(invalid) }
+        }
+        try repo.remove(named.id)
+        rejects("deleted named map cannot reopen as editable blank") { _ = try repo.load(profile, mapID: named.id) }
+        expect(try repo.list(profileID: profile).map(\.id) == [profile] && repo.load(profile) == legacy, "deleting named map keeps main map")
+        for index in 1..<TopologyRepository.maximumMapsPerProfile {
+            try repo.write(TopologyDocument(profileID: profile, id: UUID(), name: "Map " + String(index)), overwrite: false)
+        }
+        expect(try repo.list(profileID: profile).count == 50, "fifty maps supported per profile")
+        rejects("profile map limit") { try repo.write(TopologyDocument(profileID: profile, id: UUID(), name: "Overflow"), overwrite: false) }
+        try repo.write(TopologyDocument(profileID: secondProfile, name: "Other profile"))
+        expect(try repo.list(profileID: secondProfile).count == 1 && repo.list().count == 51, "map limit and catalog isolated by profile")
+        var modifiedLegacy = legacy; modifiedLegacy.name = "Renamed main"; try repo.write(modifiedLegacy)
+        expect(try repo.load(profile).name == "Renamed main", "existing map remains editable at profile limit")
     }
     static func repository() throws {
         let fm = FileManager.default, root = fm.temporaryDirectory.appendingPathComponent("ssh-hub-topology-tests-" + UUID().uuidString, isDirectory: true)

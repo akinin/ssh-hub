@@ -4,6 +4,7 @@ extension AliasStore {
     var activePage: EntryPage? { pages.first { $0.id == selectedPage } }
     func entry(for page: EntryPage) -> SSHAlias? { aliases.first { $0.favoriteID == page.key } }
     func openPage(_ entry: SSHAlias?, section: EntryDetailSection) {
+        if section == .topology { openTopology(entry); return }
         let key = entry?.favoriteID
         if section == .overview, var page = pages.first(where: { $0.section == .overview }) {
             for duplicate in pages.filter({ $0.section == .overview && $0.id != page.id }) { closePage(duplicate) }
@@ -69,7 +70,7 @@ struct WorkspacePageTab: View {
     @EnvironmentObject var store: AliasStore
     @ObservedObject private var consoles = ConsoleStore.shared
     @State private var stateRevision = 0
-    private var title: String { store.tabTitle(.page(page.id), fallback: page.section == .topology ? "Карта · " + store.profileName : (store.entry(for: page).map { store.title($0) + " — " } ?? "") + (page.section == .connection ? store.entry(for: page)?.recordKind?.title ?? page.section.title : page.section.title)) }
+    private var title: String { store.tabTitle(.page(page.id), fallback: page.section == .topology ? (store.topologyModels[page.id]?.document.name ?? "Карта") + " · " + store.profileName : (store.entry(for: page).map { store.title($0) + " — " } ?? "") + (page.section == .connection ? store.entry(for: page)?.recordKind?.title ?? page.section.title : page.section.title)) }
     var body: some View {
         let _ = stateRevision
         HStack(spacing: 6) {

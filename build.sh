@@ -34,6 +34,10 @@ swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$b
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" DocumentationMarkdown.swift DocumentationVisualPage.swift DocumentationVisualTests.swift -o "$build_dir/documentation-visual-tests" -framework AppKit -framework WebKit
 "$build_dir/documentation-visual-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" TopologyData.swift TopologyDataTests.swift -o "$build_dir/topology-data-tests"
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" TopologyData.swift TopologyExport.swift TopologyExportTests.swift -o "$build_dir/topology-export-tests" -framework AppKit -framework CoreText
+"$build_dir/topology-export-tests"
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConnectionAppearance.swift LocalConnections.swift TopologyData.swift TopologyRecordSeed.swift TopologyRecordSeedTests.swift -o "$build_dir/topology-record-seed-tests"
+"$build_dir/topology-record-seed-tests"
 "$build_dir/topology-data-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" TopologyData.swift TopologySSH.swift TopologySSHTests.swift -o "$build_dir/topology-ssh-tests"
 "$build_dir/topology-ssh-tests"
@@ -41,7 +45,7 @@ swiftc -parse-as-library -swift-version 5 -D TOPOLOGY_UNIFI_TEST -sdk "$sdk_dir"
 "$build_dir/topology-unifi-tests"
 swiftc -parse-as-library -swift-version 5 -D TOPOLOGY_UNIFI_TEST -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" TopologyData.swift TopologyUniFi.swift TopologyRouterAPI.swift TopologyRouterAPITests.swift -o "$build_dir/topology-router-tests" -framework Security -framework LocalAuthentication
 "$build_dir/topology-router-tests"
-swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionProbe.swift Tunnels.swift SSHCredentials.swift ToolkitRuntime.swift SSHLoginPolicy.swift Nmap.swift TCPAvailability.swift TopologyData.swift TopologySSH.swift TopologyUniFi.swift TopologyRouterAPI.swift TopologyModel.swift TopologyModelTests.swift -o "$build_dir/topology-model-tests" -framework Security -framework AppKit -framework LocalAuthentication
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionProbe.swift Tunnels.swift SSHCredentials.swift ToolkitRuntime.swift SSHLoginPolicy.swift Nmap.swift TCPAvailability.swift TopologyData.swift TopologySSH.swift TopologyUniFi.swift TopologyRouterAPI.swift IPCalculator.swift ExtraTools.swift TopologyModel.swift TopologyModelTests.swift -o "$build_dir/topology-model-tests" -framework Security -framework AppKit -framework LocalAuthentication
 "$build_dir/topology-model-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" TabInformation.swift TabInformationTests.swift -o "$build_dir/tab-information-tests"
 "$build_dir/tab-information-tests"
@@ -72,7 +76,7 @@ swiftc -swift-version 5 -O -sdk "$sdk_dir" -target arm64-apple-macosx14.0 -modul
 swiftc -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift Keygen.swift KeygenTests.swift -o "$build_dir/keygen-tests"
 "$build_dir/keygen-tests" "${app_dir:A}/Contents/MacOS/SSHAskpass"
 swiftc -parse-as-library -swift-version 5 -O -sdk "$sdk_dir" -target arm64-apple-macosx14.0 -module-cache-path "$build_dir/module-cache" LoginAskpass.swift -o "$app_dir/Contents/MacOS/SSHLoginAskpass"
-swiftc -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift PublicKeys.swift TerminalLauncher.swift ConnectionTree.swift ConsoleLaunch.swift SSHCredentials.swift WorkspaceProfiles.swift WorkspaceLayout.swift SavedCommands.swift WorkspaceTests.swift -o "$build_dir/workspace-tests" -framework AppKit -framework Security
+swiftc -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift PublicKeys.swift TerminalLauncher.swift ConnectionTree.swift ConsoleLaunch.swift SSHCredentials.swift WorkspaceProfiles.swift WorkspaceLayout.swift WorkspaceSnapshot.swift SavedCommands.swift WorkspaceTests.swift -o "$build_dir/workspace-tests" -framework AppKit -framework Security
 "$build_dir/workspace-tests" "$app_dir/Contents/MacOS/SSHLoginAskpass"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift ConnectionAttachments.swift ConnectionDocumentation.swift SavedCommands.swift ConnectionTree.swift WorkspaceProfiles.swift WorkspaceLayout.swift WorkspaceSnapshot.swift RecordTemplate.swift CommandLibrary.swift Nmap.swift ConnectionProbe.swift Tunnels.swift RecordInventory.swift WinboxSettings.swift TopologyData.swift BackupArchive.swift BackupRestoration.swift TCPAvailability.swift SessionJournal.swift AdvancedTests.swift -o "$build_dir/advanced-tests" -framework Security
 "$build_dir/advanced-tests"

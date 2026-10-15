@@ -34,6 +34,7 @@ import ConsoleSupport
     var inventoryModels: [UUID: InventoryModel] = [:]
     var winboxModels: [UUID: WinboxModel] = [:]
     var topologyModels: [UUID: TopologyModel] = [:]
+    @Published var topologyMapIndex: [TopologyMapSummary] = []
     var launchTasks: [UUID: Task<Void, Never>] = [:]
     @Published var selectedPage: UUID?
     let scanner = NmapModel()
@@ -368,7 +369,7 @@ import ConsoleSupport
             warnings = snapshot.warnings
             if let name { selected = aliases.first { $0.name == name }?.id }
             if current == nil { selected = filtered.first?.id }
-            pages.filter { $0.key != nil && entry(for: $0) == nil }.forEach { closePage($0, force: true) }
+            pages.filter { $0.requiresRecordBinding && entry(for: $0) == nil }.forEach { closePage($0, force: true) }
             refreshRecordTools()
         } catch { self.error = error.localizedDescription }
     }
@@ -719,10 +720,14 @@ struct MainView: View {
                         .help("Фильтр: " + filterTitle).accessibilityLabel("Фильтр подключений").accessibilityValue(filterTitle)
                 }.padding(.horizontal, 14).padding(.bottom, 10)
                 Button { store.openTopology() } label: {
-                    HStack(spacing:9) { Image(systemName:"point.3.connected.trianglepath.dotted"); Text("Сетевая карта"); Spacer() }
+                    HStack(spacing:9) { Image(systemName:"point.3.connected.trianglepath.dotted"); Text("Сетевые карты"); Spacer() }
                         .padding(.horizontal,12).frame(height:30)
                         .background(store.pages.contains(where: { $0.section == .topology && store.workspace.active == .page($0.id) }) ? Color.accentColor.opacity(0.2) : .clear,in:RoundedRectangle(cornerRadius:7))
                 }.buttonStyle(.plain).padding(.horizontal,10).padding(.bottom,5)
+                    .contextMenu { ForEach(store.topologyMapIndex) { map in Button(map.name) { store.openTopology(mapID: map.id) } } }
+                    .onAppear { store.reloadTopologyMapIndex() }
+                    .onChange(of: store.profiles.active) { _, _ in store.reloadTopologyMapIndex() }
+                    .onChange(of: store.config.url) { _, _ in store.reloadTopologyMapIndex() }
                 ConnectionTreeView().environmentObject(store)
                 Divider()
                 HStack {

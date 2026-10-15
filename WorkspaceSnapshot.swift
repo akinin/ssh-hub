@@ -23,6 +23,19 @@ struct WorkspaceSnapshot: Codable {
         let keep = pages.first(where: { $0.section == .overview && .page($0.id) == layout.active })?.id ?? pages.first(where: { $0.section == .overview })?.id
         return pages.filter { $0.section != .overview || $0.id == keep }
     }
+    func restorablePages(profileID: UUID) -> [EntryPage] {
+        let candidates = uniqueDashboardPages
+        var mapPages: [UUID: UUID] = [:]
+        for page in candidates where page.section == .topology {
+            guard let mapID = page.topologyMapID(profileID: profileID) else { continue }
+            if mapPages[mapID] == nil || layout.active == .page(page.id) { mapPages[mapID] = page.id }
+        }
+        return candidates.filter { page in
+            guard page.section == .topology else { return true }
+            guard let mapID = page.topologyMapID(profileID: profileID) else { return false }
+            return mapPages[mapID] == page.id
+        }
+    }
 }
 
 extension WorkspaceTab {

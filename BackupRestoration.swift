@@ -3,10 +3,9 @@ import Darwin
 
 enum BackupRestoration {
     static func savedTopologies(profileIDs: [UUID], repository: TopologyRepository, exportIDs: [String: UUID]) throws -> [TopologyDocument] {
-        try profileIDs.compactMap { id in
-            guard try topologyExists(repository, id) else { return nil }
-            return exportTopology(try repository.load(id), exportIDs: exportIDs)
-        }
+        let included = Set(profileIDs)
+        guard !included.isEmpty else { return [] }
+        return try repository.list().filter { included.contains($0.profileID) }.map { exportTopology($0, exportIDs: exportIDs) }
     }
     static func exportTopology(_ document: TopologyDocument, exportIDs: [String: UUID]) -> TopologyDocument {
         var copy = document
@@ -22,10 +21,16 @@ enum BackupRestoration {
         }
         return copy
     }
-    private static func topologyExists(_ repository: TopologyRepository, _ profile: UUID) throws -> Bool {
+    private static func topologyFileExists(_ repository: TopologyRepository, _ mapID: UUID) throws -> Bool {
         var metadata = stat()
-        if lstat(repository.url(for: profile).path, &metadata) == 0 { return true }
+        if lstat(repository.url(for: mapID).path, &metadata) == 0 { return true }
         guard errno == ENOENT else { throw TopologyError.invalidFile }; return false
+    }
+    private static func topologyProfileExists(_ repository: TopologyRepository, _ profile: UUID) throws -> Bool {
+        // The legacy filename reserves the profile even when it is corrupt or
+        // a dangling link. Named maps are discovered through validated files.
+        if try topologyFileExists(repository, profile) { return true }
+        return try !repository.list(profileID: profile).isEmpty
     }
     // Profile edits stay in the caller's value copy until all files install.
     // Even a corrupted map or a dangling symlink reserves its existing profile.
@@ -36,14 +41,14 @@ enum BackupRestoration {
         for source in backup.profiles ?? [] {
             let existing = profiles.profiles.first { $0.name.caseInsensitiveCompare(source.name) == .orderedSame }
             var target = try existing?.id ?? profiles.add(source.name)
-            if mapProfiles.contains(source.id), try topologyExists(topology, target) {
+            if mapProfiles.contains(source.id), try topologyProfileExists(topology, target) {
                 let suffix = " (карта из архива)", prefix = String(source.name.prefix(40 - suffix.count))
                 var candidate = prefix + suffix, counter = 2
                 while profiles.profiles.contains(where: { $0.name.caseInsensitiveCompare(candidate) == .orderedSame }) {
                     let numbered = " (карта из архива \(counter))"; candidate = String(source.name.prefix(40 - numbered.count)) + numbered; counter += 1
                 }
                 target = try profiles.add(candidate)
-                while try topologyExists(topology, target) {
+                while try topologyProfileExists(topology, target) {
                     profiles.profiles.removeAll { $0.id == target }
                     target = try profiles.add(candidate)
                 }
@@ -63,9 +68,24 @@ enum BackupRestoration {
         let inventory = inventory ?? InventoryRepository(root: documents.root.deletingLastPathComponent().appendingPathComponent("Inventory"))
         let winbox = winbox ?? WinboxRepository(root: documents.root.deletingLastPathComponent().appendingPathComponent("Winbox"))
         let topology = topology ?? TopologyRepository(root: documents.root.deletingLastPathComponent().appendingPathComponent("Topology"))
-        let mapTargets = (backup.topologies ?? []).map { topologyProfileMap[$0.profileID] ?? $0.profileID }
-        guard Set(mapTargets).count == mapTargets.count else { throw ConfigError.message("Карты архива должны восстанавливаться в разные профили.") }
-        for target in mapTargets where try topologyExists(topology, target) { throw ConfigError.message("Карта профиля уже существует. Выбери отдельный профиль для восстановления.") }
+        let sourceProfiles = Set((backup.topologies ?? []).map(\.profileID))
+        let mapTargets = sourceProfiles.map { topologyProfileMap[$0] ?? $0 }
+        guard Set(mapTargets).count == mapTargets.count else { throw ConfigError.message("Разные профили карт архива должны восстанавливаться в разные профили.") }
+        for target in mapTargets where try topologyProfileExists(topology, target) { throw ConfigError.message("В профиле уже есть карты. Выбери отдельный профиль для восстановления.") }
+        var restoredMapIDs: [UUID: UUID] = [:], reservedMapIDs = Set<UUID>()
+        let planningOrder = (backup.topologies ?? []).sorted {
+            let primaryA = $0.id == $0.profileID, primaryB = $1.id == $1.profileID
+            return primaryA != primaryB ? primaryA : $0.id.uuidString < $1.id.uuidString
+        }
+        for map in planningOrder {
+            let profile = topologyProfileMap[map.profileID] ?? map.profileID
+            // Preserve the legacy primary-map filename when the destination
+            // profile changes. Named maps retain their identity if unoccupied;
+            // another profile's map or an untrusted file can never be replaced.
+            var target = map.id == map.profileID ? profile : map.id
+            while try reservedMapIDs.contains(target) || topologyFileExists(topology, target) { target = UUID() }
+            restoredMapIDs[map.id] = target; reservedMapIDs.insert(target)
+        }
         let before = try localRepository.load()
         var after = before, installed: [URL] = []
         var metadata: [(BackupRecord, SSHAlias)] = []
@@ -137,13 +157,21 @@ enum BackupRestoration {
                 }
             }
             for map in backup.topologies ?? [] {
-                var copy = map.remapped(profileID: topologyProfileMap[map.profileID] ?? map.profileID, recordKeys: restoredRecordKeys)
+                var normalized = map
+                func canonical(_ key: String?) -> String? {
+                    guard let key, key.hasPrefix("backup:"), let id = UUID(uuidString: String(key.dropFirst(7))) else { return nil }
+                    return "backup:" + id.uuidString
+                }
+                for index in normalized.nodes.indices { normalized.nodes[index].recordKey = canonical(normalized.nodes[index].recordKey) }
+                for index in normalized.routers.indices { normalized.routers[index].recordKey = canonical(normalized.routers[index].recordKey) }
+                var copy = normalized.remapped(profileID: topologyProfileMap[map.profileID] ?? map.profileID, recordKeys: restoredRecordKeys)
+                copy.id = restoredMapIDs[map.id]!
                 for index in copy.nodes.indices {
                     if let id = copy.nodes[index].sourceID, id.hasPrefix("record:") || id.hasPrefix("ssh:") { copy.nodes[index].sourceID = nil }
                     copy.nodes[index].sourceAliases.removeAll { $0.hasPrefix("record:") || $0.hasPrefix("ssh:") }
                 }
                 try topology.write(copy, overwrite: false)
-                installed.append(topology.url(for: copy.profileID))
+                installed.append(topology.url(for: copy.id))
             }
             try writeTemplates(newTemplates)
             try writeLibrary(newLibrary)

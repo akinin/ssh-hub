@@ -19,7 +19,7 @@ enum TopologyUniFiError: Error, LocalizedError, Equatable {
         case .key: return "Введи действующий API-ключ UniFi Network из раздела Integrations."
         case .site: return "Выбери площадку UniFi; идентификатор должен быть UUID."
         case .schema: return "UniFi вернул неподдерживаемый ответ. Проверь версию Network и путь локального Integration API."
-        case .limit: return "Ответ UniFi превышает ограничение: 100 устройств, 400 клиентов, 16 МиБ за сбор или 2 МиБ на ответ. Выбери меньшую площадку."
+        case .limit: return "Ответ UniFi превышает ограничение: 100 устройств, 400 клиентов, 256 сетей/SSID, 16 МиБ за сбор или 2 МиБ на ответ. Выбери меньшую площадку."
         case .redirect: return "UniFi перенаправляет запрос. Укажи конечный HTTPS-адрес контроллера; API-ключ при перенаправлении не отправляется."
         case .certificate: return "Сертификат UniFi не прошёл проверку macOS. Настрой доверенный сертификат контроллера; проверка TLS не отключается."
         case .transport: return "Не удалось связаться с UniFi. Проверь адрес, сеть и доступность локального Network API."
@@ -302,18 +302,61 @@ final class TopologyUniFiClient: @unchecked Sendable {
         let siteID = site.uuidString.lowercased(), prefix = ["sites", siteID], budget = UniFiBudget()
         let devices = try await page(prefix + ["devices"], maximum: 100, budget: budget)
         var details: [String: [String: Any]] = [:], statistics: [String: [String: Any]] = [:]
-        var supportsStatistics = true
+        var supportsStatistics = true, supportsDetails = true, supportsNetworkDetails = true
+        var warnings = Set<String>()
         for device in devices {
             try check(); guard let id = device["id"] as? String else { throw TopologyUniFiError.schema }
-            do { details[id.lowercased()] = try await object(prefix + ["devices", id], budget: budget) }
-            catch TopologyUniFiError.http(404) { /* Device may have been removed during a collection. */ }
+            if supportsDetails {
+                do { details[id.lowercased()] = try await object(prefix + ["devices", id], budget: budget) }
+                catch TopologyUniFiError.http(let status) where [403, 404, 405, 501].contains(status) {
+                    // 404 may mean one device disappeared; a forbidden/unsupported
+                    // endpoint applies to all remaining devices and needn't be retried.
+                    if status != 404 { supportsDetails = false }
+                    warnings.insert("UniFi: подробности некоторых устройств недоступны; используются сведения списка. Порты и радиомодули могут отсутствовать.")
+                }
+            }
             if supportsStatistics {
                 do { statistics[id.lowercased()] = try await object(prefix + ["devices", id, "statistics", "latest"], budget: budget) }
-                catch TopologyUniFiError.http(let status) where [404, 405, 501].contains(status) { supportsStatistics = false }
+                catch TopologyUniFiError.http(let status) where [403, 404, 405, 501].contains(status) {
+                    supportsStatistics = false
+                    warnings.insert("UniFi: статистика устройств недоступна этой версии API или ключу. Нагрузка и время работы не обновлены.")
+                }
             }
         }
         let clients = try await page(prefix + ["clients"], maximum: 400, budget: budget)
-        return try TopologyUniFiParser.build(devices: devices, details: details, statistics: statistics, clients: clients, identity: endpoint.identity, siteID: siteID, date: Date())
+        // Optional endpoints are unavailable on older Network versions or to limited keys.
+        // Keep their previous catalogue on unsupported/forbidden, but never hide TLS/transport errors.
+        let networkRows = try await optionalPage(prefix + ["networks"], maximum: 256, budget: budget)
+        var networkDetails: [[String: Any]]? = networkRows
+        if let rows = networkRows {
+            networkDetails = []
+            for row in rows {
+                guard let id = row["id"] as? String else { throw TopologyUniFiError.schema }
+                if supportsNetworkDetails {
+                    do {
+                        let detail = try await object(prefix + ["networks", id], budget: budget)
+                        guard let detailID = detail["id"] as? String, detailID.lowercased() == id.lowercased() else { throw TopologyUniFiError.schema }
+                        networkDetails?.append(detail)
+                    }
+                    catch TopologyUniFiError.http(let status) where [403, 404, 405, 501].contains(status) {
+                        networkDetails?.append(row)
+                        if status != 404 { supportsNetworkDetails = false }
+                        warnings.insert("UniFi: подробности некоторых сетей недоступны. VLAN из списка сохранены; подсеть и принадлежность клиентов могут быть неизвестны.")
+                    }
+                } else { networkDetails?.append(row) }
+            }
+        } else { warnings.insert("UniFi: список сетей/VLAN недоступен этой версии API или ключу. Ранее полученный каталог сохранён.") }
+        let wifi = try await optionalPage(prefix + ["wifi", "broadcasts"], maximum: 256, budget: budget)
+        let wans = try await optionalPage(prefix + ["wans"], maximum: 16, budget: budget)
+        if wifi == nil { warnings.insert("UniFi: список Wi-Fi/SSID недоступен этой версии API или ключу. Ранее полученный каталог сохранён.") }
+        if wans == nil { warnings.insert("UniFi: имена WAN недоступны этой версии API или ключу.") }
+        var result = try TopologyUniFiParser.build(devices: devices, details: details, statistics: statistics, clients: clients, identity: endpoint.identity, siteID: siteID, date: Date(), networks: networkDetails, wifi: wifi, wans: wans)
+        result.warnings = warnings.sorted()
+        return result
+    }
+    private func optionalPage(_ path: [String], maximum: Int, budget: UniFiBudget) async throws -> [[String: Any]]? {
+        do { return try await page(path, maximum: maximum, budget: budget) }
+        catch TopologyUniFiError.http(let status) where [403, 404, 405, 501].contains(status) { return nil }
     }
 }
 
@@ -326,7 +369,7 @@ private final class UniFiBudget {
     }
     func request() throws {
         guard started.duration(to: .now) < .seconds(120) else { throw TopologyUniFiError.timedOut }
-        count += 1; guard count <= 230 else { throw TopologyUniFiError.limit }
+        count += 1; guard count <= 520 else { throw TopologyUniFiError.limit }
     }
     func received(_ count: Int) throws { bytes += count; guard bytes <= 16 * 1024 * 1024 else { throw TopologyUniFiError.limit } }
 }
@@ -367,9 +410,36 @@ enum TopologyUniFiParser {
         var bytes = Array(SHA256.hash(data: Data(text.utf8)).prefix(16)); bytes[6] = (bytes[6] & 15) | 80; bytes[8] = (bytes[8] & 63) | 128
         return UUID(uuid: (bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7],bytes[8],bytes[9],bytes[10],bytes[11],bytes[12],bytes[13],bytes[14],bytes[15]))
     }
-    static func build(devices: [[String: Any]], details: [String: [String: Any]], statistics: [String: [String: Any]], clients: [[String: Any]], identity: String, siteID: String, date: Date) throws -> TopologyImport {
-        guard devices.count <= 100, clients.count <= 400, UUID(uuidString: siteID) != nil else { throw TopologyUniFiError.limit }
+    static func build(devices: [[String: Any]], details: [String: [String: Any]], statistics: [String: [String: Any]], clients: [[String: Any]], identity: String, siteID: String, date: Date, networks: [[String: Any]]? = nil, wifi: [[String: Any]]? = nil, wans: [[String: Any]]? = nil) throws -> TopologyImport {
+        guard devices.count <= 100, clients.count <= 400, (wans?.count ?? 0) <= 16, UUID(uuidString: siteID) != nil else { throw TopologyUniFiError.limit }
         let namespace = "unifi:" + SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined() + ":" + siteID.lowercased()
+        let networkCatalog = try networks.map { rows -> [TopologyNetwork] in
+            guard rows.count <= 256 else { throw TopologyUniFiError.limit }
+            var identities = Set<String>()
+            return try rows.map { row in
+                guard let id = row["id"] as? String, UUID(uuidString: id) != nil else { throw TopologyUniFiError.schema }
+                guard identities.insert(id.lowercased()).inserted else { throw TopologyUniFiError.schema }
+                let config = row["ipv4Configuration"] as? [String: Any] ?? [:]
+                let additional = config["additionalHostIpSubnets"] as? [String] ?? []
+                guard additional.count <= 64 else { throw TopologyUniFiError.limit }
+                var subnets = additional.map { text($0) }
+                if let prefix = integer(config["prefixLength"]), prefix <= 32, !text(config["hostIpAddress"]).isEmpty { subnets.insert(text(config["hostIpAddress"]) + "/" + String(prefix), at: 0) }
+                let vlan = integer(row["vlanId"])
+                guard vlan.map({ (1...4094).contains($0) }) ?? true else { throw TopologyUniFiError.schema }
+                return TopologyNetwork(id: namespace + ":network:" + id.lowercased(), name: text(row["name"]), vlan: vlan, subnets: subnets, enabled: row["enabled"] as? Bool ?? true, collectedAt: date)
+            }
+        }
+        let wifiCatalog = try wifi.map { rows -> [TopologyWiFi] in
+            guard rows.count <= 256 else { throw TopologyUniFiError.limit }
+            var identities = Set<String>()
+            return try rows.map { row in
+                guard let id = row["id"] as? String, UUID(uuidString: id) != nil else { throw TopologyUniFiError.schema }
+                guard identities.insert(id.lowercased()).inserted else { throw TopologyUniFiError.schema }
+                let network = row["network"] as? [String: Any] ?? [:]
+                let networkID = text(network["networkId"])
+                return TopologyWiFi(id: namespace + ":wifi:" + id.lowercased(), name: text(row["name"]), networkID: UUID(uuidString: networkID).map { namespace + ":network:" + $0.uuidString.lowercased() } ?? "", enabled: row["enabled"] as? Bool ?? true, collectedAt: date)
+            }
+        }
         var nodes: [TopologyNode] = [], links: [TopologyLink] = [], ids: [String: UUID] = [:]
         var parents: [(child: String, parent: String, kind: TopologyLinkKind)] = []
         for summary in devices {
@@ -399,21 +469,41 @@ enum TopologyUniFiParser {
                 if let poe = port["poe"] as? [String: Any] {
                     poeText = [text(poe["standard"], limit: 20), text(poe["state"], limit: 20)].filter { !$0.isEmpty }.joined(separator: " · ")
                 }
-                interfaces.append(TopologyInterface(name: "Port \(idx)", state: text(port["state"], limit: 60), speedMbps: number(port["speedMbps"], maximum: 10_000_000), poe: poeText))
+                let poe = port["poe"] as? [String: Any] ?? [:]
+                interfaces.append(TopologyInterface(name: "Port \(idx)", state: text(port["state"], limit: 60), speedMbps: number(port["speedMbps"], maximum: 10_000_000), poe: poeText,
+                                                    connector: text(port["connector"], limit: 60), maxSpeedMbps: number(port["maxSpeedMbps"], maximum: 10_000_000), poeEnabled: poe["enabled"] as? Bool))
             }
             guard interfaces.count <= 256 else { throw TopologyUniFiError.limit }
             // The official schema does not define whether Bps means bytes or bits. Preserve
             // its literal field labels; never manufacture an Mbps conversion or port speed.
             let stats = statistics[id] ?? [:], uplinkStats = stats["uplink"] as? [String: Any] ?? [:]
+            guard stats.isEmpty || stats["interfaces"] is [String: Any] else { throw TopologyUniFiError.schema }
             let rx = number(uplinkStats["rxRateBps"]), tx = number(uplinkStats["txRateBps"])
             var notes = ["UniFi Network · " + state]
             let model = text(detail["model"] ?? summary["model"]), firmware = text(detail["firmwareVersion"] ?? summary["firmwareVersion"])
             if !model.isEmpty { notes.append("Модель: " + model) }; if !firmware.isEmpty { notes.append("Прошивка: " + firmware) }
+            let radioRows = physical["radios"] as? [[String: Any]] ?? []
+            let radioStatistics = (stats["interfaces"] as? [String: Any])?["radios"] as? [[String: Any]] ?? []
+            guard radioRows.count <= 32, radioStatistics.count <= 32 else { throw TopologyUniFiError.limit }
+            var radioInfo: [TopologyRadio] = []
+            for radio in radioRows {
+                guard let frequency = number(radio["frequencyGHz"], maximum: 100), frequency >= 0.1 else { continue }
+                let matching = radioStatistics.filter { number($0["frequencyGHz"], maximum: 100) == frequency }
+                let retries = matching.count == 1 ? number(matching[0]["txRetriesPct"], maximum: 100) : nil
+                let channel = integer(radio["channel"]).flatMap { (1...1024).contains($0) ? $0 : nil }
+                radioInfo.append(TopologyRadio(frequencyGHz: frequency, channel: channel, widthMHz: number(radio["channelWidthMHz"], maximum: 1000), standard: text(radio["wlanStandard"], limit: 60), txRetriesPercent: retries))
+            }
+            let deviceInfo = TopologyDeviceInfo(model: model, firmware: firmware, cpuPercent: number(stats["cpuUtilizationPct"], maximum: 100), memoryPercent: number(stats["memoryUtilizationPct"], maximum: 100), uptimeSec: number(stats["uptimeSec"], maximum: 10_000_000_000), radios: radioInfo)
             if let rx { notes.append("UniFi uplink rxRateBps: \(String(rx)); единица в API не уточнена.") }
             if let tx { notes.append("UniFi uplink txRateBps: \(String(tx)); единица в API не уточнена.") }
-            if deviceKind == .gateway { notes.append("Официальный API не сообщает WAN IP, шлюз и DNS; эти сведения можно добавить вручную или через SSH.") }
+            if deviceKind == .gateway {
+                let names = (wans ?? []).map { text($0["name"]) }.filter { !$0.isEmpty }
+                if !names.isEmpty { notes.append("WAN в UniFi: " + names.joined(separator: ", ")) }
+                notes.append("Integration API сообщает только имена WAN. Адрес, шлюз и DNS можно получить через SSH; провайдера и роль канала необходимо уточнить отдельно.")
+            }
+            if let heartbeat = stats["lastHeartbeatAt"] as? String, ISO8601DateFormatter().date(from: heartbeat) != nil { notes.append("Последний heartbeat UniFi: " + text(heartbeat)) }
             notes.append("API сообщает родительское устройство, но не точную пару портов или тип uplink; связь требует проверки.")
-            let facts = TopologyFacts(name: name, address: address, kind: deviceKind, source: .unifi, collectedAt: date, availability: availability, interfaces: interfaces, notes: notes.joined(separator: "\n"))
+            let facts = TopologyFacts(name: name, address: address, kind: deviceKind, source: .unifi, collectedAt: date, availability: availability, interfaces: interfaces, notes: notes.joined(separator: "\n"), interfacesAt: date, interfacesSource: .unifi, clientInfo: TopologyClientInfo(connection: "INFRASTRUCTURE", vendor: "Ubiquiti"), clientInfoAt: date, controllerStatus: TopologyStatusSample(value: availability, date: date, source: .unifi), deviceInfo: deviceInfo, deviceInfoAt: date)
             nodes.append(TopologyNode(id: nodeID, sourceID: sourceID, observed: facts))
             if let uplink = detail["uplink"] as? [String: Any], let parent = uplink["deviceId"] as? String, UUID(uuidString: parent) != nil {
                 parents.append((id, parent.lowercased(), .lan))
@@ -424,10 +514,25 @@ enum TopologyUniFiParser {
             guard let rawID = client["id"] as? String, let uuid = UUID(uuidString: rawID) else { throw TopologyUniFiError.schema }
             let id = uuid.uuidString.lowercased(); guard clientIDs.insert(id).inserted else { throw TopologyUniFiError.schema }
             let sourceID = namespace + ":client:" + id, nodeID = stableID(sourceID)
-            let type = text(client["type"]), name = text(client["name"]), address = text(client["ipAddress"]), mac = TopologyIdentity.mac(text(client["macAddress"])) ?? ""
+            let type = text(client["type"]), address = text(client["ipAddress"]), mac = TopologyIdentity.mac(text(client["macAddress"])) ?? ""
+            let name = text(client["name"]).isEmpty ? mac : text(client["name"])
             guard !name.isEmpty || !address.isEmpty else { throw TopologyUniFiError.schema }
+            var info = TopologyClientInfo(connection: type)
+            let matches: [(network: TopologyNetwork, prefix: Int)] = (networkCatalog ?? []).compactMap { network in
+                guard network.enabled else { return nil }
+                let prefixes = network.subnets.compactMap { subnet -> Int? in
+                    guard TopologySubnet.contains(address, cidr: subnet) else { return nil }
+                    return Int(subnet.split(separator: "/").last ?? "")
+                }
+                return prefixes.max().map { (network, $0) }
+            }
+            let longestPrefix = matches.map(\.prefix).max()
+            let candidates = matches.filter { $0.prefix == longestPrefix }.map(\.network)
+            if candidates.count == 1, let network = candidates.first {
+                info.networkID = network.id; info.networkName = network.name; info.vlan = network.vlan; info.networkInferred = true
+            }
             let facts = TopologyFacts(name: name, address: address, kind: .client, source: .unifi, collectedAt: date, availability: ["WIRED", "WIRELESS", "VPN", "TELEPORT"].contains(type) ? .online : .unknown,
-                                      interfaces: [TopologyInterface(name: type.isEmpty ? "Client" : type, mac: mac, addresses: address.isEmpty ? [] : [address])], notes: "Подключённый клиент UniFi · " + type)
+                                      interfaces: [TopologyInterface(name: type.isEmpty ? "Client" : type, mac: mac, addresses: address.isEmpty ? [] : [address])], notes: "Подключённый клиент UniFi · " + type + (info.networkInferred ? "\nСеть/VLAN определены по наиболее конкретной подсети IP; физическая связь из этого не выводится." : ""), interfacesAt: date, interfacesSource: .unifi, clientInfo: info, clientInfoAt: date, controllerStatus: TopologyStatusSample(value: ["WIRED", "WIRELESS", "VPN", "TELEPORT"].contains(type) ? .online : .unknown, date: date, source: .unifi))
             nodes.append(TopologyNode(id: nodeID, sourceID: sourceID, observed: facts))
             if ["WIRED", "WIRELESS"].contains(type), let parent = client["uplinkDeviceId"] as? String, let parentID = ids[parent.lowercased()], parentID != nodeID {
                 let linkKind: TopologyLinkKind = type == "WIRELESS" ? .wifi : .lan
@@ -438,6 +543,6 @@ enum TopologyUniFiParser {
             guard let childID = ids[parent.child], let parentID = ids[parent.parent], childID != parentID else { continue }
             links.append(TopologyLink(id: stableID(namespace + ":uplink:" + parent.child + ":" + parent.parent), from: parentID, to: childID, kind: parent.kind, notes: "Родитель по UniFi uplink; тип и точную пару портов необходимо проверить.", source: .unifi, observedAt: date, confirmed: false))
         }
-        return TopologyImport(nodes: nodes, links: links)
+        return TopologyImport(nodes: nodes, links: links, networks: networkCatalog, wifi: wifiCatalog, catalogNamespace: namespace, controllerSnapshotAt: date)
     }
 }

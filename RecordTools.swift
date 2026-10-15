@@ -1,10 +1,20 @@
 import SwiftUI
+import CryptoKit
+
+struct TopologyMapSummary: Identifiable {
+    var id: UUID
+    var name: String
+    var nodeCount: Int
+    var linkCount: Int
+    init(_ document: TopologyDocument) { id = document.id; name = document.name; nodeCount = document.nodes.count; linkCount = document.links.count }
+}
 
 extension AliasStore {
     // Restoring or opening a descriptor creates state, never a connection/capture.
     func createRecordTools(for page: EntryPage) {
         if page.section == .topology {
-            if topologyModels[page.id] == nil { topologyModels[page.id] = TopologyModel(profileID: profiles.active, config: config.url) }
+            guard let mapID = page.topologyMapID(profileID: profiles.active) else { return }
+            if topologyModels[page.id] == nil { topologyModels[page.id] = TopologyModel(profileID: profiles.active, config: config.url, mapID: mapID) }
             topologyModels[page.id]?.entries = profileEntries
             return
         }
@@ -55,12 +65,43 @@ extension AliasStore {
             createRecordTools(for: page)
         }
     }
-    func openTopology(_ entry:SSHAlias? = nil) {
-        openPage(nil, section: .topology)
-        if let entry, let page = pages.first(where: { $0.section == .topology }), let model = topologyModels[page.id] {
-            if !model.document.nodes.contains(where: { $0.recordKey == entry.favoriteID }) { model.addRecords([(entry,title(entry))]) }
-            model.selectedNode = model.document.nodes.first(where: { $0.recordKey == entry.favoriteID })?.id
-        }
+    private var topologySelectionKey: String {
+        "networkMap.selected.v1." + SHA256.hash(data: Data(config.url.standardizedFileURL.path.utf8)).map { String(format: "%02x", $0) }.joined() + "." + profiles.active.uuidString
+    }
+    func reloadTopologyMapIndex() {
+        do { topologyMapIndex = try TopologyRepository(config: config.url).list(profileID: profiles.active).map(TopologyMapSummary.init).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } }
+        catch { self.error = error.localizedDescription; topologyMapIndex = [] }
+    }
+    func canRestoreTopology(_ page: EntryPage) -> Bool {
+        guard let id = page.topologyMapID(profileID: profiles.active) else { return false }
+        if id == profiles.active { return true }
+        return (try? TopologyRepository(config: config.url).list(profileID: profiles.active).contains { $0.id == id }) == true
+    }
+    func openTopology(_ entry: SSHAlias? = nil, mapID requested: UUID? = nil) {
+        let repository = TopologyRepository(config: config.url)
+        do {
+            let maps = try repository.list(profileID: profiles.active)
+            let active = activePage.flatMap { $0.topologyMapID(profileID: profiles.active) }
+            let saved = UserDefaults.standard.string(forKey: topologySelectionKey).flatMap(UUID.init(uuidString:))
+            let id = requested ?? active ?? saved.flatMap { candidate in maps.contains { $0.id == candidate } ? candidate : nil } ?? maps.first?.id ?? profiles.active
+            guard id == profiles.active || maps.contains(where: { $0.id == id }) else { throw ConfigError.message("Эта карта удалена или принадлежит другому профилю.") }
+            if maps.isEmpty && id == profiles.active { try repository.write(TopologyDocument(profileID: profiles.active)) }
+            let page = pages.first { $0.section == .topology && $0.topologyMapID(profileID: profiles.active) == id } ?? EntryPage(key: EntryPage.topologyKey(mapID: id, profileID: profiles.active), section: .topology)
+            if !pages.contains(where: { $0.id == page.id }) { pages.append(page); createRecordTools(for: page) }
+            selectPage(page); UserDefaults.standard.set(id.uuidString, forKey: topologySelectionKey); reloadTopologyMapIndex()
+            if let entry, let model = topologyModels[page.id] {
+                if !model.document.nodes.contains(where: { $0.recordKey == entry.favoriteID }) { model.addRecords([(entry, title(entry))]) }
+                model.selectedNode = model.document.nodes.first(where: { $0.recordKey == entry.favoriteID })?.id
+            }
+        } catch { self.error = error.localizedDescription }
+    }
+    func topologyModel(mapID: UUID) -> TopologyModel {
+        if let model = topologyModels.values.first(where: { $0.profileID == profiles.active && $0.mapID == mapID }) { return model }
+        return TopologyModel(profileID: profiles.active, config: config.url, mapID: mapID)
+    }
+    func closeDeletedTopology(_ mapID: UUID) {
+        for page in Array(pages) where page.section == .topology && page.topologyMapID(profileID: profiles.active) == mapID { closePage(page, force: true) }
+        reloadTopologyMapIndex(); UserDefaults.standard.removeObject(forKey: topologySelectionKey)
     }
     func moveTopologyRecord(from old: String, to new: String) {
         guard old != new else { return }

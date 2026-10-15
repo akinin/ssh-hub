@@ -25,6 +25,11 @@ struct TopologyView: View {
     @State private var compactInspector = false
     @State private var deletingNode: UUID?
     @State private var deletingLink: UUID?
+    @State private var managingMaps = false
+    @State private var groupEditing: TopologyGroup?
+    @State private var events = false
+    @State private var filtering = false
+    @State private var creatingRecord: TopologyNode?
     @State private var clockRevision = 0
     var body: some View {
         let _ = clockRevision
@@ -36,7 +41,7 @@ struct TopologyView: View {
                     ContentUnavailableView { Label("Карта не прочитана", systemImage: "exclamationmark.triangle") } description: { Text(model.error ?? "Существующий файл сохранён.") } actions: { Button("Повторить чтение") { model.reload() } }
                 } else {
                     HStack(spacing: 0) {
-                        TopologyCanvas(model: model, timeRevision:clockRevision, edit: { editingNode = $0 }, remove: { deletingNode = $0 }, addLink: newLink, open: openRecord)
+                        TopologyCanvas(model: model, timeRevision:clockRevision, edit: { editingNode = $0 }, remove: { deletingNode = $0 }, addLink: newLink, open: openRecord, create: { creatingRecord = $0 }, connect: { from, to in editingLink = TopologyLink(from: from, to: to) }, editGroup: { groupEditing = $0 })
                         if viewport.size.width >= 950, model.selected != nil || model.link != nil {
                             Divider(); inspector.frame(width: 300)
                         }
@@ -51,6 +56,10 @@ struct TopologyView: View {
                 }.padding(.horizontal, 12).frame(minHeight: 34)
             }.frame(width: viewport.size.width, height: viewport.size.height).clipped()
         }
+        .sheet(isPresented: $managingMaps) { TopologyMapsView(model: model).environmentObject(store) }
+        .sheet(item: $groupEditing) { group in TopologyGroupEditor(model: model, group: group) }
+        .sheet(isPresented: $events) { TopologyEventsView(model: model) }
+        .sheet(item: $creatingRecord) { node in TopologyRecordCreation(model: model, node: node).environmentObject(store) }
         .sheet(item: $editingNode) { node in TopologyNodeEditor(model: model, node: node, entries: store.profileEntries) }
         .sheet(item: $editingLink) { link in TopologyLinkEditor(model: model, link: link) }
         .sheet(isPresented: $discovering) { TopologyDiscoveryView(model: model) }
@@ -65,6 +74,7 @@ struct TopologyView: View {
             Button("Удалить связь", role: .destructive) { if let id = deletingLink { model.removeLink(id) }; deletingLink = nil }
             Button("Отмена", role: .cancel) { deletingLink = nil }
         }
+        .onAppear { store.reloadTopologyMapIndex() }
         .onReceive(Timer.publish(every:15,on:.main,in:.common).autoconnect()) { _ in clockRevision &+= 1 }
     }
     @ViewBuilder private func toolbar(width: CGFloat) -> some View {
@@ -78,29 +88,59 @@ struct TopologyView: View {
                     ForEach(model.document.routers) { settings in Menu(settings.name.isEmpty ? settings.provider.title : settings.name) { Button("Обновить карту") { model.collectRouter(settings) }; Button("Настройки…") { routerEditing = settings } } }
                     Divider(); Button("Добавить MikroTik API…") { routerEditing = TopologyRouterSettings(provider:.mikrotik) }; Button("Добавить Keenetic API…") { routerEditing = TopologyRouterSettings(provider:.keenetic) }
                 } label: { Label("Обнаружить", systemImage: "dot.radiowaves.left.and.right") }
-                Button { editingNode = TopologyNode(name: "Новое устройство", x: 240, y: 160) } label: { Label(width < 650 ? "" : "Устройство", systemImage: "plus") }.help("Добавить устройство")
-                Button { newLink(model.selectedNode) } label: { Label(width < 650 ? "" : "Связь", systemImage: "link.badge.plus") }.help("Добавить связь").disabled(model.document.nodes.count < 2)
+                Button { editingNode = TopologyNode(name: "Новое устройство", x: 240, y: 160) } label: { Label(width < 850 ? "" : "Устройство", systemImage: "plus") }.help("Добавить устройство")
+                Button { newLink(model.selectedNode) } label: { Label(width < 850 ? "" : "Связь", systemImage: "link.badge.plus") }.help("Добавить связь").disabled(model.document.nodes.count < 2)
                 Menu {
+                    Section("Карты профиля") {
+                        ForEach(store.topologyMapIndex) { map in Button { store.openTopology(mapID: map.id) } label: { if map.id == model.mapID { Label(map.name, systemImage: "checkmark") } else { Text(map.name) } } }
+                        Button("Управление картами…") { managingMaps = true }
+                    }
+                    Divider()
                     ForEach(TopologyLinkKind.allCases, id: \.self) { kind in Toggle(kind.title, isOn: Binding(get: { model.visibleLinks.contains(kind) }, set: { if $0 { model.visibleLinks.insert(kind) } else { model.visibleLinks.remove(kind) } })) }
-                    Divider(); Button("Расположить автоматически") { model.arrange() }; Button("Экспорт JSON…") { model.exportJSON() }
-                } label: { Image(systemName: "square.3.layers.3d") }.help("Слои и расположение")
+                    Divider(); Button("Расположить автоматически") { model.arrange() }
+                    Button("Создать область…") { groupEditing = TopologyGroup(name: "Новая область", x: 100, y: 100) }
+                    Button("События сети…") { events = true }
+                    Menu("Экспорт карты") { Button("Изображение PNG…") { exportMap("png") }; Button("Векторная схема SVG…") { exportMap("svg") }; Divider(); Button("Данные JSON…") { model.exportJSON() } }
+                } label: { Label("Карты", systemImage: "square.3.layers.3d") }.help("Слои и расположение").accessibilityLabel("Слои, области и экспорт")
                 Button { model.undo() } label: { Image(systemName: "arrow.uturn.backward") }.disabled(!model.canUndo).help("Отменить изменение карты")
                 Spacer(minLength: 0)
-                Button { model.checkAvailability() } label: { Image(systemName: "arrow.clockwise") }.help("Проверить доступность")
+                Button { model.refreshStatus() } label: { Image(systemName: "arrow.clockwise") }.help("Обновить UniFi и проверить TCP с Mac").accessibilityLabel("Обновить статусы карты")
                 Menu {
                     Toggle("Проверять периодически", isOn: Binding(get: { model.monitoring }, set: { if $0 { model.startMonitoring() } else { model.stop() } }))
                     Picker("Интервал", selection: $model.interval) { Text("10 с").tag(10); Text("1 мин").tag(60); Text("5 мин").tag(300) }
-                } label: { Image(systemName: model.monitoring ? "waveform.path.ecg.rectangle.fill" : "waveform.path.ecg.rectangle") }.help("Периодическая TCP-проверка с Mac")
+                } label: { Label("Статусы", systemImage: model.monitoring ? "waveform.path.ecg.rectangle.fill" : "waveform.path.ecg.rectangle") }.help("Периодическое обновление UniFi и TCP-проверка с Mac").accessibilityLabel("Обновление статусов")
             }.controlSize(.small).disabled(!model.loadSucceeded || model.busy)
             HStack(spacing: 10) {
+                Button { filtering.toggle() } label: { Label("Фильтры", systemImage: model.filters.active ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle") }
+                    .popover(isPresented: $filtering) { TopologyFiltersView(model: model).frame(width: 310, height: 570) }
                 TextField("Найти устройство на карте", text: $model.query).textFieldStyle(.roundedBorder).frame(maxWidth: 260)
-                if !model.query.isEmpty { Menu("Найдено: \(model.matchingNodes.count)") { ForEach(model.matchingNodes) { node in Button(node.displayName) { model.selectedNode = node.id; model.selectedLink = nil } } } }
+                if !model.query.isEmpty { Menu("Найдено: \(model.matchingNodes.count)") { ForEach(model.matchingNodes) { node in Button(node.displayName) { selectSearchResult(node) } } } }
                 Spacer(minLength: 0)
                 Label("\(model.document.nodes.filter { model.availability($0) == .online }.count)", systemImage: "circle.fill").foregroundStyle(.green)
                 Label("\(model.document.nodes.filter { model.availability($0) == .offline }.count)", systemImage: "circle.fill").foregroundStyle(.red)
-                Text("Устройств: \(model.document.nodes.count)").foregroundStyle(.secondary)
+                Label("\(model.document.nodes.filter { model.availability($0) == .unknown }.count)", systemImage: "questionmark.circle").foregroundStyle(.secondary)
+                Text("\(model.filteredNodes.count) / \(model.document.nodes.count)").foregroundStyle(.secondary)
             }.font(.caption)
         }.padding(10)
+    }
+    private func selectSearchResult(_ node: TopologyNode) {
+        if !model.visibleNodeIDs.contains(node.id) { model.filters = TopologyFilters(); model.notice = "Фильтры сброшены, чтобы показать найденное устройство." }
+        if let group = node.groupID, model.document.groups.first(where: { $0.id == group })?.collapsed == true { model.setGroupCollapsed(group, collapsed: false) }
+        model.selectedNode = node.id; model.selectedNodes = [node.id]; model.selectedLink = nil
+    }
+    private func exportMap(_ format: String) {
+        let panel = NSSavePanel(); panel.nameFieldStringValue = "Network-map." + format
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let nodes = model.document.nodes.filter { model.visibleNodeIDs.contains($0.id) }
+            let ids = Set(nodes.map(\.id)); let links = model.document.links.filter { model.visibleLinks.contains($0.kind) && ids.contains($0.from) && ids.contains($0.to) }
+            let statuses = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, model.availability($0)) })
+            let options = TopologyExportOptions(title: "SSH Hub · " + model.document.name)
+            let groups = model.document.groups.filter { group in !model.filters.active || nodes.contains { $0.groupID == group.id } }.map { TopologyExportGroup(name: $0.name, bounds: CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height)) }
+            let details = Dictionary(uniqueKeysWithValues: nodes.map { node in (node.id, TopologyExportNodeDetails(model: node.observed?.deviceInfo?.model ?? "", subtitle: node.clientInfo.vlan.map { "VLAN \($0)" + (node.clientInfo.networkInferred ? " · по IP" : "") } ?? "")) })
+            let data = try format == "png" ? TopologyExport.png(nodes: nodes, links: links, options: options, statuses: statuses, details: details, groups: groups) : TopologyExport.svg(nodes: nodes, links: links, options: options, statuses: statuses, details: details, groups: groups)
+            try data.write(to: url, options: .atomic); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        } catch { model.error = error.localizedDescription }
     }
     private func newLink(_ from: UUID?) {
         guard model.document.nodes.count >= 2 else { return }
@@ -113,108 +153,17 @@ struct TopologyView: View {
         if compactInspector { compactInspector = false; DispatchQueue.main.asyncAfter(deadline:.now()+0.2) { editingNode = node } } else { editingNode = node }
     }, editLink: { link in
         if compactInspector { compactInspector = false; DispatchQueue.main.asyncAfter(deadline:.now()+0.2) { editingLink = link } } else { editingLink = link }
-    }, deleteLink: { id in compactInspector = false; deletingLink = id }, open: { node in compactInspector = false; openRecord(node) }) }
-}
-
-private struct TopologyCanvas: View {
-    @ObservedObject var model: TopologyModel
-    let timeRevision: Int
-    var edit: (TopologyNode) -> Void
-    var remove: (UUID) -> Void
-    var addLink: (UUID?) -> Void
-    var open: (TopologyNode) -> Void
-    @State private var zoom: CGFloat = 1
-    @State private var pan = CGSize(width: 40, height: 40)
-    @State private var panStart = CGSize(width: 40, height: 40)
-    @State private var dragging: UUID?
-    @State private var translation = CGSize.zero
-    private func point(_ node: TopologyNode) -> CGPoint {
-        CGPoint(x: node.x * zoom + pan.width + (dragging == node.id ? translation.width : 0), y: node.y * zoom + pan.height + (dragging == node.id ? translation.height : 0))
-    }
-    var body: some View {
-        let _ = timeRevision
-        GeometryReader { viewport in
-            ZStack(alignment: .topLeading) {
-                Color(nsColor: .textBackgroundColor)
-                Canvas { context, size in
-                    for x in stride(from: 0.0, through: size.width, by: 24) { for y in stride(from: 0.0, through: size.height, by: 24) { context.fill(Path(ellipseIn: CGRect(x:x,y:y,width:1.5,height:1.5)), with: .color(.secondary.opacity(0.18))) } }
-                    for link in model.document.links where model.visibleLinks.contains(link.kind) {
-                        guard let from = model.document.nodes.first(where: { $0.id == link.from }), let to = model.document.nodes.first(where: { $0.id == link.to }) else { continue }
-                        let a = point(from), b = point(to), middle = (a.y + b.y) / 2
-                        var path = Path(); path.move(to: a); path.addLine(to: CGPoint(x:a.x,y:middle)); path.addLine(to: CGPoint(x:b.x,y:middle)); path.addLine(to:b)
-                        let offline = model.availability(from) == .offline || model.availability(to) == .offline
-                        context.stroke(path, with: .color((offline ? Color.red : link.kind.color).opacity(link.confirmed ? 0.8 : 0.4)), style: StrokeStyle(lineWidth:model.selectedLink == link.id ? 3 : 1.7,dash:link.kind == .vpn || link.kind == .wifi || !link.confirmed ? [6,5] : []))
-                    }
-                }.contentShape(Rectangle()).onTapGesture { model.selectedNode = nil; model.selectedLink = nil }
-                    .gesture(DragGesture().onChanged { value in pan = CGSize(width:panStart.width + value.translation.width,height:panStart.height + value.translation.height) }.onEnded { _ in panStart = pan })
-                ForEach(model.document.links.filter { model.visibleLinks.contains($0.kind) }) { link in
-                    if let from = model.document.nodes.first(where: { $0.id == link.from }), let to = model.document.nodes.first(where: { $0.id == link.to }) {
-                        let a = point(from), b = point(to)
-                        Button { model.selectedLink = link.id; model.selectedNode = nil } label: { Text(linkLabel(link)).font(.system(size:10)).lineLimit(1).padding(.horizontal,6).padding(.vertical,3).background(.regularMaterial,in:Capsule()).overlay { Capsule().stroke(link.kind.color.opacity(0.6),lineWidth:1) } }.buttonStyle(.plain).scaleEffect(zoom)
-                            .position(x:(a.x+b.x)/2,y:(a.y+b.y)/2).help(link.confirmed ? "Сведения о связи" : "Связь не подтверждена")
-                    }
-                }
-                ForEach(model.document.nodes) { node in
-                    nodeCard(node).frame(width:170,height:66).contentShape(Rectangle())
-                        .gesture(TapGesture(count:2).exclusively(before:TapGesture(count:1)).onEnded { value in
-                            model.selectedNode = node.id; model.selectedLink = nil
-                            if case .first = value { open(node) }
-                        })
-                        .simultaneousGesture(DragGesture(minimumDistance:3).onChanged { value in dragging = node.id; translation = value.translation }.onEnded { value in model.move(node.id,x:node.x + value.translation.width / zoom,y:node.y + value.translation.height / zoom); dragging = nil; translation = .zero })
-                        .scaleEffect(zoom).position(point(node)).opacity(model.query.isEmpty || model.matchingNodes.contains(where: { $0.id == node.id }) ? 1 : 0.3)
-                        .contextMenu { Button("Редактировать") { edit(node) }; Button("Добавить связь") { addLink(node.id) }; if node.recordKey != nil { Button("Открыть запись") { open(node) } }; Divider(); Button("Удалить с карты",role:.destructive) { remove(node.id) }.disabled(model.busy) }
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel(node.displayName + " · " + node.displayAddress).accessibilityHint("Выбрать устройство; двойное нажатие открывает запись")
-                        .accessibilityAddTraits(.isButton)
-                        .accessibilityAction { model.selectedNode = node.id; model.selectedLink = nil }
-                }
-                if model.document.nodes.isEmpty {
-                    VStack(spacing:12) { Image(systemName:"point.3.connected.trianglepath.dotted").font(.system(size:40)).foregroundStyle(.secondary); Text("Сетевая карта профиля").font(.title3).bold(); Text("Добавь устройства вручную или выбери «Обнаружить».\nСбор и сканирование запускаются только по кнопке.").multilineTextAlignment(.center).font(.callout).foregroundStyle(.secondary) }.frame(maxWidth:.infinity,maxHeight:.infinity).allowsHitTesting(false)
-                }
-                VStack { Spacer(); HStack(alignment:.bottom) {
-                    HStack(spacing:10) { ForEach(TopologyLinkKind.allCases,id:\.self) { kind in HStack(spacing:4) { Capsule().fill(kind.color).frame(width:15,height:2); Text(kind.title) } } }.font(.system(size:10)).padding(8).background(.regularMaterial,in:RoundedRectangle(cornerRadius:8))
-                    Spacer(minLength:0)
-                    VStack(alignment:.trailing,spacing:8) { minimap; HStack(spacing:4) { Button { zoom = max(0.25,zoom - 0.1) } label: { Image(systemName:"minus").frame(width:20,height:20) }; Button("\(Int(zoom*100))%") { zoom = 1 }; Button { zoom = min(2,zoom + 0.1) } label: { Image(systemName:"plus").frame(width:20,height:20) }; Button { fit(viewport.size) } label: { Image(systemName:"arrow.up.left.and.arrow.down.right").frame(width:20,height:20) }.help("Вместить карту") }.controlSize(.small) }
-                }.padding(12) }.allowsHitTesting(true)
-            }.clipped().onAppear { fit(viewport.size) }.onChange(of:model.document.nodes.count) { _,_ in fit(viewport.size) }
-                .onChange(of:viewport.size) { _,size in fit(size) }
-                .onChange(of:model.selectedNode) { _,id in
-                    if let node = model.document.nodes.first(where: { $0.id == id }) { let location = point(node); if location.x < 40 || location.x > viewport.size.width-40 || location.y < 40 || location.y > viewport.size.height-80 { pan = CGSize(width:viewport.size.width/2-node.x*zoom,height:viewport.size.height/2-node.y*zoom); panStart = pan } }
-                }
-        }
-    }
-    private func linkLabel(_ link: TopologyLink) -> String {
-        let title = link.name.isEmpty ? link.kind.title : link.name
-        return [title,link.fromPort,link.speedMbps.map { TopologyFormat.speed($0) } ?? "",link.confirmed ? "" : "?"].filter { !$0.isEmpty }.joined(separator:" · ")
-    }
-    private func nodeCard(_ node: TopologyNode) -> some View {
-        HStack(spacing:9) {
-            Image(systemName:node.displayKind.icon).font(.system(size:25)).foregroundStyle(model.selectedNode == node.id ? Color.accentColor : .secondary).frame(width:32)
-            VStack(alignment:.leading,spacing:5) { HStack(spacing:5) { Circle().fill(model.availability(node).color).frame(width:6,height:6); Text(node.displayName).font(.system(size:12,weight:.semibold)).lineLimit(1) }; Text(node.displayAddress.isEmpty ? node.displayKind.title : node.displayAddress).font(.system(size:10)).foregroundStyle(.secondary).lineLimit(1); Text(node.observed?.source.title ?? "Вручную").font(.system(size:8)).foregroundStyle(.secondary) }
-            Spacer(minLength:0)
-        }.padding(10).background(Color(nsColor:.controlBackgroundColor),in:RoundedRectangle(cornerRadius:9)).overlay { RoundedRectangle(cornerRadius:9).stroke(model.selectedNode == node.id ? Color.accentColor : .secondary.opacity(0.4),lineWidth:model.selectedNode == node.id ? 2 : 0.7) }
-    }
-    private var minimap: some View {
-        Canvas { context,size in
-            let maxX = max(500,model.document.nodes.map(\.x).max() ?? 500), maxY = max(300,model.document.nodes.map(\.y).max() ?? 300)
-            for node in model.document.nodes { let x = 5 + node.x / (maxX+100)*(size.width-10), y = 5 + node.y/(maxY+100)*(size.height-10); context.fill(Path(roundedRect:CGRect(x:x,y:y,width:10,height:5),cornerRadius:1),with:.color(node.id == model.selectedNode ? .blue : .secondary)) }
-        }.frame(width:130,height:65).background(.regularMaterial,in:RoundedRectangle(cornerRadius:6)).overlay { RoundedRectangle(cornerRadius:6).stroke(.secondary.opacity(0.3)) }.allowsHitTesting(false)
-    }
-    private func fit(_ size: CGSize) {
-        guard !model.document.nodes.isEmpty else { return }
-        let minX = (model.document.nodes.map(\.x).min() ?? 0)-100, maxX = (model.document.nodes.map(\.x).max() ?? 0)+100
-        let minY = (model.document.nodes.map(\.y).min() ?? 0)-45, maxY = (model.document.nodes.map(\.y).max() ?? 0)+100
-        zoom = min(1.25,max(0.25,min((size.width-40)/max(200,maxX-minX),(size.height-100)/max(200,maxY-minY))))
-        pan = CGSize(width:(size.width-(maxX-minX)*zoom)/2-minX*zoom,height:30-minY*zoom); panStart = pan
-    }
+    }, deleteLink: { id in compactInspector = false; deletingLink = id }, create: { node in compactInspector = false; DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { creatingRecord = node } }, open: { node in compactInspector = false; openRecord(node) }) }
 }
 
 private struct TopologyInspector: View {
     @ObservedObject var model: TopologyModel
+    @EnvironmentObject var store: AliasStore
     let timeRevision: Int
     var editNode: (TopologyNode)->Void
     var editLink: (TopologyLink)->Void
     var deleteLink: (UUID)->Void
+    var create: (TopologyNode)->Void
     var open: (TopologyNode)->Void
     @State private var section = "Обзор"
     var body: some View {
@@ -226,7 +175,36 @@ private struct TopologyInspector: View {
                     Picker("Раздел",selection:$section) { ForEach(["Обзор","Порты","WAN","VPN","Сервисы"],id:\.self) { Text($0) } }.pickerStyle(.menu)
                     if section == "Обзор" {
                         row("Тип",node.displayKind.title); row("Адрес",node.displayAddress); row("Источник",node.observed?.source.title ?? "Вручную")
+                        if let info = node.observed?.deviceInfo {
+                            if let facts = node.observed {
+                                let time = facts.deviceInfoAt ?? facts.collectedAt
+                                row("Показатели UniFi", time.formatted(date: .abbreviated, time: .shortened))
+                                if !TopologyStatus.fresh(time, now: Date()) { hint("Показатели оборудования устарели; обнови UniFi для текущих значений.") }
+                            }
+                            if !info.model.isEmpty { row("Модель", info.model) }
+                            if !info.firmware.isEmpty { row("Прошивка", info.firmware) }
+                            if let value = info.cpuPercent { row("CPU", String(format: "%.1f%%", value)) }
+                            if let value = info.memoryPercent { row("Память", String(format: "%.1f%%", value)) }
+                            if let value = info.uptimeSec { row("Время работы", Duration.seconds(value).formatted(.units(allowed: [.days, .hours, .minutes], width: .abbreviated))) }
+                            if !info.radios.isEmpty {
+                                ForEach(Array(info.radios.enumerated()), id: \.offset) { _, radio in
+                                    row("Радио", String(format: "%g ГГц", radio.frequencyGHz) + (radio.channel.map { " · канал \($0)" } ?? ""))
+                                    if let width = radio.widthMHz { row("Ширина канала", String(format: "%g МГц", width)) }
+                                    if !radio.standard.isEmpty { row("Стандарт", radio.standard) }
+                                }
+                            }
+                        }
                         if let date = node.observed?.collectedAt { row("Сбор",date.formatted(date:.abbreviated,time:.shortened)) }
+                        if let status = node.observed?.controllerStatus {
+                            row("UniFi", status.value.title); row("Ответ UniFi", status.date.formatted(date: .abbreviated, time: .standard))
+                            if !(-300.0...60.0).contains(status.date.timeIntervalSinceNow) { hint("Состояние UniFi устарело. Обнови карту или включи периодическую проверку.") }
+                        }
+                        let info = node.clientInfo
+                        row("Подключение", TopologyFiltersView.connectionTitle(info.connection))
+                        if let vlan = info.vlan { row("VLAN", "\(vlan) · " + info.networkName); if info.networkInferred { hint("VLAN предположен по IP и подсети UniFi; это не подтверждение назначения порта.") } }
+                        if !info.ssid.isEmpty { row("SSID", info.ssid) }
+                        if !info.band.isEmpty { row("Диапазон Wi-Fi", info.band + " ГГц") }
+                        if !info.vendor.isEmpty { row("Производитель", info.vendor) }
                         if let report = model.measured[node.id] { row("Проверка TCP",report.date.formatted(date:.omitted,time:.standard)); Text(report.detail).font(.caption).foregroundStyle(.secondary) }
                         if let latency = model.measuredLatency[node.id] { row("TCP с Mac",String(format:"%.1f мс",latency)) }
                         if let samples = model.trafficHistory[node.id], samples.count >= 2 { TopologyTrafficGraph(samples:samples); hint("Сумма трафика интерфейсов может учитывать один пакет несколько раз. Это не отдельное измерение скорости интернета.") }
@@ -235,13 +213,16 @@ private struct TopologyInspector: View {
                         Divider(); connected(node)
                     } else if section == "Порты" {
                         if let interfaces = node.observed?.interfaces, !interfaces.isEmpty {
-                            if let facts = node.observed { row("Источник портов",facts.interfacesSource?.title ?? facts.source.title); row("Сбор портов",(facts.interfacesAt ?? facts.collectedAt).formatted(date:.abbreviated,time:.shortened)) }
-                            LazyVGrid(columns:[GridItem(.adaptive(minimum:38))],spacing:8) { ForEach(Array(interfaces.enumerated()),id:\.offset) { _,port in VStack(spacing:4) { Image(systemName:"cable.connector").foregroundStyle(port.state?.lowercased() == "up" || port.state?.uppercased() == "UP" ? Color.green : .secondary); Text(port.name).font(.system(size:9)).lineLimit(1) }.padding(6).background(.quaternary,in:RoundedRectangle(cornerRadius:5)).help(port.name + " · " + TopologyFormat.speed(port.speedMbps)) } }
-                            ForEach(Array(interfaces.enumerated()),id:\.offset) { _,port in VStack(alignment:.leading,spacing:4) { HStack { Text(port.name).bold(); Spacer(); Text(port.state ?? "—") }; row("Линк",TopologyFormat.speed(port.speedMbps)); row("Трафик ↓ / ↑",TopologyFormat.speed(port.rxMbps)+" / "+TopologyFormat.speed(port.txMbps)); if !port.mac.isEmpty { row("MAC",port.mac) }; if !port.addresses.isEmpty { Text(port.addresses.joined(separator:"\n")).font(.caption).textSelection(.enabled) }; if let poe = port.poe { row("PoE",poe) } }.font(.caption).padding(9).background(.quaternary.opacity(0.4),in:RoundedRectangle(cornerRadius:7)) }
+                            if let facts = node.observed {
+                                row("Источник портов",facts.interfacesSource?.title ?? facts.source.title); row("Сбор портов",(facts.interfacesAt ?? facts.collectedAt).formatted(date:.abbreviated,time:.shortened))
+                                if (facts.interfacesAt ?? facts.collectedAt).timeIntervalSinceNow < -300 { hint("Сведения портов устарели; обнови источник для актуального состояния.") }
+                            }
+                            LazyVGrid(columns:[GridItem(.adaptive(minimum:38))],spacing:8) { ForEach(Array(interfaces.enumerated()),id:\.offset) { _,port in VStack(spacing:4) { Image(systemName:"cable.connector").foregroundStyle(portColor(port, node: node)); Text(port.name).font(.system(size:9)).lineLimit(1) }.padding(6).background(.quaternary,in:RoundedRectangle(cornerRadius:5)).help(port.name + " · " + TopologyFormat.speed(port.speedMbps)) } }
+                            ForEach(Array(interfaces.enumerated()),id:\.offset) { _,port in VStack(alignment:.leading,spacing:4) { HStack { Text(port.name).bold(); Spacer(); Text(port.state ?? "—") }; row("Линк",TopologyFormat.speed(port.speedMbps)); row("Трафик ↓ / ↑",TopologyFormat.speed(port.rxMbps)+" / "+TopologyFormat.speed(port.txMbps)); if !port.mac.isEmpty { row("MAC",port.mac) }; if !port.addresses.isEmpty { Text(port.addresses.joined(separator:"\n")).font(.caption).textSelection(.enabled) }; if let connector = port.connector { row("Разъём", connector) }; if let maximum = port.maxSpeedMbps { row("Максимум порта", TopologyFormat.speed(maximum)) }; if let poe = port.poe { row("PoE",poe) } }.font(.caption).padding(9).background(.quaternary.opacity(0.4),in:RoundedRectangle(cornerRadius:7)) }
                         } else { hint("Порты появятся после сбора UniFi или SSH. Скорость линка и текущий трафик — разные показатели.") }
                     } else if section == "WAN" {
                         if !node.displayWANs.isEmpty {
-                            ForEach(Array(node.displayWANs.enumerated()),id:\.offset) { index,wan in Text(wan.name.isEmpty ? "WAN\(index+1)" : wan.name).font(.headline); wanRows(wan); Divider() }
+                            ForEach(Array(node.displayWANs.enumerated()),id:\.offset) { index,wan in Text(wan.name.isEmpty ? "WAN\(index+1)" : wan.name).font(.headline); wanRows(wan); wanRegistry(node, wan: wan); Divider() }
                             row("Источник WAN",node.manualWAN == nil && node.manualWANs.isEmpty ? node.observed?.wanSource?.title ?? node.observed?.source.title ?? "—" : "Вручную")
                             if node.manualWAN == nil && node.manualWANs.isEmpty, let facts = node.observed { row("Сбор WAN",(facts.wanAt ?? facts.collectedAt).formatted(date:.abbreviated,time:.shortened)) }
                         }
@@ -255,11 +236,17 @@ private struct TopologyInspector: View {
                     if let entry = model.entries.first(where: { $0.favoriteID == node.recordKey }), entry.canSSH || entry.recordKind == .localShell {
                         Divider(); Menu("Считать через SSH") { ForEach(TopologyCollector.allCases,id:\.self) { collector in Button(collector.title) { model.collect(entry,collector:collector) } } }.disabled(model.busy)
                     }
-                    if node.recordKey != nil { Button("Открыть запись") { open(node) } }
+                    TopologyQuickActions(node: node, create: { create(node) }).environmentObject(store)
+                    if node.recordKey != nil { Button("Открыть запись") { open(node) } } else { Button("Создать запись…", systemImage: "plus.rectangle.on.rectangle") { create(node) }.disabled(model.busy) }
                 } else if let link = model.link {
                     Text(link.name.isEmpty ? link.kind.title : link.name).font(.headline)
                     row("От",model.document.nodes.first { $0.id == link.from }?.displayName ?? "—"); row("К",model.document.nodes.first { $0.id == link.to }?.displayName ?? "—")
                     row("Порт от",link.fromPort); row("Порт к",link.toPort); row("Скорость линка",TopologyFormat.speed(link.speedMbps)); row("VLAN",link.vlan); if link.kind == .vpn { row("VPN",link.vpnTechnology) }; row("Источник",link.source.title); row("Топология",link.confirmed ? "Подтверждена" : "Требует проверки")
+                    if !link.observations.isEmpty {
+                        ForEach(Array(link.observations.enumerated()), id: \.offset) { _, observation in
+                            Text(observation.source.title + " · " + observation.date.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                     if let date = link.observedAt { row("Измерение",date.formatted()) }
                     Text(link.notes).font(.caption).textSelection(.enabled)
                     Button("Редактировать связь") { editLink(link) }; Button("Удалить связь",role:.destructive) { deleteLink(link.id) }.disabled(model.busy)
@@ -269,7 +256,22 @@ private struct TopologyInspector: View {
     }
     private func row(_ title:String,_ value:String)->some View { HStack(alignment:.top) { Text(title).foregroundStyle(.secondary); Spacer(minLength:10); Text(value.isEmpty ? "—" : value).multilineTextAlignment(.trailing).textSelection(.enabled) }.font(.caption) }
     private func hint(_ value:String)->some View { Text(value).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true) }
-    private func wanRows(_ wan:TopologyWAN)->some View { VStack(spacing:8) { row("Провайдер",wan.provider); row("Интерфейс",wan.interface); row("Адрес",wan.address); row("Шлюз",wan.gateway); row("DNS",wan.dns.joined(separator:", ")); hint("Адрес WAN-интерфейса может быть частным при NAT. Внешний IP через сторонний сервис не запрашивается.") } }
+    private func portColor(_ port: TopologyInterface, node: TopologyNode) -> Color {
+        guard let facts = node.observed, TopologyStatus.fresh(facts.interfacesAt ?? facts.collectedAt, now: Date()) else { return .secondary }
+        return port.state?.uppercased() == "UP" ? .green : .secondary
+    }
+    private func wanRows(_ wan:TopologyWAN)->some View { VStack(spacing:8) { row("Роль", wan.role.title); row("Состояние", TopologyStatus.wan(wan).title); if TopologyStatus.wan(wan) == .unknown && wan.state != .unknown { hint("Предыдущее состояние WAN устарело: " + wan.state.title) }; if let time = wan.stateAt { row("Отметка состояния", time.formatted(date: .abbreviated, time: .shortened)); row("Источник состояния", wan.stateSource?.title ?? "—") }; row("Провайдер",wan.provider); row("Интерфейс",wan.interface); row("Адрес",wan.address); row("Шлюз",wan.gateway); row("DNS",wan.dns.joined(separator:", ")); hint("Адрес WAN-интерфейса может быть частным при NAT. Внешний IP через сторонний сервис не запрашивается.") } }
+    @ViewBuilder private func wanRegistry(_ node: TopologyNode, wan: TopologyWAN) -> some View {
+        if let address = TopologyModel.publicWANAddress(wan.address) {
+            if let value = node.wanRegistrations.first(where: { $0.address == address }) {
+                row("Сеть в RDAP", value.name); row("Организация", value.organization); row("Страна", value.country); row("Диапазон", value.range)
+                row("Запрос реестра", value.date.formatted(date: .abbreviated, time: .shortened))
+                if let url = URL(string: value.sourceURL) { Link("Источник RDAP", destination: url).font(.caption) }
+            }
+            Button("Определить владельца IP / провайдера") { model.lookupWAN(node.id, wan: wan) }.disabled(model.busy)
+            hint("По кнопке IP отправляется в публичный реестр RDAP. Владелец диапазона может отличаться от бренда провайдера. Ручное имя не заменяется.")
+        } else if !wan.address.isEmpty { hint("Частный WAN за NAT: владельца адреса нельзя определить через публичный реестр.") }
+    }
     @ViewBuilder private func connected(_ node:TopologyNode,vpnOnly:Bool=false)->some View {
         let links = model.document.links.filter { ($0.from == node.id || $0.to == node.id) && (!vpnOnly || $0.kind == .vpn) }
         if links.isEmpty { hint(vpnOnly ? "VPN-связей пока нет." : "Связей пока нет.") }

@@ -38,7 +38,7 @@ extension AliasStore {
     }
     func pageTabInformation(_ page: EntryPage) -> String {
         let entry = entry(for: page)
-        let title = tabTitle(.page(page.id), fallback: entry.map { self.title($0) } ?? page.section.title)
+        let title = tabTitle(.page(page.id), fallback: topologyModels[page.id]?.document.name ?? entry.map { self.title($0) } ?? page.section.title)
         let kind = page.section == .connection ? entry?.recordKind?.title ?? page.section.title : page.section.title
         if let model = winboxModels[page.id] {
             let settings = model.settings
@@ -48,7 +48,7 @@ extension AliasStore {
         return tabInformation(entry: entry, title: title, kind: kind, state: pageTabState(page))
     }
     func pageTabState(_ page: EntryPage) -> String {
-        if let model = topologyModels[page.id] { return model.busy ? model.notice : "Устройств: \(model.document.nodes.count) · \(profileName)" }
+        if let model = topologyModels[page.id] { return model.busy ? model.notice : "\(model.document.name) · устройств: \(model.document.nodes.count) · \(profileName)" }
         if let model = logModels[page.id] { return model.status }
         if let model = inventoryModels[page.id] { return model.busy ? "Сбор сведений…" : "Инвентаризация" }
         if let model = winboxModels[page.id] { return model.error ?? model.status }

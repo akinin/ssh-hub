@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 @main struct TopologyModelTests {
     @MainActor static func main() async throws {
@@ -34,6 +35,9 @@ import Foundation
         let unchanged = try Data(contentsOf:repository.url(for:brokenID)); precondition(unchanged == bytes)
         try repository.write(TopologyDocument(profileID:brokenID)); broken.reload(); precondition(broken.loadSucceeded)
         try reloadPreservesExternalChanges(root:root)
+        try groupAndAnchorOperations(root:root)
+        try multipleMapModels(root:root)
+        try metadataAndRegistration(root:root)
         // A cancelled local read-only collection must drain before termination,
         // and must not persist a late result over the current map.
         let local = SSHAlias(name:"fixture-local",source:config,line:0,recordKind:.localShell)
@@ -44,6 +48,94 @@ import Foundation
         precondition(!TopologyModel.pending && model.document == before)
         if CommandLine.arguments.contains("--keychain") { try credentialRollback(root:root) }
         print("Topology model checks passed: manual preservation, delete/undo, external reload invalidates undo/cache, inactive restore, corrupt-file guard, cancellation and drain")
+    }
+    @MainActor private static func multipleMapModels(root: URL) throws {
+        let repository = TopologyRepository(root: root.appendingPathComponent("multi-models")), profile = UUID(), config = root.appendingPathComponent("multi-config")
+        let main = TopologyModel(profileID: profile, config: config, repository: repository)
+        precondition(main.mapID == profile && main.document.id == profile && main.documentName == "Основная карта")
+        let oldIdentity = config.standardizedFileURL.path + "\n" + profile.uuidString
+        let bytes = Array(SHA256.hash(data: Data(oldIdentity.utf8)).prefix(16))
+        let oldCredentialID = UUID(uuid: (bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7],bytes[8],bytes[9],bytes[10],bytes[11],bytes[12],bytes[13],bytes[14],bytes[15]))
+        precondition(main.credentialProfileID == oldCredentialID)
+        let node = TopologyNode(name: "Fixture main", x: 320, y: 250)
+        main.saveNode(node); main.renameMap("  Дом  ")
+        precondition(main.documentName == "Дом" && main.document.id == profile)
+        guard let created = main.createMap(name: "  Гараж  ") else { fatalError("new map not created") }
+        let garage = TopologyModel(profileID: profile, config: config, repository: repository, mapID: created.id)
+        precondition(garage.loadSucceeded && garage.document.id == created.id && garage.documentName == "Гараж" && garage.document.nodes.isEmpty)
+        precondition(garage.credentialProfileID != main.credentialProfileID)
+        garage.saveNode(TopologyNode(name: "Garage only"))
+        let unchanged = main.document
+        main.reload(); precondition(main.document == unchanged)
+        guard let duplicate = main.duplicateMap(name: "Дом — копия") else { fatalError("duplicate not created") }
+        let copied = TopologyModel(profileID: profile, config: config, repository: repository, mapID: duplicate.id)
+        precondition(copied.document.nodes == main.document.nodes && copied.mapID != main.mapID && copied.credentialProfileID != main.credentialProfileID && copied.credentialProfileID != garage.credentialProfileID)
+        copied.renameMap(String(repeating: "x", count: 81)); precondition(copied.documentName == "Дом — копия" && copied.error != nil)
+        copied.monitoring = true
+        precondition(copied.deleteMap() && !copied.monitoring && !copied.loadSucceeded)
+        copied.saveNode(TopologyNode(name: "Must not resurrect"))
+        copied.reload(); precondition(!copied.loadSucceeded)
+        copied.renameMap("Must not resurrect after reload")
+        copied.saveNode(TopologyNode(name: "Must not resurrect after reload"))
+        let staleNamed = TopologyModel(profileID: profile, config: config, repository: repository, mapID: copied.mapID)
+        precondition(!staleNamed.loadSucceeded)
+        staleNamed.renameMap("Must not recreate")
+        precondition(staleNamed.duplicateMap(name: "Must not duplicate") == nil)
+        let maps = try repository.list(profileID: profile), mainLoaded = try repository.load(profile), garageLoaded = try repository.load(profile, mapID: garage.mapID)
+        precondition(!maps.contains(where: { $0.id == copied.mapID }))
+        precondition(mainLoaded == main.document && garageLoaded == garage.document)
+        let wrongProfile = TopologyModel(profileID: UUID(), config: config, repository: repository, mapID: garage.mapID)
+        precondition(!wrongProfile.loadSucceeded)
+    }
+    @MainActor private static func groupAndAnchorOperations(root:URL) throws {
+        let model = TopologyModel(profileID: UUID(), config: root.appendingPathComponent("groups-config"), repository: TopologyRepository(root: root.appendingPathComponent("groups")))
+        let a = TopologyNode(name: "First", x: 100, y: 200), b = TopologyNode(name: "Second", x: 450, y: 400)
+        model.saveNode(a); model.saveNode(b); model.selectedNodes = [a.id, b.id]
+        model.moveNodes([a.id, b.id], dx: 13, dy: 11)
+        precondition(model.document.nodes.allSatisfy { $0.positionPinned && Int($0.x) % 20 == 0 && Int($0.y) % 20 == 0 })
+        let fixed = model.document.nodes
+        model.arrange(); precondition(model.document.nodes == fixed)
+        model.alignNodes([a.id, b.id], axis: .horizontal)
+        precondition(model.document.nodes[0].y == model.document.nodes[1].y)
+        model.alignNodes([a.id, b.id], axis: .vertical)
+        precondition(model.document.nodes[0].x == model.document.nodes[1].x)
+        var group = TopologyGroup(name: "Garage", x: 50, y: 50)
+        model.createGroup(group, members: [a.id, b.id])
+        precondition(model.document.groups.count == 1 && model.document.nodes.allSatisfy { $0.groupID == group.id })
+        group.name = "Workshop"; model.createGroup(group, members: [a.id])
+        precondition(model.document.groups.count == 1 && model.document.groups[0].name == "Workshop" && model.document.nodes[1].groupID == nil)
+        let oldA = model.document.nodes[0]
+        model.moveGroup(group.id, dx: 80, dy: 40)
+        precondition(model.document.nodes[0].x == oldA.x + 80 && model.document.nodes[0].y == oldA.y + 40 && model.document.groups[0].x == 130)
+        model.setGroupCollapsed(group.id, collapsed: true)
+        precondition(!model.canvasNodes.contains(where: { $0.id == a.id }) && model.canvasNodes.contains(where: { $0.id == b.id }))
+        model.assignGroup(group.id, to: [b.id]); precondition(model.canvasNodes.isEmpty)
+        model.setGroupCollapsed(group.id, collapsed: false); precondition(model.canvasNodes.count == 2)
+        model.removeGroup(group.id); precondition(model.document.groups.isEmpty && model.document.nodes.allSatisfy { $0.groupID == nil })
+        model.setPositionPinned(a.id, pinned: false); precondition(!model.document.nodes[0].positionPinned)
+        model.move(a.id, x: 333, y: 222); precondition(model.document.nodes[0].positionPinned)
+        model.removeNode(a.id); precondition(!model.selectedNodes.contains(a.id) && model.selectedNodes == [b.id])
+        model.undo(); precondition(model.document.nodes.count == 2)
+        try TopologyRepository.validate(model.document)
+    }
+    @MainActor private static func metadataAndRegistration(root:URL) throws {
+        let model = TopologyModel(profileID: UUID(), config: root.appendingPathComponent("metadata-config"), repository: TopologyRepository(root: root.appendingPathComponent("metadata")))
+        var node = TopologyNode(name: "Controller", address: "192.0.2.1")
+        let now = Date()
+        node.observed = TopologyFacts(address: "198.51.100.1", source: .unifi, collectedAt: now, controllerStatus: TopologyStatusSample(value: .online, date: now, source: .unifi))
+        model.saveNode(node)
+        model.measured[node.id] = AvailabilityResult(reachable: false, detail: "Fixture blocked port", date: now)
+        precondition(model.availability(node) == .online)
+        let plain = TopologyNode(name: "Long monitor interval")
+        model.measured[plain.id] = AvailabilityResult(reachable: true, detail: "Fixture 500-second-old TCP", date: now.addingTimeInterval(-500))
+        model.interval = 300; precondition(model.availability(plain) == .online)
+        model.interval = 60; precondition(model.availability(plain) == .unknown)
+        let fixture = Data("{\"name\":\"FIXTURE-NET\",\"country\":\"ZZ\",\"startAddress\":\"198.51.100.0\",\"endAddress\":\"198.51.100.255\",\"entities\":[{\"roles\":[\"registrant\"],\"vcardArray\":[\"vcard\",[[\"fn\",{},\"text\",\"Fixture Telecom\"]]]}]}".utf8)
+        let registration = try TopologyModel.wanRegistration(fixture, address: "198.51.100.10", endpoint: URL(string: "https://rdap.example.test/ip/198.51.100.10")!, date: now)
+        precondition(registration.organization == "Fixture Telecom" && registration.name == "FIXTURE-NET" && registration.country == "ZZ" && registration.date == now)
+        precondition(TopologyModel.publicWANAddress("10.0.0.1/24") == nil && TopologyModel.publicWANAddress("127.0.0.1") == nil && TopologyModel.publicWANAddress("198.51.100.1") == nil && TopologyModel.publicWANAddress("2001:db8::1") == nil)
+        precondition(TopologyModel.publicWANAddress("1.1.1.1/24") == "1.1.1.1")
+        precondition(TopologyModel.publicWANAddress("2606:4700::1") == "2606:4700::1")
     }
     @MainActor private static func reloadPreservesExternalChanges(root:URL) throws {
         let repository = TopologyRepository(root:root.appendingPathComponent("reload-regression")), profile = UUID()

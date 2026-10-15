@@ -15,6 +15,8 @@ SITE = '00000000-0000-0000-0000-000000000010'
 GATEWAY = '00000000-0000-0000-0000-000000000011'
 DEVICE = '00000000-0000-0000-0000-000000000012'
 CLIENT = '00000000-0000-0000-0000-000000000013'
+NETWORK = '00000000-0000-0000-0000-000000000014'
+WIFI = '00000000-0000-0000-0000-000000000015'
 KEY = 'DISPOSABLE-TEST-KEY-UNIFI-NOT-A-SECRET'
 
 
@@ -128,11 +130,33 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 dict(id=DEVICE, name='Access Point', ipAddress='192.0.2.2', macAddress='02:00:00:00:00:02', features=['accessPoint'], interfaces=['ports', 'radios'], state='ONLINE')]))
         if path == '/sites/%s/clients' % SITE:
             return self.reply(page([dict(id=CLIENT, name=KEY if mode == 'reflected-key' else 'Fixture Client', ipAddress='192.0.2.20', macAddress='02:00:00:00:00:20', type='WIRELESS', uplinkDeviceId=DEVICE)]))
+        if path == '/sites/%s/networks' % SITE:
+            if mode in ('optional-missing', 'optional-forbidden', 'optional-unauthorized', 'network-500'):
+                return self.reply({'error': 'LEAKED-SERVER-BODY', 'secret': KEY}, {'optional-missing': 404, 'optional-forbidden': 403, 'optional-unauthorized': 401, 'network-500': 500}[mode])
+            if mode == 'network-schema':
+                return self.reply({'meta': {'rc': 'ok'}, 'data': []})
+            return self.reply(page([dict(id=NETWORK, name='Servers', vlanId=100, enabled=True)]))
+        if path == '/sites/%s/networks/%s' % (SITE, NETWORK):
+            if mode == 'network-details-missing':
+                return self.reply({'error': 'LEAKED-SERVER-BODY'}, 403)
+            return self.reply(dict(id=DEVICE if mode == 'network-wrong-id' else NETWORK, name='Servers', vlanId=100, enabled=True, ipv4Configuration=dict(hostIpAddress='192.0.2.1', prefixLength=26, additionalHostIpSubnets=['198.51.100.1/24'], dhcpConfiguration={'unrelated': 'DO-NOT-STORE'})))
+        if path == '/sites/%s/wifi/broadcasts' % SITE:
+            if mode in ('optional-missing', 'optional-forbidden'):
+                return self.reply({'error': 'LEAKED-SERVER-BODY', 'secret': KEY}, 404 if mode == 'optional-missing' else 403)
+            if mode == 'wifi-page-cap':
+                return self.reply(page([], total=257))
+            return self.reply(page([dict(id=WIFI, name='Fixture SSID', enabled=True, network=dict(type='SPECIFIC', networkId=NETWORK), securityConfiguration=dict(type='WPA2_PERSONAL', passphrase='DO-NOT-STORE'))]))
+        if path == '/sites/%s/wans' % SITE:
+            if mode in ('optional-missing', 'optional-forbidden'):
+                return self.reply({'error': 'LEAKED-SERVER-BODY', 'secret': KEY}, 404 if mode == 'optional-missing' else 403)
+            return self.reply(page([dict(id=GATEWAY, name='WAN1')]))
         if path.endswith('/statistics/latest'):
             if mode == 'statistics-missing':
                 return self.reply({'error': 'LEAKED-SERVER-BODY'}, 404)
-            return self.reply(dict(interfaces={}, uplink=dict(rxRateBps=1234567, txRateBps=7654321)))
+            return self.reply(dict(interfaces={}, uplink=dict(rxRateBps=1234567, txRateBps=7654321), cpuUtilizationPct=12.5, memoryUtilizationPct=30.25, uptimeSec=12345))
         if path == '/sites/%s/devices/%s' % (SITE, GATEWAY):
+            if mode == 'details-forbidden':
+                return self.reply({'error': 'LEAKED-SERVER-BODY'}, 403)
             return self.reply(dict(id=GATEWAY, name='Gateway', ipAddress='192.0.2.1', macAddress='02:00:00:00:00:01', features={'switching': {}}, state='ONLINE', model='Fixture Gateway', interfaces={'ports': [dict(idx=1, state='UP', speedMbps=2500, maxSpeedMbps=10000, connector='RJ45')]}))
         if path == '/sites/%s/devices/%s' % (SITE, DEVICE):
             return self.reply(dict(id=DEVICE, name='Access Point', ipAddress='192.0.2.2', macAddress='02:00:00:00:00:02', features={'accessPoint': {}}, state='ONLINE', interfaces={'ports': []}, uplink=dict(deviceId=GATEWAY)))
@@ -147,6 +171,11 @@ def run(binary, server, mode, tls=False):
     assert result.returncode == 0, '%s: %s\n%s' % (mode, result.stdout, result.stderr)
     assert KEY not in result.stdout + result.stderr, 'secret must not reach tool output'
     assert all(request[2] == 'GET' for request in server.requests), 'all endpoints must be read only'
+    assert not any('/wifi/broadcasts/' in request[0] for request in server.requests), 'Wi-Fi details may contain passwords and must not be requested'
+    if mode == 'statistics-missing':
+        assert sum('/statistics/latest' in request[0] for request in server.requests) == 1, 'unsupported statistics endpoint should not be retried for every device'
+    if mode == 'details-forbidden':
+        assert sum(request[0].endswith('/devices/' + device) for request in server.requests for device in (GATEWAY, DEVICE)) == 1, 'forbidden detail endpoint should not be retried for every device'
     print(result.stdout.strip())
 
 
@@ -163,7 +192,7 @@ def main():
         for item in (server, target):
             servers.append(item)
             thread = threading.Thread(target=item.serve_forever, daemon=True); thread.start(); threads.append(thread)
-        for mode in ['normal', 'standalone', 'statistics-missing', 'reflected-key', 'redirect', 'cross-redirect', 'unauthorized', 'forbidden', 'oversized', 'chunked-oversized', 'schema', 'page-cap', 'bad-offset', 'repeated-page', 'cancel', 'task-cancel', 'slow']:
+        for mode in ['normal', 'standalone', 'statistics-missing', 'reflected-key', 'optional-missing', 'optional-forbidden', 'details-forbidden', 'network-details-missing', 'network-500', 'network-wrong-id', 'network-schema', 'wifi-page-cap', 'optional-unauthorized', 'redirect', 'cross-redirect', 'unauthorized', 'forbidden', 'oversized', 'chunked-oversized', 'schema', 'page-cap', 'bad-offset', 'repeated-page', 'cancel', 'task-cancel', 'slow']:
             run(binary, server, mode)
         assert server.forbidden_hits == 0 and target.forbidden_hits == 0, 'redirect must not forward API key'
         with tempfile.TemporaryDirectory(prefix='ssh-hub-unifi-tls-') as directory:

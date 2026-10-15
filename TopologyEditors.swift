@@ -4,8 +4,9 @@ private struct TopologyWANEditDraft: Identifiable {
     let id = UUID()
     var value: TopologyWAN
     var dns: String
-    init(_ value:TopologyWAN) { self.value = value; dns = value.dns.joined(separator:", ") }
-    var result: TopologyWAN { var result = value; result.dns = dns.split(whereSeparator: { $0 == "," || $0.isWhitespace }).map(String.init); return result }
+    let originalState: TopologyWANState
+    init(_ value:TopologyWAN) { self.value = value; originalState = value.state; dns = value.dns.joined(separator:", ") }
+    var result: TopologyWAN { var result = value; if result.state == .unknown { result.stateAt = nil; result.stateSource = nil } else if result.state != originalState || result.stateAt == nil { result.stateAt = Date(); result.stateSource = .manual }; result.dns = dns.split(whereSeparator: { $0 == "," || $0.isWhitespace }).map(String.init); return result }
 }
 struct TopologyNodeEditor: View {
     @ObservedObject var model: TopologyModel
@@ -15,11 +16,15 @@ struct TopologyNodeEditor: View {
     @State private var manualWAN = false
     @State private var wans: [TopologyWANEditDraft] = []
     @State private var port = ""
+    @State private var client = TopologyClientInfo()
+    @State private var vlan = ""
     private var candidate: TopologyNode {
         var value = node; value.checkPort = port.isEmpty ? nil : UInt16(port)
+        var info = client; info.vlan = Int(vlan); value.manualClientInfo = info == TopologyClientInfo() ? nil : info
         value.manualWAN = nil; value.manualWANs = manualWAN ? wans.map(\.result) : []; return value
     }
     private var validation: String? {
+        if !vlan.isEmpty && !(Int(vlan).map { (1...4094).contains($0) } ?? false) { return "VLAN: 1–4094 или пустое поле." }
         if !port.isEmpty, UInt16(port).map({ $0 > 0 }) != true { return "TCP-порт: 1–65535 или пустое поле." }
         var value = model.document; value.nodes.removeAll { $0.id == node.id }; value.nodes.append(candidate)
         do { try TopologyRepository.validate(value); return nil } catch { return error.localizedDescription }
@@ -33,15 +38,33 @@ struct TopologyNodeEditor: View {
                     TextField("IP или имя (пусто — из сбора)",text:$node.address)
                     Picker("Тип",selection:$node.kind) { ForEach(TopologyNodeKind.allCases) { Text($0.title).tag($0) } }
                     Picker("Запись",selection:Binding(get:{node.recordKey ?? ""},set:{node.recordKey = $0.isEmpty ? nil : $0})) { Text("Без привязки").tag(""); ForEach(entries) { entry in Text(entry.name).tag(entry.favoriteID) } }
+                    Toggle("Закрепить расположение на карте", isOn: $node.positionPinned)
+                    Picker("Область карты", selection: Binding(get: { node.groupID }, set: { node.groupID = $0 })) {
+                        Text("Без области").tag(nil as UUID?)
+                        ForEach(model.document.groups) { group in Text(group.name).tag(Optional(group.id)) }
+                    }
                     TextField("TCP-порт для проверки доступности",text:$port)
                     Text("Пустой порт берётся из связанной записи или обнаруженного открытого сервиса. Проверка выполняется с Mac.").font(.caption).foregroundStyle(.secondary)
                     Divider()
+                    DisclosureGroup("Сеть и производитель вручную") {
+                        VStack(spacing: 10) {
+                            Picker("Подключение", selection: $client.connection) { Text("Из сбора").tag(""); Text("Проводной").tag("WIRED"); Text("Wi-Fi").tag("WIRELESS"); Text("VPN").tag("VPN"); Text("Инфраструктура").tag("INFRASTRUCTURE") }
+                            TextField("VLAN (пусто — из сбора)", text: $vlan)
+                            TextField("Название сети", text: $client.networkName)
+                            TextField("SSID", text: $client.ssid)
+                            Picker("Диапазон Wi-Fi", selection: $client.band) { Text("Из сбора").tag(""); Text("2,4 ГГц").tag("2.4"); Text("5 ГГц").tag("5"); Text("6 ГГц").tag("6"); Text("60 ГГц").tag("60") }
+                            TextField("Производитель", text: $client.vendor)
+                        }.padding(.top, 10)
+                    }
                     Toggle("Задать WAN вручную",isOn:$manualWAN)
                     if manualWAN {
                         ForEach($wans) { $draft in
                             VStack(alignment:.leading,spacing:8) {
                                 HStack { TextField("Название: WAN1, WAN2…",text:$draft.value.name); Button { wans.removeAll { $0.id == draft.id } } label: { Image(systemName:"minus.circle").frame(width:20,height:20) } }
-                                TextField("Провайдер / роль: основной, резервный",text:$draft.value.provider)
+                                TextField("Провайдер", text: $draft.value.provider)
+                                Picker("Роль WAN", selection: $draft.value.role) { ForEach(TopologyWANRole.allCases) { Text($0.title).tag($0) } }
+                                Picker("Состояние вручную", selection: $draft.value.state) { ForEach(TopologyWANState.allCases) { Text($0.title).tag($0) } }
+                                Text("Резервный канал в ожидании отличается от недоступного. Состояние, указанное здесь, является ручной отметкой.").font(.caption).foregroundStyle(.secondary)
                                 TextField("WAN-интерфейс",text:$draft.value.interface)
                                 TextField("Адрес WAN",text:$draft.value.address)
                                 TextField("Шлюз WAN",text:$draft.value.gateway)
@@ -57,7 +80,7 @@ struct TopologyNodeEditor: View {
             if let validation { Text(validation).font(.caption).foregroundStyle(.red) }
             HStack { Spacer(); Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction); Button("Сохранить") { model.saveNode(candidate); if model.error == nil { dismiss() } }.disabled(validation != nil).keyboardShortcut(.defaultAction) }
         }.padding(20).frame(width:570,height:600).dismissOnOutsideClick()
-            .onAppear { manualWAN = node.manualWAN != nil || !node.manualWANs.isEmpty; wans = (node.displayWANs.isEmpty ? [TopologyWAN(name:"WAN1")] : node.displayWANs).map(TopologyWANEditDraft.init); port = node.checkPort.map(String.init) ?? "" }
+            .onAppear { client = node.manualClientInfo ?? TopologyClientInfo(); vlan = client.vlan.map(String.init) ?? ""; manualWAN = node.manualWAN != nil || !node.manualWANs.isEmpty; wans = (node.displayWANs.isEmpty ? [TopologyWAN(name:"WAN1")] : node.displayWANs).map(TopologyWANEditDraft.init); port = node.checkPort.map(String.init) ?? "" }
     }
 }
 

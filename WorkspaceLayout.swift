@@ -10,6 +10,23 @@ struct EntryPage: Identifiable, Codable {
     var id = UUID()
     var key: String?
     var section: EntryDetailSection
+
+    // A topology key names a map, not a connection record. Legacy keyed
+    // scanner pages still belong to their record; nil-key global tools do not.
+    var requiresRecordBinding: Bool { section != .topology && key != nil }
+
+    // The original profile map used a nil record key. Keep its descriptor
+    // unchanged; additional maps are namespaced so they cannot be mistaken
+    // for record bindings. Their persistent UUID survives rename and moves.
+    func topologyMapID(profileID: UUID) -> UUID? {
+        guard section == .topology else { return nil }
+        guard let key else { return profileID }
+        guard key.hasPrefix("map:") else { return nil }
+        return UUID(uuidString: String(key.dropFirst(4)))
+    }
+    static func topologyKey(mapID: UUID, profileID: UUID) -> String? {
+        mapID == profileID ? nil : "map:" + mapID.uuidString
+    }
 }
 
 enum WorkspaceTab: Hashable, Codable { case page(UUID), console(UUID) }

@@ -5,6 +5,11 @@ import Foundation
         if !value() { throw ConfigError.message("FAIL: " + message) }
     }
     static func main() throws {
+        try namedMapSnapshots()
+        if CommandLine.arguments.contains("--maps-only") {
+            print("Workspace named-map tests passed: legacy compatibility, multiple maps, pane/window/style persistence, malformed keys and duplicate identity")
+            return
+        }
         let a = WorkspaceTab.page(UUID()), b = WorkspaceTab.console(UUID()), c = WorkspaceTab.console(UUID())
         var layout = WorkspaceLayout()
         layout.select(a); layout.select(b); layout.move(b, to: .secondary)
@@ -94,5 +99,59 @@ import Foundation
         try require(!FileManager.default.fileExists(atPath: server.path), "login channel cleaned up")
         _ = change
         print("Workspace tests passed: split panes, moves, focus, reconnect, collapse, closing; auth transitions, OpenSSH config, nested tree, export, destination binding, secure askpass channel")
+    }
+
+    static func namedMapSnapshots() throws {
+        let profile = UUID(), homeMap = UUID(), workMap = UUID()
+        let legacy = EntryPage(section: .topology)
+        let first = EntryPage(key: EntryPage.topologyKey(mapID: homeMap, profileID: profile), section: .topology)
+        let second = EntryPage(key: EntryPage.topologyKey(mapID: workMap, profileID: profile), section: .topology)
+        try require(legacy.topologyMapID(profileID: profile) == profile, "legacy nil-key map retains profile identity")
+        try require(first.topologyMapID(profileID: profile) == homeMap && second.topologyMapID(profileID: profile) == workMap, "named map IDs independent within profile")
+        try require(EntryPage.topologyKey(mapID: profile, profileID: profile) == nil, "first-map descriptor remains legacy-compatible")
+        for key in ["", "record-key", "map:", "map:invalid", "map:" + homeMap.uuidString + ":extra", " map:" + homeMap.uuidString] {
+            try require(EntryPage(key: key, section: .topology).topologyMapID(profileID: profile) == nil, "malformed map key rejected")
+        }
+        try require(EntryPage(key: first.key, section: .documentation).topologyMapID(profileID: profile) == nil, "record page never resolves as map")
+        var layout = WorkspaceLayout()
+        layout.select(.page(legacy.id)); layout.select(.page(first.id)); layout.move(.page(second.id), to: .secondary)
+        let styles = [WorkspaceTab.page(first.id).dragToken: WorkspaceTabStyle(pinned: true, name: "Дом", color: "green")]
+        let snapshot = WorkspaceSnapshot(layout: layout, fraction: 0.65, pages: [legacy, first, second], consoles: [], windows: [WorkspaceWindowSnapshot(tab: .page(first.id), frame: "{{100, 100}, {800, 600}}")], paths: [:], tabStyles: styles)
+        let restored = try JSONDecoder().decode(WorkspaceSnapshot.self, from: JSONEncoder().encode(snapshot))
+        let restoredPages = restored.restorablePages(profileID: profile)
+        try require(restoredPages.count == 3 && Set(restoredPages.compactMap { $0.topologyMapID(profileID: profile) }) == [profile, homeMap, workMap], "all distinct maps captured and restored")
+        try require(restored.windows.first?.tab == .page(first.id) && restored.tabStyles?[WorkspaceTab.page(first.id).dragToken]?.isPinned == true, "map window and customization retained")
+        try require(restored.layout.secondarySelection == .page(second.id) && restored.fraction == 0.65, "multiple maps retain pane selections and sizes")
+        // A configuration reload prunes tabs whose connection record was
+        // deleted. Map identity uses the same key slot but is not a record:
+        // the reopened named map must survive that subsequent reload too.
+        let record = EntryPage(key: "fixture-record", section: .documentation)
+        let removedRecord = EntryPage(key: "removed-record", section: .sftp)
+        let recordTools = EntryPage(key: "removed-record", section: .scanner)
+        let globalTools = EntryPage(section: .scanner)
+        let loadedRecordKeys: Set<String> = ["fixture-record"]
+        let pagesBeforeReload = restoredPages + [record, removedRecord, recordTools, globalTools]
+        let pagesAfterReload = pagesBeforeReload.filter { page in
+            !page.requiresRecordBinding || page.key.map { loadedRecordKeys.contains($0) } == true
+        }
+        try require(Set(pagesAfterReload.map(\.id)) == [legacy.id, first.id, second.id, record.id, globalTools.id], "reload preserves named maps and global tools while pruning deleted record pages and keyed tools")
+        var layoutAfterReload = restored.layout
+        layoutAfterReload.normalize(valid: Set(pagesAfterReload.map { .page($0.id) }))
+        let afterReloadSnapshot = WorkspaceSnapshot(layout: layoutAfterReload, fraction: restored.fraction, pages: pagesAfterReload, consoles: [], windows: restored.windows, paths: [:])
+        let afterSecondLaunch = try JSONDecoder().decode(WorkspaceSnapshot.self, from: JSONEncoder().encode(afterReloadSnapshot))
+        try require(afterSecondLaunch.restorablePages(profileID: profile).contains(where: { $0.id == first.id }) && afterSecondLaunch.layout.secondarySelection == .page(second.id), "named maps still restore after reload and a second quit/relaunch cycle")
+        let duplicate = EntryPage(key: first.key, section: .topology)
+        let aliasOfLegacy = EntryPage(key: "map:" + profile.uuidString, section: .topology)
+        let invalid = EntryPage(key: "map:broken", section: .topology)
+        var duplicateLayout = layout; duplicateLayout.select(.page(duplicate.id))
+        let duplicated = WorkspaceSnapshot(layout: duplicateLayout, fraction: 0.5, pages: [legacy, aliasOfLegacy, first, second, duplicate, invalid], consoles: [], windows: [], paths: [:])
+        let deduplicated = duplicated.restorablePages(profileID: profile)
+        try require(deduplicated.count == 3 && deduplicated.contains(where: { $0.id == duplicate.id }) && !deduplicated.contains(where: { $0.id == first.id }), "one page per map, active page preferred")
+        var cleanedLayout = duplicateLayout
+        cleanedLayout.normalize(valid: Set(deduplicated.map { .page($0.id) }))
+        try require(cleanedLayout.active == .page(duplicate.id), "deduplicating preserves active named map")
+        let oldData = Data("{\"version\":1,\"layout\":{\"primary\":[],\"secondary\":[],\"focused\":0,\"split\":\"none\"},\"fraction\":0.5,\"pages\":[{\"id\":\"\(legacy.id)\",\"section\":\"topology\"}],\"consoles\":[],\"windows\":[],\"paths\":{}}".utf8)
+        let old = try JSONDecoder().decode(WorkspaceSnapshot.self, from: oldData)
+        try require(old.restorablePages(profileID: profile).first?.topologyMapID(profileID: profile) == profile && old.tabStyles == nil, "old map snapshot reads without migration or automatic operations")
     }
 }

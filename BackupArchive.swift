@@ -39,7 +39,9 @@ struct HubBackup: Codable {
         try NmapTemplates.validate(nmapTemplates ?? [])
         if let topologies {
             let profileIDs = Set((profiles ?? []).map(\.id)), recordIDs = Set(records.map(\.id))
-            guard topologies.count <= 50, Set(topologies.map(\.profileID)).count == topologies.count,
+            let counts = Dictionary(grouping: topologies, by: \.profileID)
+            guard topologies.count <= 2_500, Set(topologies.map(\.id)).count == topologies.count,
+                  counts.values.allSatisfy({ $0.count <= 50 }),
                   Set(topologies.map(\.profileID)).isSubset(of: profileIDs) else { throw ConfigError.message("Некорректные профили сетевых карт в архиве.") }
             var mapBytes = 0
             for map in topologies {

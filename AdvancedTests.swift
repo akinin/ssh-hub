@@ -253,26 +253,41 @@ import Network
         let manual = TopologyNode(name: "Remote office", address: "192.0.2.100", kind: .internet, x: 850, y: 120)
         let vpn = TopologyLink(from: primary.id, to: manual.id, kind: .vpn, name: "Office VPN", fromPort: "wg0", toPort: "wg-office", speedMbps: 100, notes: "Manual VPN", vlan: "20", vpnTechnology: "WireGuard")
         let cable = TopologyLink(from: primary.id, to: omitted.id, fromPort: "ether3", toPort: "eth0", source: .ssh, observedAt: sampleTime)
-        let source = TopologyDocument(profileID: sourceProfile.id, nodes: [primary, omitted, manual], links: [vpn, cable],
+        var source = TopologyDocument(profileID: sourceProfile.id, nodes: [primary, omitted, manual], links: [vpn, cable],
             unifi: TopologyUniFiSettings(baseURL: "https://controller.example.test", siteID: "fixture-site"),
             routers: [TopologyRouterSettings(provider: .mikrotik, name: "Fixture RouterOS", baseURL: "https://router.example.test", username: "fixture", recordKey: primaryKey),
                       TopologyRouterSettings(provider: .keenetic, name: "Fixture Keenetic", baseURL: "https://keenetic.example.test", username: "fixture", recordKey: otherKey)])
+        let area = TopologyGroup(name: "Fixture server room", color: "purple", x: 100, y: 50, width: 500, height: 350, collapsed: true)
+        source.groups = [area]; source.nodes[0].groupID = area.id; source.nodes[0].positionPinned = true
+        source.nodes[0].manualClientInfo = TopologyClientInfo(connection: "INFRASTRUCTURE", vlan: 20, vendor: "Fixture vendor")
+        source.nodes[0].observed?.deviceInfo = TopologyDeviceInfo(model: "Fixture gateway", firmware: "1.0", cpuPercent: 12, memoryPercent: 34)
+        source.networks = [TopologyNetwork(id: "unifi:fixture:network:test", name: "Servers", vlan: 20, subnets: ["192.0.2.1/24"], collectedAt: sampleTime)]
+        source.wifi = [TopologyWiFi(id: "unifi:fixture:wifi:test", name: "Fixture SSID", networkID: source.networks[0].id, collectedAt: sampleTime)]
+        source.events = [TopologyEvent(date: sampleTime, source: .unifi, nodeID: primary.id, kind: .status, previous: "offline", current: "online", summary: "Fixture status change")]
+        source.nodes[0].wanRegistrations = [TopologyWANRegistration(address: "198.51.100.11", name: "Fixture net", organization: "Fixture organization", country: "ZZ", range: "198.51.100.0 — 198.51.100.255", sourceURL: "https://rdap.example.test/ip/198.51.100.11", date: sampleTime)]
+        var namedSource = source; namedSource.id = UUID(); namedSource.name = "Удалённая площадка"
         let exported = BackupRestoration.exportTopology(source, exportIDs: [primaryKey: record.id, otherKey: otherRecord.id])
+        let namedExported = BackupRestoration.exportTopology(namedSource, exportIDs: [primaryKey: record.id, otherKey: otherRecord.id])
         check(exported.nodes[0].recordKey == "backup:" + record.id.uuidString && exported.nodes[0].sourceID == nil
             && exported.nodes[0].sourceAliases == ["unifi:fixture:site:device"] && exported.nodes[1].sourceID == nil, "topology export converts associations and removes local SSH source IDs")
         check(exported.routers[0].recordKey == exported.nodes[0].recordKey && exported.routers[1].recordKey == exported.nodes[1].recordKey, "router API record associations export explicitly")
         var selectedRecord = record; selectedRecord.profileIDs = [sourceProfile.id]
         otherRecord.profileIDs = [sourceProfile.id]
-        let backup = HubBackup(records: [selectedRecord, otherRecord], folders: [], folderAppearances: [:], templates: [], profiles: [sourceProfile], topologies: [exported])
+        let backup = HubBackup(records: [selectedRecord, otherRecord], folders: [], folderAppearances: [:], templates: [], profiles: [sourceProfile], topologies: [exported, namedExported])
         let encrypted = try BackupEncryption.seal(backup, password: "fixture-topology-passphrase")
         let decoded = try BackupEncryption.open(encrypted, password: "fixture-topology-passphrase")
-        check(decoded.topologies == [exported] && encrypted.range(of: Data("fixture-sensitive-network-note".utf8)) == nil, "encrypted map includes manual links, multi-WAN, port samples and nonsecret router settings")
+        check(decoded.topologies == [exported, namedExported] && encrypted.range(of: Data("fixture-sensitive-network-note".utf8)) == nil, "encrypted maps include independent names, IDs, manual links, multi-WAN, port samples and nonsecret router settings")
         let exportedText = String(decoding: try JSONEncoder().encode(exported), as: UTF8.self)
         check(!exportedText.contains("password") && !exportedText.contains("apiKey") && !exportedText.contains(primaryKey), "topology payload has no credential field or local record key")
         var old = try JSONSerialization.jsonObject(with: JSONEncoder().encode(backup)) as! [String: Any]
         old.removeValue(forKey: "topologies")
         let oldBackup = try JSONDecoder().decode(HubBackup.self, from: JSONSerialization.data(withJSONObject: old)); try oldBackup.validate()
         check(oldBackup.topologies == nil, "2.14 archive without maps remains readable")
+        var legacyArchive = try JSONSerialization.jsonObject(with: JSONEncoder().encode(backup)) as! [String: Any]
+        var legacyMap = try JSONSerialization.jsonObject(with: JSONEncoder().encode(exported)) as! [String: Any]
+        legacyMap.removeValue(forKey: "id"); legacyMap.removeValue(forKey: "name"); legacyArchive["topologies"] = [legacyMap]
+        let legacyDecoded = try JSONDecoder().decode(HubBackup.self, from: JSONSerialization.data(withJSONObject: legacyArchive)); try legacyDecoded.validate()
+        check(legacyDecoded.topologies?.first?.id == sourceProfile.id && legacyDecoded.topologies?.first?.name == "Основная карта", "2.15 archive migrates legacy map identity and name without losing profile")
         var invalid = backup; invalid.topologies?[0].nodes[0].recordKey = "backup:" + UUID().uuidString
         rejects("unknown map record in archive") { try invalid.validate() }
         invalid = backup; invalid.topologies?[0].profileID = UUID()
@@ -281,13 +296,19 @@ import Network
         rejects("dangling map link in archive") { try invalid.validate() }
         invalid = backup; invalid.topologies?[0].routers[0].recordKey = primaryKey
         rejects("local router record key cannot bind to existing entry") { try invalid.validate() }
+        invalid = backup; invalid.topologies?.append(exported)
+        rejects("duplicate map IDs cannot share an archive filename") { try invalid.validate() }
+        invalid = backup; invalid.topologies = (0..<51).map { TopologyDocument(profileID: sourceProfile.id, id: UUID(), name: "Карта \($0)") }
+        rejects("more than fifty maps per profile rejected") { try invalid.validate() }
 
         // Only saved maps of included profiles are captured; orphan maps do
         // not accidentally enter the archive or block its creation.
         try mapRepository.write(source)
+        try mapRepository.write(namedSource)
+        let namedOriginalBytes = try Data(contentsOf: mapRepository.url(for: namedSource.id))
         let orphan = TopologyDocument(profileID: UUID(), nodes: [TopologyNode(name: "Orphan")]); try mapRepository.write(orphan)
         let captured = try BackupRestoration.savedTopologies(profileIDs: [sourceProfile.id, UUID()], repository: mapRepository, exportIDs: [primaryKey: record.id, otherKey: otherRecord.id])
-        check(captured == [exported], "capture includes existing maps for current profiles only")
+        check(captured.count == 2 && captured.contains(exported) && captured.contains(namedExported), "capture includes every named map of included profiles only")
         let existing = TopologyDocument(profileID: HubProfiles.homeID, nodes: [TopologyNode(name: "Existing map must remain", address: "192.0.2.254")]); try mapRepository.write(existing)
         let originalBytes = try Data(contentsOf: mapRepository.url(for: existing.profileID))
         var profiles = HubProfiles()
@@ -297,6 +318,11 @@ import Network
         let installed = try BackupRestoration.install(decoded, selected: [record.id], localRepository: repository, documents: docs, commands: saved, attachments: attachments,
             templates: [], writeTemplates: { _ in }, topology: mapRepository, topologyProfileMap: mapping)
         let restoredMap = try mapRepository.load(target), restoredKey = installed[0].1.favoriteID
+        let restoredProfileMaps = try mapRepository.list(profileID: target)
+        let restoredNamedMap = restoredProfileMaps.first { $0.name == namedSource.name }!
+        check(restoredProfileMaps.count == 2 && restoredNamedMap.id != namedSource.id && restoredNamedMap.id != target && restoredNamedMap.profileID == target && restoredNamedMap.nodes[0].recordKey == restoredKey, "named map filename collision remaps ID while preserving name, profile and shared record association")
+        let namedBytesAfterRestore = try Data(contentsOf: mapRepository.url(for: namedSource.id))
+        check(namedBytesAfterRestore == namedOriginalBytes, "named source map remains byte exact during ID conflict restore")
         check(restoredMap.profileID == target && restoredMap.nodes[0].recordKey == restoredKey && restoredMap.nodes[1].recordKey == nil && restoredMap.nodes[2].recordKey == nil, "map profile and selected record remap while omitted nodes detach")
         check(restoredMap.nodes[0].manualWANs == primary.manualWANs && restoredMap.nodes[0].observed?.wans.count == 2 && restoredMap.links == source.links && restoredMap.nodes[2] == manual, "restore preserves manual-only nodes, links, positions and multiple WANs")
         check(restoredMap.routers[0].recordKey == restoredKey && restoredMap.routers[1].recordKey == nil, "router settings follow only selected restored records")
@@ -316,16 +342,48 @@ import Network
             templates: [], writeTemplates: { _ in }, topology: mapRepository, topologyProfileMap: secondMapping)
         let detachedMap = try mapRepository.load(secondTarget)
         check(manualOnly.isEmpty && detachedMap.nodes.count == 3 && detachedMap.nodes.allSatisfy { $0.recordKey == nil } && detachedMap.links == source.links, "maps restore without selecting records")
+        let detachedMaps = try mapRepository.list(profileID: secondTarget)
+        check(detachedMaps.count == 2 && detachedMaps.allSatisfy { $0.nodes.allSatisfy { $0.recordKey == nil } && $0.routers.allSatisfy { $0.recordKey == nil } }, "maps-only restore detaches associations in every map")
         let failedMapping = try BackupRestoration.profileMapping(decoded, profiles: &profiles, topology: mapRepository), failedTarget = failedMapping[sourceProfile.id]!
         let manifestBeforeFailure = try repository.load()
+        let mapsBeforeFailure = try mapRepository.list()
         rejects("map transaction rolls back on later persistence failure") {
             _ = try BackupRestoration.install(decoded, selected: [record.id], localRepository: repository, documents: docs, commands: saved, attachments: attachments,
                 templates: [], writeTemplates: { _ in throw ConfigError.message("fixture topology failure") }, topology: mapRepository, topologyProfileMap: failedMapping)
         }
         let manifestAfterFailure = try repository.load()
-        check(manifestAfterFailure == manifestBeforeFailure && !FileManager.default.fileExists(atPath: mapRepository.url(for: failedTarget).path), "failed install removes only its new map and leaves manifest unchanged")
+        let mapsAfterFailure = try mapRepository.list()
+        let failedProfileMaps = try mapRepository.list(profileID: failedTarget)
+        check(manifestAfterFailure == manifestBeforeFailure && mapsAfterFailure == mapsBeforeFailure && failedProfileMaps.isEmpty, "failed install removes every new map and leaves other maps and manifest unchanged")
         let retained = try mapRepository.load(target), retainedOriginal = try Data(contentsOf: mapRepository.url(for: existing.profileID))
         check(retained == restoredMap && retainedOriginal == originalBytes, "rollback preserves previous restored and existing maps")
+        let namedOnlyRepository = TopologyRepository(root: root.appendingPathComponent("NamedMapProfileConflict"))
+        try namedOnlyRepository.write(TopologyDocument(profileID: HubProfiles.homeID, id: UUID(), name: "Existing named map"))
+        var namedOnlyProfiles = HubProfiles()
+        let namedOnlyMapping = try BackupRestoration.profileMapping(decoded, profiles: &namedOnlyProfiles, topology: namedOnlyRepository)
+        check(namedOnlyMapping[sourceProfile.id] != HubProfiles.homeID, "named map alone reserves destination profile during archive conflict mapping")
+        let cleanRepository = TopologyRepository(root: root.appendingPathComponent("CleanNamedMapRestore"))
+        var cleanProfiles = HubProfiles()
+        let cleanMapping = try BackupRestoration.profileMapping(decoded, profiles: &cleanProfiles, topology: cleanRepository)
+        var lowercaseReferences = decoded
+        let lowercaseNodeKey = lowercaseReferences.topologies?[1].nodes[0].recordKey?.lowercased()
+        let lowercaseRouterKey = lowercaseReferences.topologies?[1].routers[0].recordKey?.lowercased()
+        lowercaseReferences.topologies?[1].nodes[0].recordKey = lowercaseNodeKey
+        lowercaseReferences.topologies?[1].routers[0].recordKey = lowercaseRouterKey
+        let cleanRecords = try BackupRestoration.install(lowercaseReferences, selected: [record.id], localRepository: repository, documents: docs, commands: saved, attachments: attachments,
+            templates: [], writeTemplates: { _ in }, topology: cleanRepository, topologyProfileMap: cleanMapping)
+        let preservedNamed = try cleanRepository.load(cleanMapping[sourceProfile.id]!, mapID: namedSource.id)
+        check(preservedNamed.id == namedSource.id && preservedNamed.name == namedSource.name, "unoccupied named map ID remains stable after profile remap")
+        check(preservedNamed.nodes[0].recordKey == cleanRecords[0].1.favoriteID && preservedNamed.routers[0].recordKey == cleanRecords[0].1.favoriteID, "valid lower-case archive UUID references remap to the selected restored record")
+        var reversedArchive = backup, reservedNamed = namedExported
+        reservedNamed.id = HubProfiles.homeID; reversedArchive.topologies = [reservedNamed, exported]
+        let primaryReservationRepository = TopologyRepository(root: root.appendingPathComponent("PrimaryMapIDReservation"))
+        var primaryReservationProfiles = HubProfiles()
+        let primaryReservationMapping = try BackupRestoration.profileMapping(reversedArchive, profiles: &primaryReservationProfiles, topology: primaryReservationRepository)
+        _ = try BackupRestoration.install(reversedArchive, selected: [], localRepository: repository, documents: docs, commands: saved, attachments: attachments,
+            templates: [], writeTemplates: { _ in }, topology: primaryReservationRepository, topologyProfileMap: primaryReservationMapping)
+        let primaryReserved = try primaryReservationRepository.load(HubProfiles.homeID), reservationMaps = try primaryReservationRepository.list(profileID: HubProfiles.homeID)
+        check(primaryReserved.name == exported.name && reservationMaps.contains(where: { $0.name == namedExported.name && $0.id != HubProfiles.homeID }), "legacy primary filename reserved before named IDs regardless of archive order")
         try Data("corrupt fixture".utf8).write(to: mapRepository.url(for: sourceProfile.id)); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: mapRepository.url(for: sourceProfile.id).path)
         rejects("corrupt saved map blocks archive capture instead of becoming empty") {
             _ = try BackupRestoration.savedTopologies(profileIDs: [sourceProfile.id], repository: mapRepository, exportIDs: [primaryKey: record.id])
