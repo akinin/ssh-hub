@@ -48,6 +48,7 @@ extension AliasStore {
         logModels.removeValue(forKey: page.id)?.stop()
         inventoryModels.removeValue(forKey: page.id)?.stop()
         winboxModels.removeValue(forKey: page.id)?.stop()
+        topologyModels.removeValue(forKey: page.id)?.stop()
         pages.removeAll { $0.id == page.id }; workspace.remove(.page(page.id))
         if page.section == .scanner { scanner.cancel(); tools.stop() }
         syncWorkspaceSelection()
@@ -68,7 +69,7 @@ struct WorkspacePageTab: View {
     @EnvironmentObject var store: AliasStore
     @ObservedObject private var consoles = ConsoleStore.shared
     @State private var stateRevision = 0
-    private var title: String { store.tabTitle(.page(page.id), fallback: (store.entry(for: page).map { store.title($0) + " — " } ?? "") + (page.section == .connection ? store.entry(for: page)?.recordKind?.title ?? page.section.title : page.section.title)) }
+    private var title: String { store.tabTitle(.page(page.id), fallback: page.section == .topology ? "Карта · " + store.profileName : (store.entry(for: page).map { store.title($0) + " — " } ?? "") + (page.section == .connection ? store.entry(for: page)?.recordKind?.title ?? page.section.title : page.section.title)) }
     var body: some View {
         let _ = stateRevision
         HStack(spacing: 6) {
@@ -201,6 +202,7 @@ struct WorkspacePaneView: View {
         case .page(let id):
             if let page = store.pages.first(where: { $0.id == id }) {
                 if page.section == .scanner { NetworkToolsView(model: store.tools, scanner: store.scanner) }
+                else if page.section == .topology, let model = store.topologyModels[id] { TopologyView(model: model).id(id) }
                 else if page.section == .connection, let session = store.connectionSessions[id] { ConnectionPageView(session: session).id(id) }
                 else if page.section == .sftp, let model = store.sftpModels[id] { SFTPView(model: model).id(id) }
                 else if page.section == .logs, let model = store.logModels[id] { RecordLogsView(model: model).id(id) }

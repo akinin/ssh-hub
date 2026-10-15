@@ -30,25 +30,23 @@ extension AliasStore {
         }
         if let error = CommandLibrary.shared.error { throw ConfigError.message(error) }
         if let error = scanner.templateError { throw ConfigError.message(error) }
-        let backup = HubBackup(records: records, folders: folders, folderAppearances: folderAppearances, templates: TemplateLibrary.shared.custom, commandLibrary: CommandLibrary.shared.custom, profiles: profiles.profiles, nmapTemplates: scanner.customTemplates)
+        let maps = try BackupRestoration.savedTopologies(profileIDs: profiles.profiles.map(\.id), repository: TopologyRepository(config: config.url), exportIDs: exportIDs)
+        let backup = HubBackup(records: records, folders: folders, folderAppearances: folderAppearances, templates: TemplateLibrary.shared.custom, commandLibrary: CommandLibrary.shared.custom, profiles: profiles.profiles, nmapTemplates: scanner.customTemplates, topologies: maps)
         try backup.validate(); return backup
     }
     func restoreBackup(_ backup: HubBackup, selected: Set<UUID>) throws {
         try backup.validate()
         var restoredProfiles = profiles
-        var profileMap: [UUID: UUID] = [:]
-        for source in backup.profiles ?? [] {
-            if let existing = restoredProfiles.profiles.first(where: { $0.name.caseInsensitiveCompare(source.name) == .orderedSame }) { profileMap[source.id] = existing.id }
-            else { profileMap[source.id] = try restoredProfiles.add(source.name) }
-        }
         let activeConnection = connectionSessions.values.contains { session in
             session.files?.busy == true || session.desktop?.connected == true || session.desktop?.starting == true
         }
-        guard !ConsoleStore.shared.hasSessions, !SFTPRegistry.shared.hasSessions, !activeConnection, !scanner.running, !ToolkitSession.pending, !TunnelSession.pending, !RecordLogsModel.pending, !InventoryModel.pending, !winboxModels.values.contains(where: { $0.running || $0.busy }), !WinboxModel.hasPendingOperations else { throw ConfigError.message("Заверши активные консольные, графические, файловые сеансы, захват логов, сбор инвентаризации и WinBox перед восстановлением.") }
+        guard !ConsoleStore.shared.hasSessions, !SFTPRegistry.shared.hasSessions, !activeConnection, !scanner.running, !ToolkitSession.pending, !TunnelSession.pending, !RecordLogsModel.pending, !InventoryModel.pending, !winboxModels.values.contains(where: { $0.running || $0.busy }), !WinboxModel.hasPendingOperations, !TopologyModel.pending, !topologyModels.values.contains(where: { $0.busy || $0.monitoring }) else { throw ConfigError.message("Заверши активные сеансы, сбор инвентаризации, WinBox и обновление сетевой карты перед восстановлением.") }
+        let topology = TopologyRepository(config: config.url)
+        let profileMap = try BackupRestoration.profileMapping(backup, profiles: &restoredProfiles, topology: topology)
         let metadata = try BackupRestoration.install(backup, selected: selected, localRepository: localRepository,
             documents: DocumentationRepository(), commands: savedCommands.repository, attachments: attachmentsRepository,
             templates: TemplateLibrary.shared.custom, writeTemplates: TemplateLibrary.shared.replace,
-            library: CommandLibrary.shared.custom, writeLibrary: CommandLibrary.shared.replace, nmapTemplates: scanner.customTemplates, writeNmapTemplates: scanner.repository.write, inventory: InventoryRepository(), winbox: WinboxRepository())
+            library: CommandLibrary.shared.custom, writeLibrary: CommandLibrary.shared.replace, nmapTemplates: scanner.customTemplates, writeNmapTemplates: scanner.repository.write, inventory: InventoryRepository(), winbox: WinboxRepository(), topology: topology, topologyProfileMap: profileMap)
         reload(); scanner.reloadTemplates()
         for (value, entry) in metadata {
             let assigned = Set((value.profileIDs ?? []).compactMap { profileMap[$0] })
@@ -57,12 +55,13 @@ extension AliasStore {
             if value.favorite { favorites.insert(entry.favoriteID) }
         }
         profiles = restoredProfiles; persistProfiles()
+        topologyModels.values.forEach { $0.entries = profileEntries; $0.reload() }
         folders = Array(Set(folders + backup.folders)).sorted()
         for (path, value) in backup.folderAppearances where folderAppearances[path] == nil { folderAppearances[path] = value }
         UserDefaults.standard.set(folders, forKey: "folderPaths.v1")
         UserDefaults.standard.set(try JSONEncoder().encode(folderAppearances), forKey: "folderAppearance.v1")
         UserDefaults.standard.set(Array(favorites), forKey: "favoriteAliases.v1")
-        notice = "Восстановлено записей: \(metadata.count). Существующие данные сохранены; совпадения добавлены отдельными записями."
+        notice = "Восстановлено записей: \(metadata.count), сетевых карт: \((backup.topologies ?? []).count). Существующие данные сохранены; совпадения добавлены отдельно."
     }
 }
 struct BackupView: View {
@@ -78,8 +77,8 @@ struct BackupView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Label("Резервное копирование", systemImage: "externaldrive.badge.timemachine").font(.title2).bold()
-            Text("Единый архив записей, логотипов, команд, папок, шаблонов, документации с историей и вложений. AES-256-GCM; ключ из пароля — PBKDF2-SHA256, 600 000 итераций. Пароль архива нигде не сохраняется.").font(.callout).foregroundStyle(.secondary)
-            Text("Пароли из Связки ключей и файлы SSH-ключей не включаются. SSH-алиасы восстанавливаются как отдельные записи SSH Hub. Пути к ключам могут потребовать изменения на другом Mac. Вложения — до 256 МБ на архив.").font(.caption).foregroundStyle(.secondary)
+            Text("Единый архив записей, логотипов, команд, папок, шаблонов, документации, вложений и сетевых карт профилей. AES-256-GCM; ключ из пароля — PBKDF2-SHA256, 600 000 итераций. Пароль архива нигде не сохраняется.").font(.callout).foregroundStyle(.secondary)
+            Text("Пароли, API-ключи UniFi из Связки ключей и файлы SSH-ключей не включаются. SSH-алиасы восстанавливаются как отдельные записи SSH Hub. Пути к ключам могут потребовать изменения на другом Mac. Вложения — до 256 МБ на архив.").font(.caption).foregroundStyle(.secondary)
             SecureField("Пароль архива (не менее 8 символов)", text: $password).textFieldStyle(.roundedBorder)
             if backup == nil {
                 SecureField("Повтори пароль для создания архива", text: $confirmation).textFieldStyle(.roundedBorder)
@@ -89,20 +88,20 @@ struct BackupView: View {
                 }
                 Spacer()
             } else if let backup {
-                HStack { Text("Архив: \(backup.records.count) записей · \(backup.date.formatted(date: .abbreviated, time: .shortened))"); Spacer(); Button("Выбрать все") { selection = Set(backup.records.map(\.id)) } }
+                HStack { Text("Архив: \(backup.records.count) записей · \((backup.topologies ?? []).count) карт · \(backup.date.formatted(date: .abbreviated, time: .shortened))"); Spacer(); Button("Выбрать все") { selection = Set(backup.records.map(\.id)) } }
                 List(backup.records) { value in
                     Toggle(isOn: Binding(get: { selection.contains(value.id) }, set: { if $0 { selection.insert(value.id) } else { selection.remove(value.id) } })) {
                         VStack(alignment: .leading) { Text(value.appearance.title(fallback: value.record.title)); Text(value.record.host + " · вложений: \(value.attachments.count)").font(.caption).foregroundStyle(.secondary) }
                     }
                 }
-                Text("Восстановление добавляет записи. При совпадении ID создаётся копия. Папки, собственные шаблоны и библиотека команд архива также добавляются.").font(.caption).foregroundStyle(.secondary)
+                Text("Записи добавляются копиями. Карты восстанавливаются целиком; существующая карта сохраняется, для архивной создаётся отдельный профиль. Узлы невыбранных записей сохраняются без привязки.").font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button("Другой архив") { self.backup = nil; selection = [] }
                     Spacer()
                     Button("Восстановить выбранные (\(selection.count))") {
                         do { try store.restoreBackup(backup, selected: selection); self.backup = nil; success = "Восстановление завершено"; password = ""; confirmation = "" }
                         catch { self.error = error.localizedDescription }
-                    }.disabled(busy || (selection.isEmpty && backup.templates.isEmpty && (backup.commandLibrary ?? []).isEmpty && (backup.nmapTemplates ?? []).isEmpty && backup.folders.isEmpty)).buttonStyle(.borderedProminent)
+                    }.disabled(busy || (selection.isEmpty && backup.templates.isEmpty && (backup.commandLibrary ?? []).isEmpty && (backup.nmapTemplates ?? []).isEmpty && backup.folders.isEmpty && (backup.topologies ?? []).isEmpty)).buttonStyle(.borderedProminent)
                 }
             }
             if busy { ProgressView("Обработка зашифрованного архива…") }

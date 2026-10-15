@@ -32,10 +32,27 @@ struct HubBackup: Codable {
     var commandLibrary: [SavedConsoleCommand]? = nil
     var profiles: [HubProfile]? = nil
     var nmapTemplates: [NmapTemplate]? = nil
+    var topologies: [TopologyDocument]? = nil
     static let maximumBytes = 350_000_000
     func validate() throws {
         try CommandCatalog.validate(commandLibrary ?? [])
         try NmapTemplates.validate(nmapTemplates ?? [])
+        if let topologies {
+            let profileIDs = Set((profiles ?? []).map(\.id)), recordIDs = Set(records.map(\.id))
+            guard topologies.count <= 50, Set(topologies.map(\.profileID)).count == topologies.count,
+                  Set(topologies.map(\.profileID)).isSubset(of: profileIDs) else { throw ConfigError.message("Некорректные профили сетевых карт в архиве.") }
+            var mapBytes = 0
+            for map in topologies {
+                try TopologyRepository.validate(map)
+                let size = try JSONEncoder().encode(map).count; mapBytes += size
+                guard size <= TopologyRepository.maximumFileBytes, mapBytes <= 67_108_864 else { throw ConfigError.message("Сетевые карты архива превышают 64 МиБ суммарно.") }
+                guard (map.nodes.map(\.recordKey) + map.routers.map(\.recordKey)).allSatisfy({ value in
+                    guard let key = value else { return true }
+                    guard key.hasPrefix("backup:"), let id = UUID(uuidString: String(key.dropFirst(7))) else { return false }
+                    return recordIDs.contains(id)
+                }) else { throw ConfigError.message("Неизвестная запись сетевой карты в архиве.") }
+            }
+        }
         if let profiles {
             guard profiles.count <= 50, Set(profiles.map(\.id)).count == profiles.count, profiles.allSatisfy({ HubProfiles.validName($0.name) }), Set(profiles.map { $0.name.lowercased() }).count == profiles.count else { throw ConfigError.message("Некорректные профили архива.") }
             let valid = Set(profiles.map(\.id))

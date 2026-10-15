@@ -34,7 +34,8 @@ extension AliasStore {
         tabStyles = (snapshot.tabStyles ?? [:]).filter { WorkspaceTab(dragToken: $0.key) != nil && $0.value.valid }
         var valid = Set<WorkspaceTab>()
         for page in snapshot.uniqueDashboardPages where !valid.contains(.page(page.id)) {
-            guard page.section == .scanner || aliases.contains(where: { $0.favoriteID == page.key && profiles.contains($0.favoriteID) }) else { continue }
+            if page.section == .topology && pages.contains(where: { $0.section == .topology }) { continue }
+            guard page.section == .scanner || page.section == .topology || aliases.contains(where: { $0.favoriteID == page.key && profiles.contains($0.favoriteID) }) else { continue }
             pages.append(page); valid.insert(.page(page.id))
             createRecordTools(for: page)
             if page.section == .connection, let entry = entry(for: page) {
@@ -87,7 +88,7 @@ extension AliasStore {
             }
         }
     }
-    func finishWorkspace() { saveWorkspace(); endingWorkspace = true; availability.stop(); launchTasks.values.forEach { $0.cancel() }; connectionSessions.values.forEach { $0.stop() }; logModels.values.forEach { $0.stop() }; inventoryModels.values.forEach { $0.stop() }; winboxModels.values.forEach { $0.stop() } }
+    func finishWorkspace() { saveWorkspace(); endingWorkspace = true; availability.stop(); launchTasks.values.forEach { $0.cancel() }; connectionSessions.values.forEach { $0.stop() }; logModels.values.forEach { $0.stop() }; inventoryModels.values.forEach { $0.stop() }; winboxModels.values.forEach { $0.stop() }; topologyModels.values.forEach { $0.stop() } }
     func acceptTabDrop(_ token: String?, pane: WorkspacePane, before: WorkspaceTab? = nil) -> Bool {
         guard let token, let tab = WorkspaceTab(dragToken: token),
               pages.contains(where: { .page($0.id) == tab }) || ConsoleStore.shared.sessions.contains(where: { .console($0.id) == tab }) else { return false }
@@ -161,6 +162,7 @@ struct DetachedWorkspaceView: View {
                 if page.section == .sftp, let model = store.sftpModels[id] { SFTPView(model: model).id(id) }
                 else if page.section == .connection, let session = store.connectionSessions[id] { ConnectionPageView(session: session).id(id) }
                 else if page.section == .scanner { NetworkToolsView(model: store.tools, scanner: store.scanner) }
+                else if page.section == .topology, let model = store.topologyModels[id] { TopologyView(model: model).id(id) }
                 else if page.section == .logs, let model = store.logModels[id] { RecordLogsView(model: model).id(id) }
                 else if page.section == .inventory, let model = store.inventoryModels[id] { RecordInventoryView(model: model).id(id) }
                 else if page.section == .winbox, let model = store.winboxModels[id] { WinboxView(model: model).id(id) }

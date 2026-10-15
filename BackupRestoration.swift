@@ -1,15 +1,71 @@
 import Foundation
+import Darwin
 
 enum BackupRestoration {
+    static func savedTopologies(profileIDs: [UUID], repository: TopologyRepository, exportIDs: [String: UUID]) throws -> [TopologyDocument] {
+        try profileIDs.compactMap { id in
+            guard try topologyExists(repository, id) else { return nil }
+            return exportTopology(try repository.load(id), exportIDs: exportIDs)
+        }
+    }
+    static func exportTopology(_ document: TopologyDocument, exportIDs: [String: UUID]) -> TopologyDocument {
+        var copy = document
+        for index in copy.nodes.indices {
+            copy.nodes[index].recordKey = copy.nodes[index].recordKey.flatMap { exportIDs[$0] }.map { "backup:" + $0.uuidString }
+            // These IDs can embed an SSH configuration path or an old local
+            // record ID. Record association is exported explicitly instead.
+            if let id = copy.nodes[index].sourceID, id.hasPrefix("record:") || id.hasPrefix("ssh:") { copy.nodes[index].sourceID = nil }
+            copy.nodes[index].sourceAliases.removeAll { $0.hasPrefix("record:") || $0.hasPrefix("ssh:") }
+        }
+        for index in copy.routers.indices {
+            copy.routers[index].recordKey = copy.routers[index].recordKey.flatMap { exportIDs[$0] }.map { "backup:" + $0.uuidString }
+        }
+        return copy
+    }
+    private static func topologyExists(_ repository: TopologyRepository, _ profile: UUID) throws -> Bool {
+        var metadata = stat()
+        if lstat(repository.url(for: profile).path, &metadata) == 0 { return true }
+        guard errno == ENOENT else { throw TopologyError.invalidFile }; return false
+    }
+    // Profile edits stay in the caller's value copy until all files install.
+    // Even a corrupted map or a dangling symlink reserves its existing profile.
+    static func profileMapping(_ backup: HubBackup, profiles: inout HubProfiles, topology: TopologyRepository) throws -> [UUID: UUID] {
+        try backup.validate()
+        var mapping: [UUID: UUID] = [:]
+        let mapProfiles = Set((backup.topologies ?? []).map(\.profileID))
+        for source in backup.profiles ?? [] {
+            let existing = profiles.profiles.first { $0.name.caseInsensitiveCompare(source.name) == .orderedSame }
+            var target = try existing?.id ?? profiles.add(source.name)
+            if mapProfiles.contains(source.id), try topologyExists(topology, target) {
+                let suffix = " (карта из архива)", prefix = String(source.name.prefix(40 - suffix.count))
+                var candidate = prefix + suffix, counter = 2
+                while profiles.profiles.contains(where: { $0.name.caseInsensitiveCompare(candidate) == .orderedSame }) {
+                    let numbered = " (карта из архива \(counter))"; candidate = String(source.name.prefix(40 - numbered.count)) + numbered; counter += 1
+                }
+                target = try profiles.add(candidate)
+                while try topologyExists(topology, target) {
+                    profiles.profiles.removeAll { $0.id == target }
+                    target = try profiles.add(candidate)
+                }
+            }
+            mapping[source.id] = target
+        }
+        return mapping
+    }
     static func install(_ backup: HubBackup, selected: Set<UUID>, localRepository: LocalConnectionRepository,
                         documents: DocumentationRepository, commands: SavedCommandsRepository, attachments: AttachmentsRepository,
                         templates: [RecordTemplate], writeTemplates: ([RecordTemplate]) throws -> Void,
                         library: [SavedConsoleCommand] = [], writeLibrary: ([SavedConsoleCommand]) throws -> Void = { _ in },
                         nmapTemplates: [NmapTemplate] = [], writeNmapTemplates: ([NmapTemplate]) throws -> Void = { _ in },
-                        inventory: InventoryRepository? = nil, winbox: WinboxRepository? = nil) throws -> [(BackupRecord, SSHAlias)] {
+                        inventory: InventoryRepository? = nil, winbox: WinboxRepository? = nil,
+                        topology: TopologyRepository? = nil, topologyProfileMap: [UUID: UUID] = [:]) throws -> [(BackupRecord, SSHAlias)] {
         try backup.validate()
         let inventory = inventory ?? InventoryRepository(root: documents.root.deletingLastPathComponent().appendingPathComponent("Inventory"))
         let winbox = winbox ?? WinboxRepository(root: documents.root.deletingLastPathComponent().appendingPathComponent("Winbox"))
+        let topology = topology ?? TopologyRepository(root: documents.root.deletingLastPathComponent().appendingPathComponent("Topology"))
+        let mapTargets = (backup.topologies ?? []).map { topologyProfileMap[$0.profileID] ?? $0.profileID }
+        guard Set(mapTargets).count == mapTargets.count else { throw ConfigError.message("Карты архива должны восстанавливаться в разные профили.") }
+        for target in mapTargets where try topologyExists(topology, target) { throw ConfigError.message("Карта профиля уже существует. Выбери отдельный профиль для восстановления.") }
         let before = try localRepository.load()
         var after = before, installed: [URL] = []
         var metadata: [(BackupRecord, SSHAlias)] = []
@@ -26,6 +82,7 @@ enum BackupRestoration {
         }
         guard after.count <= 1000 else { throw ConfigError.message("После восстановления будет больше 1000 локальных записей.") }
         let restoredGateways = Dictionary(uniqueKeysWithValues: metadata.filter { $0.1.canSSH }.map { ($0.0.id, $0.1.favoriteID) })
+        let restoredRecordKeys = Dictionary(uniqueKeysWithValues: metadata.map { ("backup:" + $0.0.id.uuidString, $0.1.favoriteID) })
         for index in metadata.indices {
             let (value, entry) = metadata[index]
             guard value.record.transport?.tunnel != nil, let recordIndex = after.firstIndex(where: { $0.id == entry.localID }) else { continue }
@@ -78,6 +135,15 @@ enum BackupRestoration {
                     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: index.path)
                     _ = try attachments.load(entry.favoriteID)
                 }
+            }
+            for map in backup.topologies ?? [] {
+                var copy = map.remapped(profileID: topologyProfileMap[map.profileID] ?? map.profileID, recordKeys: restoredRecordKeys)
+                for index in copy.nodes.indices {
+                    if let id = copy.nodes[index].sourceID, id.hasPrefix("record:") || id.hasPrefix("ssh:") { copy.nodes[index].sourceID = nil }
+                    copy.nodes[index].sourceAliases.removeAll { $0.hasPrefix("record:") || $0.hasPrefix("ssh:") }
+                }
+                try topology.write(copy, overwrite: false)
+                installed.append(topology.url(for: copy.profileID))
             }
             try writeTemplates(newTemplates)
             try writeLibrary(newLibrary)

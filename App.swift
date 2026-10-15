@@ -33,6 +33,7 @@ import ConsoleSupport
     var logModels: [UUID: RecordLogsModel] = [:]
     var inventoryModels: [UUID: InventoryModel] = [:]
     var winboxModels: [UUID: WinboxModel] = [:]
+    var topologyModels: [UUID: TopologyModel] = [:]
     var launchTasks: [UUID: Task<Void, Never>] = [:]
     @Published var selectedPage: UUID?
     let scanner = NmapModel()
@@ -259,6 +260,7 @@ import ConsoleSupport
         savedCommands.copy(from: from.favoriteID, to: to.favoriteID)
         copyRecordTools(from: from.favoriteID, to: to.favoriteID)
         moveWinboxGateway(from: from.favoriteID, to: to.favoriteID)
+        moveTopologyRecord(from: from.favoriteID, to: to.favoriteID)
         do { try attachmentsRepository.copy(from: from.favoriteID, to: to.favoriteID) } catch { self.error = error.localizedDescription }
     }
     func edit(_ entry: SSHAlias) {
@@ -481,6 +483,7 @@ import ConsoleSupport
                     Button("Инструменты…") { store.openScanner() }
                     Button("Библиотека команд…") { store.showingCommandLibrary = true }
                     Button("Статус доступности…") { store.showingAvailability = true }
+                    Button("Сетевая карта…") { store.openTopology() }
                     Button("Быстрое подключение…") { QuickAccessController.shared.show() }.keyboardShortcut("p", modifiers: [.command, .shift])
                     Button("Обновить список") { store.reload() }.keyboardShortcut("r", modifiers: .command)
                     Button("Создать SSH-ключ…") { store.generatingKey = true }.keyboardShortcut("k", modifiers: [.command, .shift])
@@ -521,11 +524,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ToolkitSession.stopAll()
         RecordLogsModel.stopAll()
         InventoryModel.stopAll()
+        TopologyModel.stopAll()
         let tunnels = TunnelManager.shared
-        guard tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations else { return .terminateNow }
+        guard tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending else { return .terminateNow }
         tunnels.stopAll()
         UpdateTermination.finishAfterCleanup(sender) {
-            tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations
+            tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending
         }
         return .terminateLater
     }
@@ -714,6 +718,11 @@ struct MainView: View {
                 .frame(width: 40, height: 28).background(Color.primary.opacity(0.07), in: Capsule())
                         .help("Фильтр: " + filterTitle).accessibilityLabel("Фильтр подключений").accessibilityValue(filterTitle)
                 }.padding(.horizontal, 14).padding(.bottom, 10)
+                Button { store.openTopology() } label: {
+                    HStack(spacing:9) { Image(systemName:"point.3.connected.trianglepath.dotted"); Text("Сетевая карта"); Spacer() }
+                        .padding(.horizontal,12).frame(height:30)
+                        .background(store.pages.contains(where: { $0.section == .topology && store.workspace.active == .page($0.id) }) ? Color.accentColor.opacity(0.2) : .clear,in:RoundedRectangle(cornerRadius:7))
+                }.buttonStyle(.plain).padding(.horizontal,10).padding(.bottom,5)
                 ConnectionTreeView().environmentObject(store)
                 Divider()
                 HStack {
@@ -747,6 +756,7 @@ struct MainView: View {
                         Button("Статус доступности…", systemImage: "waveform.path.ecg") { store.showingAvailability = true }
                         Divider()
                         Button("Инструменты…", systemImage: "network") { store.openScanner() }
+                        Button("Сетевая карта…", systemImage: "point.3.connected.trianglepath.dotted") { store.openTopology() }
                         Divider()
                         Button("Создать SSH-ключ…", systemImage: "key.fill") { store.generatingKey = true }
                         Button("SSH-ключи…", systemImage: "key.horizontal") { store.showingKeys = true }
@@ -862,6 +872,7 @@ struct AliasDetail: View {
                         tile("Логи", detail: "Захват, поиск и анализ", icon: "text.alignleft") { store.openPage(entry, section: .logs) }
                     }
                     tile("Инвентаризация", detail: "Оборудование и сведения", icon: "shippingbox") { store.openPage(entry, section: .inventory) }
+                    tile("Сетевая карта", detail: "LAN, WAN, VPN и порты", icon: "point.3.connected.trianglepath.dotted") { store.openTopology(entry) }
                     tile("Документация", detail: "Заметки и инструкции", icon: "doc.richtext") { store.showDocumentation(entry) }
                     tile("Вложения", detail: "Файлы записи", icon: "paperclip") { store.showAttachments(entry) }
                     tile("Инструменты", detail: "Nmap, DNS, порты, TLS и IP", icon: "network") { store.openScanner(entry) }

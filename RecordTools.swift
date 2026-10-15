@@ -3,6 +3,11 @@ import SwiftUI
 extension AliasStore {
     // Restoring or opening a descriptor creates state, never a connection/capture.
     func createRecordTools(for page: EntryPage) {
+        if page.section == .topology {
+            if topologyModels[page.id] == nil { topologyModels[page.id] = TopologyModel(profileID: profiles.active, config: config.url) }
+            topologyModels[page.id]?.entries = profileEntries
+            return
+        }
         guard let entry = entry(for: page) else { return }
         switch page.section {
         case .logs:
@@ -23,6 +28,10 @@ extension AliasStore {
         } catch { self.error = "Не удалось скопировать инвентаризацию или настройки WinBox: " + error.localizedDescription }
     }
     func refreshRecordTools() {
+        topologyModels.values.forEach { model in
+            if model.entries.map(\.id) != profileEntries.map(\.id) || model.entries.map(\.options) != profileEntries.map(\.options) { model.stop() }
+            model.entries = profileEntries
+        }
         func changed(_ old: SSHAlias, _ new: SSHAlias) -> Bool {
             old.favoriteID != new.favoriteID || old.recordKind != new.recordKind || old.host != new.host || old.user != new.user || old.port != new.port || old.options != new.options || old.transport != new.transport
         }
@@ -45,6 +54,33 @@ extension AliasStore {
             }
             createRecordTools(for: page)
         }
+    }
+    func openTopology(_ entry:SSHAlias? = nil) {
+        openPage(nil, section: .topology)
+        if let entry, let page = pages.first(where: { $0.section == .topology }), let model = topologyModels[page.id] {
+            if !model.document.nodes.contains(where: { $0.recordKey == entry.favoriteID }) { model.addRecords([(entry,title(entry))]) }
+            model.selectedNode = model.document.nodes.first(where: { $0.recordKey == entry.favoriteID })?.id
+        }
+    }
+    func moveTopologyRecord(from old: String, to new: String) {
+        guard old != new else { return }
+        let repository = TopologyRepository(config:config.url)
+        topologyModels.values.forEach { $0.stop() }
+        do {
+            for var document in try repository.list() {
+                var changed = false
+                for index in document.nodes.indices where document.nodes[index].recordKey == old { document.nodes[index].recordKey = new; changed = true }
+                for index in document.routers.indices where document.routers[index].recordKey == old { document.routers[index].recordKey = new; changed = true }
+                for index in document.nodes.indices {
+                    func remap(_ value:String)->String { for prefix in ["record:","ssh:"] where value == prefix + old { return prefix + new }; return value }
+                    if let source = document.nodes[index].sourceID { let target = remap(source); if target != source { document.nodes[index].sourceID = target; changed = true } }
+                    let aliases = document.nodes[index].sourceAliases.map(remap)
+                    if aliases != document.nodes[index].sourceAliases { document.nodes[index].sourceAliases = aliases; changed = true }
+                }
+                if changed { try repository.write(document) }
+            }
+            topologyModels.values.forEach { $0.reloadAfterStop() }
+        } catch { self.error = "Не удалось обновить привязку карты: " + error.localizedDescription }
     }
     func moveWinboxGateway(from old: String, to new: String) {
         guard old != new else { return }

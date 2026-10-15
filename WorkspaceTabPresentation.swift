@@ -48,6 +48,7 @@ extension AliasStore {
         return tabInformation(entry: entry, title: title, kind: kind, state: pageTabState(page))
     }
     func pageTabState(_ page: EntryPage) -> String {
+        if let model = topologyModels[page.id] { return model.busy ? model.notice : "Устройств: \(model.document.nodes.count) · \(profileName)" }
         if let model = logModels[page.id] { return model.status }
         if let model = inventoryModels[page.id] { return model.busy ? "Сбор сведений…" : "Инвентаризация" }
         if let model = winboxModels[page.id] { return model.error ?? model.status }
@@ -62,6 +63,7 @@ extension AliasStore {
     }
     func pageTabChanges(_ page: EntryPage) -> AnyPublisher<Void, Never> {
         var sources: [AnyPublisher<Void, Never>] = []
+        if let model = topologyModels[page.id] { sources.append(model.objectWillChange.eraseToAnyPublisher()) }
         if let model = logModels[page.id] { sources.append(model.objectWillChange.eraseToAnyPublisher()) }
         if let model = inventoryModels[page.id] { sources.append(model.objectWillChange.eraseToAnyPublisher()) }
         if let model = winboxModels[page.id] { sources.append(model.objectWillChange.eraseToAnyPublisher()) }
