@@ -22,7 +22,9 @@ struct TopologyView: View {
     @State private var discovering = false
     @State private var integration = false
     @State private var routerEditing: TopologyRouterSettings?
-    @State private var compactInspector = false
+    @State private var inspectorVisible = false
+    @State private var inspectedNodeID: UUID?
+    @State private var inspectedLinkID: UUID?
     @State private var deletingNode: UUID?
     @State private var deletingLink: UUID?
     @State private var managingMaps = false
@@ -40,10 +42,18 @@ struct TopologyView: View {
                 if !model.loadSucceeded {
                     ContentUnavailableView { Label("Карта не прочитана", systemImage: "exclamationmark.triangle") } description: { Text(model.error ?? "Существующий файл сохранён.") } actions: { Button("Повторить чтение") { model.reload() } }
                 } else {
-                    HStack(spacing: 0) {
-                        TopologyCanvas(model: model, timeRevision:clockRevision, edit: { editingNode = $0 }, remove: { deletingNode = $0 }, addLink: newLink, open: openRecord, create: { creatingRecord = $0 }, connect: { from, to in editingLink = TopologyLink(from: from, to: to) }, editGroup: { groupEditing = $0 })
-                        if viewport.size.width >= 950, model.selected != nil || model.link != nil {
-                            Divider(); inspector.frame(width: 300)
+                    ZStack(alignment: .trailing) {
+                        HStack(spacing: 0) {
+                            TopologyCanvas(model: model, timeRevision:clockRevision, edit: { editingNode = $0 }, remove: { deletingNode = $0 }, addLink: newLink, open: openRecord, create: { creatingRecord = $0 }, connect: { from, to in editingLink = TopologyLink(from: from, to: to) }, editGroup: { groupEditing = $0 })
+                            if inspectorVisible, viewport.size.width >= 720 {
+                                Divider(); inspectorPanel.frame(width: min(320, viewport.size.width * 0.4))
+                            }
+                        }
+                        if inspectorVisible, viewport.size.width < 720 {
+                            inspectorPanel.frame(width: min(320, max(240, viewport.size.width - 24)))
+                                .background(Color(nsColor: .windowBackgroundColor))
+                                .overlay(alignment: .leading) { Divider() }
+                                .shadow(color: .black.opacity(0.2), radius: 10, x: -3)
                         }
                     }.frame(maxHeight: .infinity)
                 }
@@ -52,7 +62,6 @@ struct TopologyView: View {
                     if model.busy { ProgressView().controlSize(.small); Button("Остановить") { model.stop() } }
                     Text(model.error ?? model.notice).font(.caption).foregroundStyle(model.error == nil ? Color.secondary : .red).lineLimit(2).textSelection(.enabled)
                     Spacer(minLength: 0)
-                    if viewport.size.width < 950 { Button("Сведения", systemImage: "sidebar.right") { compactInspector = true }.disabled(model.selected == nil && model.link == nil) }
                 }.padding(.horizontal, 12).frame(minHeight: 34)
             }.frame(width: viewport.size.width, height: viewport.size.height).clipped()
         }
@@ -65,7 +74,6 @@ struct TopologyView: View {
         .sheet(isPresented: $discovering) { TopologyDiscoveryView(model: model) }
         .sheet(isPresented: $integration) { TopologyUniFiView(model: model) }
         .sheet(item: $routerEditing) { settings in TopologyRouterView(model:model,settings:settings) }
-        .sheet(isPresented: $compactInspector) { VStack { inspector; HStack { Spacer(); Button("Готово") { compactInspector = false } }.padding() }.frame(width: 420, height: 570).dismissOnOutsideClick() }
         .confirmationDialog("Удалить устройство и его связи с карты?", isPresented: Binding(get: { deletingNode != nil }, set: { if !$0 { deletingNode = nil } })) {
             Button("Удалить с карты", role: .destructive) { if let id = deletingNode { model.removeNode(id) }; deletingNode = nil }
             Button("Отмена", role: .cancel) { deletingNode = nil }
@@ -74,7 +82,9 @@ struct TopologyView: View {
             Button("Удалить связь", role: .destructive) { if let id = deletingLink { model.removeLink(id) }; deletingLink = nil }
             Button("Отмена", role: .cancel) { deletingLink = nil }
         }
-        .onAppear { store.reloadTopologyMapIndex() }
+        .onAppear { store.reloadTopologyMapIndex(); rememberInspection() }
+        .onChange(of: model.selectedNode) { _, id in if let id { inspectedNodeID = id; inspectedLinkID = nil } }
+        .onChange(of: model.selectedLink) { _, id in if let id { inspectedLinkID = id; inspectedNodeID = nil } }
         .onReceive(Timer.publish(every:15,on:.main,in:.common).autoconnect()) { _ in clockRevision &+= 1 }
     }
     @ViewBuilder private func toolbar(width: CGFloat) -> some View {
@@ -120,6 +130,12 @@ struct TopologyView: View {
                 Label("\(model.document.nodes.filter { model.availability($0) == .offline }.count)", systemImage: "circle.fill").foregroundStyle(.red)
                 Label("\(model.document.nodes.filter { model.availability($0) == .unknown }.count)", systemImage: "questionmark.circle").foregroundStyle(.secondary)
                 Text("\(model.filteredNodes.count) / \(model.document.nodes.count)").foregroundStyle(.secondary)
+                Button {
+                    rememberInspection(); inspectorVisible.toggle()
+                } label: { Label("Сведения", systemImage: "sidebar.right") }
+                    .help(inspectorVisible ? "Скрыть сведения карты" : "Показать сведения карты")
+                    .accessibilityLabel(inspectorVisible ? "Скрыть сведения карты" : "Показать сведения карты")
+                    .tint(inspectorVisible ? .accentColor : .secondary)
             }.font(.caption)
         }.padding(10)
     }
@@ -149,16 +165,32 @@ struct TopologyView: View {
         editingLink = TopologyLink(from: source, to: target)
     }
     private func openRecord(_ node: TopologyNode) { if let entry = store.profileEntries.first(where: { $0.favoriteID == node.recordKey }) { store.showDashboard(entry) } }
-    private var inspector: some View { TopologyInspector(model: model, timeRevision:clockRevision, editNode: { node in
-        if compactInspector { compactInspector = false; DispatchQueue.main.asyncAfter(deadline:.now()+0.2) { editingNode = node } } else { editingNode = node }
-    }, editLink: { link in
-        if compactInspector { compactInspector = false; DispatchQueue.main.asyncAfter(deadline:.now()+0.2) { editingLink = link } } else { editingLink = link }
-    }, deleteLink: { id in compactInspector = false; deletingLink = id }, create: { node in compactInspector = false; DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { creatingRecord = node } }, open: { node in compactInspector = false; openRecord(node) }) }
+    private func rememberInspection() {
+        if let id = model.selectedNode { inspectedNodeID = id; inspectedLinkID = nil }
+        else if let id = model.selectedLink { inspectedLinkID = id; inspectedNodeID = nil }
+    }
+    private var inspectorPanel: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Label("Сведения", systemImage: "sidebar.right").font(.headline)
+                Spacer()
+                Button { inspectorVisible = false } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.plain).help("Скрыть сведения карты").accessibilityLabel("Скрыть сведения карты")
+            }.padding(12)
+            Divider()
+            inspector
+        }.background(Color(nsColor: .windowBackgroundColor))
+    }
+    private var inspector: some View { TopologyInspector(model: model, nodeID: inspectedNodeID, linkID: inspectedLinkID, timeRevision:clockRevision,
+        editNode: { editingNode = $0 }, editLink: { editingLink = $0 }, deleteLink: { deletingLink = $0 },
+        create: { creatingRecord = $0 }, open: openRecord) }
 }
 
 private struct TopologyInspector: View {
     @ObservedObject var model: TopologyModel
     @EnvironmentObject var store: AliasStore
+    let nodeID: UUID?
+    let linkID: UUID?
     let timeRevision: Int
     var editNode: (TopologyNode)->Void
     var editLink: (TopologyLink)->Void
@@ -166,15 +198,22 @@ private struct TopologyInspector: View {
     var create: (TopologyNode)->Void
     var open: (TopologyNode)->Void
     @State private var section = "Обзор"
+    @State private var providerWebsite: TopologyProviderWebsiteTarget?
     var body: some View {
         let _ = timeRevision
         ScrollView {
             LazyVStack(alignment:.leading,spacing:14) {
-                if let node = model.selected {
-                    HStack { Image(systemName:node.displayKind.icon).font(.title); VStack(alignment:.leading) { Text(node.displayName).font(.headline); Label(model.availability(node).title,systemImage:"circle.fill").font(.caption).foregroundStyle(model.availability(node).color) }; Spacer(); Button { editNode(node) } label: { Image(systemName:"pencil") }.help("Редактировать устройство") }
+                if let node = model.document.nodes.first(where: { $0.id == nodeID }) {
+                    HStack { TopologyNodeIcon(node: node, size: 28); VStack(alignment:.leading) { Text(node.displayName).font(.headline); Label(model.availability(node).title,systemImage:"circle.fill").font(.caption).foregroundStyle(model.availability(node).color) }; Spacer(); Button { editNode(node) } label: { Image(systemName:"pencil") }.help("Редактировать устройство") }
                     Picker("Раздел",selection:$section) { ForEach(["Обзор","Порты","WAN","VPN","Сервисы"],id:\.self) { Text($0) } }.pickerStyle(.menu)
                     if section == "Обзор" {
                         row("Тип",node.displayKind.title); row("Адрес",node.displayAddress); row("Источник",node.observed?.source.title ?? "Вручную")
+                        if [.switchDevice, .gateway, .accessPoint].contains(node.displayKind) { TopologyPortsSummary(node: node) }
+                        if node.displayKind == .internet {
+                            ForEach(Array(node.providerIdentities.enumerated()), id: \.offset) { _, identity in providerRows(identity, nodeID: node.id) }
+                            Button("Определить ASN и иконку") { model.lookupProvider(node.id) }.disabled(model.busy || model.providerAddress(for: node.id) == nil)
+                            hint("Публичный WAN IP передаётся в RIPEstat; сведения сайта и иконка запрашиваются у 2ip.io по ASN. Частные адреса не отправляются. Ручное название сохраняется.")
+                        }
                         if let info = node.observed?.deviceInfo {
                             if let facts = node.observed {
                                 let time = facts.deviceInfoAt ?? facts.collectedAt
@@ -238,7 +277,7 @@ private struct TopologyInspector: View {
                     }
                     TopologyQuickActions(node: node, create: { create(node) }).environmentObject(store)
                     if node.recordKey != nil { Button("Открыть запись") { open(node) } } else { Button("Создать запись…", systemImage: "plus.rectangle.on.rectangle") { create(node) }.disabled(model.busy) }
-                } else if let link = model.link {
+                } else if let link = model.document.links.first(where: { $0.id == linkID }) {
                     Text(link.name.isEmpty ? link.kind.title : link.name).font(.headline)
                     row("От",model.document.nodes.first { $0.id == link.from }?.displayName ?? "—"); row("К",model.document.nodes.first { $0.id == link.to }?.displayName ?? "—")
                     row("Порт от",link.fromPort); row("Порт к",link.toPort); row("Скорость линка",TopologyFormat.speed(link.speedMbps)); row("VLAN",link.vlan); if link.kind == .vpn { row("VPN",link.vpnTechnology) }; row("Источник",link.source.title); row("Топология",link.confirmed ? "Подтверждена" : "Требует проверки")
@@ -253,6 +292,8 @@ private struct TopologyInspector: View {
                 } else { hint("Выбери устройство или связь на карте.") }
             }.padding(14).frame(maxWidth:.infinity,alignment:.leading)
         }.background(.bar)
+            .onChange(of: nodeID) { _, _ in section = "Обзор" }
+            .sheet(item: $providerWebsite) { target in TopologyProviderWebsiteView(model: model, target: target) }
     }
     private func row(_ title:String,_ value:String)->some View { HStack(alignment:.top) { Text(title).foregroundStyle(.secondary); Spacer(minLength:10); Text(value.isEmpty ? "—" : value).multilineTextAlignment(.trailing).textSelection(.enabled) }.font(.caption) }
     private func hint(_ value:String)->some View { Text(value).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true) }
@@ -270,12 +311,52 @@ private struct TopologyInspector: View {
             }
             Button("Определить владельца IP / провайдера") { model.lookupWAN(node.id, wan: wan) }.disabled(model.busy)
             hint("По кнопке IP отправляется в публичный реестр RDAP. Владелец диапазона может отличаться от бренда провайдера. Ручное имя не заменяется.")
+            if let identity = node.providerIdentities.first(where: { $0.address == address }) { providerRows(identity, nodeID: node.id) }
+            Button("Определить ASN и иконку") { model.lookupProvider(node.id, address: address) }.disabled(model.busy)
+            hint("Публичный IP передаётся в RIPEstat. Страница 2ip.io и сайт провайдера используются для загрузки иконки по ASN; если она недоступна, сохраняются доступные сведения.")
         } else if !wan.address.isEmpty { hint("Частный WAN за NAT: владельца адреса нельзя определить через публичный реестр.") }
+    }
+    private func providerRows(_ identity: TopologyProviderIdentity, nodeID: UUID) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack { TopologyProviderLogo(identity: identity); Text(identity.organization.isEmpty ? "AS" + identity.asn : identity.organization).font(.headline) }
+            row("ASN", "AS" + identity.asn); row("Публичный IP", identity.address)
+            if let website = URL(string: identity.website), website.scheme == "https" { Link("Сайт провайдера", destination: website).font(.caption) }
+            if let source = URL(string: identity.sourceURL), source.scheme == "https" { Link("Источник сведений ASN", destination: source).font(.caption) }
+            if let page = URL(string: "https://2ip.io/ru/as/" + identity.asn + "/") { Link("Страница ASN на 2ip.io", destination: page).font(.caption) }
+            if let source = identity.iconSourceURL.flatMap(URL.init(string:)), source.scheme == "https" { Link("Источник иконки", destination: source).font(.caption) }
+            if identity.iconPNG == nil { hint("Иконка пока не получена. Можно повторить запрос.") }
+            Button("Указать сайт и загрузить иконку…") { providerWebsite = TopologyProviderWebsiteTarget(nodeID: nodeID, identity: identity) }.disabled(model.busy)
+            row("Получено", identity.date.formatted(date: .abbreviated, time: .shortened))
+        }.padding(10).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
     }
     @ViewBuilder private func connected(_ node:TopologyNode,vpnOnly:Bool=false)->some View {
         let links = model.document.links.filter { ($0.from == node.id || $0.to == node.id) && (!vpnOnly || $0.kind == .vpn) }
         if links.isEmpty { hint(vpnOnly ? "VPN-связей пока нет." : "Связей пока нет.") }
         ForEach(links) { link in Button { model.selectedLink = link.id; model.selectedNode = nil } label: { HStack { Capsule().fill(link.kind.color).frame(width:15,height:3); Text(link.name.isEmpty ? link.kind.title : link.name); Spacer(); Text(TopologyFormat.speed(link.speedMbps)).foregroundStyle(.secondary) } }.buttonStyle(.plain).font(.caption) }
+    }
+}
+
+private struct TopologyProviderWebsiteTarget: Identifiable {
+    var nodeID: UUID
+    var identity: TopologyProviderIdentity
+    var id: String { nodeID.uuidString + ":" + identity.address }
+}
+private struct TopologyProviderWebsiteView: View {
+    @ObservedObject var model: TopologyModel
+    let target: TopologyProviderWebsiteTarget
+    @Environment(\.dismiss) private var dismiss
+    @State private var website = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Иконка провайдера · AS" + target.identity.asn).font(.title2).bold()
+            TextField("https://сайт-провайдера", text: $website).textFieldStyle(.roundedBorder)
+            Text("Если 2ip.io недоступен, укажи официальный HTTPS-сайт провайдера. Приложение загрузит только объявленную сайтом иконку. ASN, ручное название и параметры WAN сохранятся.").font(.caption).foregroundStyle(.secondary)
+            HStack { Spacer(); Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Загрузить иконку") { model.lookupProviderIcon(target.nodeID, address: target.identity.address, website: website); dismiss() }
+                    .keyboardShortcut(.defaultAction).disabled(model.busy || TopologyProviderLookup.validatedURL(website) == nil)
+            }
+        }.padding(20).frame(width: 480).dismissOnOutsideClick()
+            .onAppear { website = target.identity.website }
     }
 }
 

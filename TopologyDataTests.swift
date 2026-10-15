@@ -9,7 +9,7 @@ import Darwin
         do { try body(); fatalError("Topology accepted " + message) } catch {}
     }
     static func main() throws {
-        try compatibility(); try merging(); try validation(); try layout(); try mapEnhancements(); try observationHistory(); try controllerReconciliation(); try multipleMaps(); try repository()
+        try compatibility(); try merging(); try validation(); try layout(); try mapEnhancements(); try groupPresentation(); try providerIdentity(); try observationHistory(); try controllerReconciliation(); try multipleMaps(); try repository()
         print("Topology data tests passed: compatibility, identity, manual preservation, layout, private atomic storage")
     }
     static func compatibility() throws {
@@ -18,7 +18,7 @@ import Darwin
         let document = try JSONDecoder().decode(TopologyDocument.self, from: minimal)
         expect(document.id == profile && document.name == "Основная карта", "legacy map identity and name defaults")
         expect(document.profileID == profile && document.nodes.count == 1 && document.links.isEmpty && document.unifi == nil && document.routers.isEmpty, "missing document defaults")
-        expect(document.nodes[0].kind == .other && document.nodes[0].x == 0 && document.nodes[0].observed == nil && document.nodes[0].manualWAN == nil && document.nodes[0].checkPort == nil, "missing node defaults")
+        expect(document.nodes[0].kind == .other && document.nodes[0].x == 0 && document.nodes[0].observed == nil && document.nodes[0].manualWAN == nil && document.nodes[0].checkPort == nil && document.nodes[0].providerIdentities.isEmpty, "missing node defaults")
         let facts = try JSONDecoder().decode(TopologyFacts.self, from: Data("{}".utf8))
         expect(facts.availability == .unknown && facts.services.isEmpty && facts.wans.isEmpty && facts.wanAt == nil && facts.interfacesSource == nil && facts.collectedAt.timeIntervalSince1970 == 0, "old facts unknown rather than current")
         let link = try JSONDecoder().decode(TopologyLink.self, from: Data("{\"id\":\"\(UUID())\",\"from\":\"\(id)\",\"to\":\"\(UUID())\"}".utf8))
@@ -259,7 +259,63 @@ import Darwin
         try TopologyRepository.validate(document)
         expect(try JSONDecoder().decode(TopologyDocument.self, from: JSONEncoder().encode(document)) == document, "group pin provenance roundtrip")
         let legacyGroup = try JSONDecoder().decode(TopologyGroup.self, from: Data("{\"id\":\"\(UUID())\"}".utf8))
-        expect(legacyGroup.width == 420 && !legacyGroup.collapsed, "group defaults")
+        expect(legacyGroup.width == 420 && !legacyGroup.collapsed && legacyGroup.anchorNodeID == nil, "group defaults")
+    }
+    static func groupPresentation() throws {
+        var group = TopologyGroup(name: "Gazebo", collapsed: true)
+        let parent = TopologyNode(name: "Core", kind: .switchDevice)
+        let sw = TopologyNode(name: "Flex", kind: .switchDevice, groupID: group.id)
+        let ap = TopologyNode(name: "Radio", kind: .accessPoint, groupID: group.id)
+        let camera = TopologyNode(name: "Camera", kind: .client, groupID: group.id)
+        var map = TopologyDocument(profileID: UUID(), nodes: [parent, camera, ap, sw], groups: [group])
+        expect(TopologyGroupPresentation.representative(for: group, in: map)?.id == sw.id, "collapsed legacy area represents its actual unique switch")
+        let secondSwitch = TopologyNode(name: "Second switch", kind: .switchDevice, groupID: group.id)
+        map.nodes.append(secondSwitch)
+        expect(TopologyGroupPresentation.representative(for: group, in: map) == nil, "ambiguous region cannot invent a root switch")
+        map.links = [TopologyLink(from: parent.id, to: sw.id, kind: .lan), TopologyLink(from: sw.id, to: secondSwitch.id)]
+        expect(TopologyGroupPresentation.representative(for: group, in: map)?.id == sw.id, "known external uplink identifies root switch")
+        map.links[0].kind = .vpn
+        expect(TopologyGroupPresentation.representative(for: group, in: map) == nil, "VPN does not identify physical root")
+        group.anchorNodeID = ap.id; map.groups = [group]
+        expect(TopologyGroupPresentation.representative(for: group, in: map)?.id == ap.id, "explicit representative can be a different existing member")
+        try TopologyRepository.validate(map)
+        let decoded = try JSONDecoder().decode(TopologyDocument.self, from: JSONEncoder().encode(map))
+        expect(decoded == map && decoded.groups[0].anchorNodeID == ap.id, "region anchor roundtrip preserves stable node reference")
+        var invalid = map; invalid.groups[0].anchorNodeID = UUID()
+        rejects("missing group anchor") { try TopologyRepository.validate(invalid) }
+        invalid.groups[0].anchorNodeID = parent.id
+        rejects("anchor outside own group") { try TopologyRepository.validate(invalid) }
+        map.nodes = [camera, ap]
+        group.anchorNodeID = nil
+        expect(TopologyGroupPresentation.representative(for: group, in: map)?.id == ap.id, "unique access point fallback")
+        map.nodes = [camera, TopologyNode(name: "Other camera", kind: .client, groupID: group.id)]
+        expect(TopologyGroupPresentation.representative(for: group, in: map) == nil, "manual multi-client area remains a visual region")
+    }
+    static func providerIdentity() throws {
+        let icon = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z3lUAAAAASUVORK5CYII=")!
+        let identity = TopologyProviderIdentity(address: "198.51.100.1", asn: "64500", organization: "Fixture ISP", website: "https://isp.example.test", sourceURL: "https://2ip.io/198.51.100.1/", date: Date(timeIntervalSince1970: 100), iconPNG: icon, iconSourceURL: "https://isp.example.test/favicon.png")
+        let node = TopologyNode(name: "Fixture ISP", kind: .internet, providerIdentities: [identity])
+        let map = TopologyDocument(profileID: UUID(), nodes: [node])
+        try TopologyRepository.validate(map)
+        expect(try JSONDecoder().decode(TopologyDocument.self, from: JSONEncoder().encode(map)) == map, "bounded provider metadata and icon roundtrip")
+        func invalid(_ message: String, _ change: (inout TopologyProviderIdentity) -> Void) {
+            var copy = map; change(&copy.nodes[0].providerIdentities[0]); rejects(message) { try TopologyRepository.validate(copy) }
+        }
+        invalid("zero ASN") { $0.asn = "0" }
+        invalid("overflow ASN") { $0.asn = "4294967296" }
+        invalid("noncanonical ASN") { $0.asn = "064500" }
+        invalid("non-IP provider address") { $0.address = "isp.example.test" }
+        invalid("credential in provider source") { $0.sourceURL = "https://user:password@2ip.io/" }
+        invalid("insecure provider website") { $0.website = "http://isp.example.test" }
+        invalid("provider icon format") { $0.iconPNG = Data("<svg/>".utf8) }
+        invalid("provider icon bytes") { $0.iconPNG = Data(repeating: 0, count: 65_537) }
+        invalid("provider icon dimensions") { $0.iconPNG?[19] = 129 }
+        invalid("invalid icon source") { $0.iconSourceURL = "data:image/png;base64,fixture" }
+        invalid("provider date") { $0.date = Date(timeIntervalSince1970: .infinity) }
+        var duplicate = map; duplicate.nodes[0].providerIdentities.append(identity)
+        rejects("duplicate provider address") { try TopologyRepository.validate(duplicate) }
+        duplicate.nodes[0].providerIdentities = (0..<17).map { index in var copy = identity; copy.address = "198.51.100.\(index + 1)"; return copy }
+        rejects("provider count") { try TopologyRepository.validate(duplicate) }
     }
     static func controllerReconciliation() throws {
         let time = Date(timeIntervalSince1970: 20000), scope = "unifi:fixture-controller:fixture-site"

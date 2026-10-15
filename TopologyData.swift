@@ -157,6 +157,26 @@ struct TopologyWANRegistration: Codable, Equatable {
     var sourceURL: String
     var date: Date
 }
+struct TopologyProviderIdentity: Codable, Equatable {
+    var address: String
+    var asn: String
+    var organization: String
+    var website: String
+    var sourceURL: String
+    var date: Date
+    var iconPNG: Data? = nil
+    var iconSourceURL: String? = nil
+
+    static func validIconPNG(_ data: Data) -> Bool {
+        guard (33...65_536).contains(data.count) else { return false }
+        let bytes = [UInt8](data.prefix(33))
+        guard Array(bytes[0..<8]) == [137, 80, 78, 71, 13, 10, 26, 10],
+              Array(bytes[8..<12]) == [0, 0, 0, 13], Array(bytes[12..<16]) == [73, 72, 68, 82] else { return false }
+        func integer(_ offset: Int) -> UInt32 { bytes[offset..<offset + 4].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) } }
+        let width = integer(16), height = integer(20)
+        return (1...128).contains(width) && (1...128).contains(height) && bytes[26] == 0 && bytes[27] == 0 && bytes[28] <= 1
+    }
+}
 struct TopologyStatusSample: Codable, Equatable {
     var value: TopologyAvailability
     var date: Date
@@ -208,6 +228,7 @@ struct TopologyNode: Codable, Equatable, Identifiable {
     var manualWANs: [TopologyWAN] = []
     var manualClientInfo: TopologyClientInfo?
     var wanRegistrations: [TopologyWANRegistration] = []
+    var providerIdentities: [TopologyProviderIdentity] = []
     var positionPinned = false
     var groupID: UUID?
     var clientInfo: TopologyClientInfo {
@@ -288,6 +309,38 @@ struct TopologyGroup: Codable, Equatable, Identifiable {
     var width: Double = 420
     var height: Double = 280
     var collapsed = false
+    // The device shown when this visual region is collapsed. This is a
+    // presentation choice, not a new physical link or inferred device.
+    var anchorNodeID: UUID?
+}
+
+enum TopologyGroupPresentation {
+    static let collapsedWidth = 252.0
+    static let collapsedHeight = 170.0
+    static let collapsedRegionHeight = 78.0
+    static func height(for group: TopologyGroup, in document: TopologyDocument) -> Double {
+        representative(for: group, in: document) == nil ? collapsedRegionHeight : collapsedHeight
+    }
+    static func representative(for group: TopologyGroup, in document: TopologyDocument) -> TopologyNode? {
+        let members = document.nodes.filter { $0.groupID == group.id }
+        if let anchor = group.anchorNodeID { return members.first { $0.id == anchor } }
+        let ids = Set(members.map(\.id))
+        let switches = members.filter { $0.displayKind == .switchDevice }
+        let upstream = switches.filter { node in
+            document.links.contains { $0.to == node.id && !ids.contains($0.from) && ($0.kind == .lan || $0.kind == .wan) }
+        }
+        if upstream.count == 1 { return upstream[0] }
+        if switches.count == 1 { return switches[0] }
+        // Ambiguous switch regions keep their normal region appearance. Never
+        // make a random client look like the root of a larger physical network.
+        if !switches.isEmpty { return nil }
+        for kind: TopologyNodeKind in [.gateway, .accessPoint] {
+            let candidates = members.filter { $0.displayKind == kind }
+            if candidates.count == 1 { return candidates[0] }
+            if !candidates.isEmpty { return nil }
+        }
+        return members.count == 1 ? members[0] : nil
+    }
 }
 enum TopologyEventKind: String, Codable, CaseIterable {
     case discovered, address, status, linkAdded, linkRemoved, linkPorts, linkSpeed, wanState
@@ -420,11 +473,12 @@ extension TopologyRadio {
     }
 }
 extension TopologyGroup {
-    private enum CodingKeys: String, CodingKey { case id, name, color, x, y, width, height, collapsed }
+    private enum CodingKeys: String, CodingKey { case id, name, color, x, y, width, height, collapsed, anchorNodeID }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id); name = try c.value(.name, ""); color = try c.value(.color, "blue")
         x = try c.value(.x, 0); y = try c.value(.y, 0); width = try c.value(.width, 420); height = try c.value(.height, 280); collapsed = try c.value(.collapsed, false)
+        anchorNodeID = try c.decodeIfPresent(UUID.self, forKey: .anchorNodeID)
     }
 }
 extension TopologyLinkObservation {
@@ -454,7 +508,7 @@ extension TopologyFacts {
     }
 }
 extension TopologyNode {
-    private enum CodingKeys: String, CodingKey { case id, recordKey, sourceID, name, address, kind, x, y, notes, observed, manualWAN, checkPort, sourceAliases, manualWANs, manualClientInfo, wanRegistrations, positionPinned, groupID }
+    private enum CodingKeys: String, CodingKey { case id, recordKey, sourceID, name, address, kind, x, y, notes, observed, manualWAN, checkPort, sourceAliases, manualWANs, manualClientInfo, wanRegistrations, providerIdentities, positionPinned, groupID }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id); recordKey = try c.decodeIfPresent(String.self, forKey: .recordKey); sourceID = try c.decodeIfPresent(String.self, forKey: .sourceID)
@@ -465,6 +519,7 @@ extension TopologyNode {
         manualWANs = try c.value(.manualWANs, [])
         manualClientInfo = try c.decodeIfPresent(TopologyClientInfo.self, forKey: .manualClientInfo)
         wanRegistrations = try c.value(.wanRegistrations, [])
+        providerIdentities = try c.value(.providerIdentities, [])
         positionPinned = try c.value(.positionPinned, false); groupID = try c.decodeIfPresent(UUID.self, forKey: .groupID)
     }
 }
@@ -1026,6 +1081,21 @@ struct TopologyRepository {
             [value.connection, value.networkID, value.networkName, value.ssid, value.band, value.vendor].allSatisfy { text($0) }
                 && (value.vlan.map { (1...4094).contains($0) } ?? true)
         }
+        func https(_ value: String) -> Bool {
+            guard let url = URLComponents(string: value), url.scheme == "https", let host = url.host, !host.isEmpty,
+                  url.user == nil, url.password == nil else { return false }
+            return true
+        }
+        func provider(_ value: TopologyProviderIdentity) -> Bool {
+            var v4 = in_addr(), v6 = in6_addr()
+            guard inet_pton(AF_INET, value.address, &v4) == 1 || inet_pton(AF_INET6, value.address, &v6) == 1,
+                  let asn = UInt32(value.asn), asn > 0, String(asn) == value.asn,
+                  [value.address, value.asn, value.organization, value.website, value.sourceURL].allSatisfy({ text($0, 2048) }),
+                  date(value.date), https(value.sourceURL), value.website.isEmpty || https(value.website),
+                  value.iconSourceURL.map({ text($0, 2048) && https($0) }) ?? true,
+                  value.iconPNG.map(TopologyProviderIdentity.validIconPNG) ?? true else { return false }
+            return true
+        }
         guard document.networks.count <= 256, document.wifi.count <= 256,
               Set(document.networks.map(\.id)).count == document.networks.count, Set(document.wifi.map(\.id)).count == document.wifi.count,
               document.networks.allSatisfy({ text($0.id) && text($0.name) && ($0.vlan.map { (1...4094).contains($0) } ?? true) && $0.subnets.count <= 65 && $0.subnets.allSatisfy { text($0) } && date($0.collectedAt) }),
@@ -1069,6 +1139,9 @@ struct TopologyRepository {
             if let info = node.manualClientInfo { result += [info.connection, info.networkID, info.networkName, info.ssid, info.band, info.vendor].reduce(0) { $0 + $1.utf8.count } }
             if let info = node.observed?.clientInfo { result += [info.connection, info.networkID, info.networkName, info.ssid, info.band, info.vendor].reduce(0) { $0 + $1.utf8.count } }
             result += node.wanRegistrations.reduce(0) { total, item in total + [item.address, item.name, item.organization, item.country, item.range, item.sourceURL].reduce(0) { $0 + $1.utf8.count } }
+            result += node.providerIdentities.reduce(0) { total, item in
+                total + [item.address, item.asn, item.organization, item.website, item.sourceURL, item.iconSourceURL ?? ""].reduce(0) { $0 + $1.utf8.count } + (item.iconPNG?.count ?? 0)
+            }
             return result
         }
         let ids = Set(document.nodes.map(\.id))
@@ -1076,6 +1149,7 @@ struct TopologyRepository {
         guard document.groups.count <= 100, groupIDs.count == document.groups.count, document.groups.allSatisfy({ group in
             text(group.name) && text(group.color, 64) && group.x.isFinite && group.y.isFinite && abs(group.x) <= 100_000 && abs(group.y) <= 100_000
             && group.width.isFinite && group.height.isFinite && (160...100_000).contains(group.width) && (80...100_000).contains(group.height)
+            && (group.anchorNodeID.map { anchor in document.nodes.contains { $0.id == anchor && $0.groupID == group.id } } ?? true)
         }), document.events.count <= 500, Set(document.events.map(\.id)).count == document.events.count,
         document.events.allSatisfy({ date($0.date) && text($0.previous, 2048) && text($0.current, 2048) && text($0.summary, 2048) }) else { throw TopologyError.invalidData }
         guard document.nodes.count <= 500, document.links.count <= 1_000, ids.count == document.nodes.count,
@@ -1087,6 +1161,7 @@ struct TopologyRepository {
                 [item.address, item.name, item.organization, item.country, item.range, item.sourceURL].allSatisfy { text($0, 2048) } && date(item.date)
                 && URLComponents(string: item.sourceURL).map { $0.scheme == "https" && $0.host != nil && $0.user == nil && $0.password == nil } == true
             }
+            && node.providerIdentities.count <= 16 && Set(node.providerIdentities.map(\.address)).count == node.providerIdentities.count && node.providerIdentities.allSatisfy(provider)
             && (node.manualClientInfo.map(client) ?? true) && text(node.name) && text(node.address) && text(node.notes, 16_384, multiline: true)
             && node.x.isFinite && node.y.isFinite && abs(node.x) <= 100_000 && abs(node.y) <= 100_000 && (node.observed.map(facts) ?? true) && nodeBytes(node) <= 131_072
             && (node.manualWAN.map(wan) ?? true) && (node.checkPort.map { $0 > 0 } ?? true)
@@ -1208,7 +1283,7 @@ enum TopologyLayout {
                 document.groups[i].x = x; document.groups[i].y = y; document.groups[i].width = min(100000, max(160, right - x)); document.groups[i].height = min(100000, max(80, bottom - y))
             }
         }
-        let regions = document.groups.map { ($0.x, $0.y, $0.collapsed ? 220.0 : $0.width, $0.collapsed ? 70.0 : $0.height) }
+        let regions = document.groups.map { ($0.x, $0.y, $0.collapsed ? TopologyGroupPresentation.collapsedWidth : $0.width, $0.collapsed ? TopologyGroupPresentation.height(for: $0, in: document) : $0.height) }
         for node in nodes where !node.positionPinned && !hidden.contains(node.id) && node.groupID == nil {
             guard let base = positions[node.id], let index = document.nodes.firstIndex(where: { $0.id == node.id }) else { continue }
             let point = freePoint(base, regions: regions)

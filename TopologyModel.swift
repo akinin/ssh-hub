@@ -147,6 +147,7 @@ struct TopologyTrafficPoint { let date: Date; let rx: Double; let tx: Double }
             value.nodes[index] = current
         }
         else { value.nodes.append(node) }
+        Self.clearMissingGroupAnchors(&value)
         if let group = node.groupID { Self.expandGroupBounds(&value, ids: [group]) }
         if commit(value) { selectedNode = node.id; selectedLink = nil }
     }
@@ -159,6 +160,7 @@ struct TopologyTrafficPoint { let date: Date; let rx: Double; let tx: Double }
     func removeNode(_ id: UUID) {
         guard !busy else { return }
         var value = document; value.nodes.removeAll { $0.id == id }; value.links.removeAll { $0.from == id || $0.to == id }
+        Self.clearMissingGroupAnchors(&value)
         commit(value); if selectedNode == id { selectedNode = nil }
     }
     func removeLink(_ id: UUID) { guard !busy else { return }; var value = document; value.links.removeAll { $0.id == id }; commit(value); selectedLink = nil }
@@ -185,6 +187,7 @@ struct TopologyTrafficPoint { let date: Date; let rx: Double; let tx: Double }
             if members.contains(value.nodes[index].id) { value.nodes[index].groupID = group.id }
             else if value.nodes[index].groupID == group.id { value.nodes[index].groupID = nil }
         }
+        Self.clearMissingGroupAnchors(&value)
         Self.expandGroupBounds(&value, ids: [group.id]); commit(value)
     }
     func removeGroup(_ id: UUID) {
@@ -201,6 +204,7 @@ struct TopologyTrafficPoint { let date: Date; let rx: Double; let tx: Double }
         guard !busy, groupID == nil || document.groups.contains(where: { $0.id == groupID }) else { return }
         var value = document
         for index in value.nodes.indices where ids.contains(value.nodes[index].id) { value.nodes[index].groupID = groupID }
+        Self.clearMissingGroupAnchors(&value)
         if let groupID { Self.expandGroupBounds(&value, ids: [groupID]) }
         commit(value)
     }
@@ -225,6 +229,32 @@ struct TopologyTrafficPoint { let date: Date; let rx: Double; let tx: Double }
         Self.expandGroupBounds(&value, ids: Set(value.nodes.filter { ids.contains($0.id) }.compactMap(\.groupID)))
         commit(value)
     }
+    func moveSelection(nodes ids: Set<UUID>, groups groupIDs: Set<UUID>, dx: Double, dy: Double, snap: Bool = true) {
+        guard !busy, dx.isFinite, dy.isFinite else { return }
+        var value = document
+        let groups = value.groups.filter { groupIDs.contains($0.id) }.sorted { $0.id.uuidString < $1.id.uuidString }
+        let actualGroups = Set(groups.map(\.id))
+        let movingNodes = value.nodes.filter { ids.contains($0.id) || ($0.groupID.map { actualGroups.contains($0) } ?? false) }.sorted { $0.id.uuidString < $1.id.uuidString }
+        guard let firstX = groups.first?.x ?? movingNodes.first?.x, let firstY = groups.first?.y ?? movingNodes.first?.y else { return }
+        let xs = movingNodes.map(\.x) + groups.map(\.x), ys = movingNodes.map(\.y) + groups.map(\.y)
+        // One common offset preserves cable geometry and relative positions.
+        // A node explicitly selected inside a selected group still moves once.
+        let requestedX = snap ? ((firstX + dx) / 20).rounded() * 20 - firstX : dx
+        let requestedY = snap ? ((firstY + dy) / 20).rounded() * 20 - firstY : dy
+        let offsetX = min(100000 - (xs.max() ?? 0), max(-(xs.min() ?? 0), requestedX))
+        let offsetY = min(100000 - (ys.max() ?? 0), max(-(ys.min() ?? 0), requestedY))
+        guard offsetX != 0 || offsetY != 0 else { return }
+        let movedIDs = Set(movingNodes.map(\.id))
+        for index in value.nodes.indices where movedIDs.contains(value.nodes[index].id) {
+            value.nodes[index].x += offsetX; value.nodes[index].y += offsetY; value.nodes[index].positionPinned = true
+        }
+        for index in value.groups.indices where actualGroups.contains(value.groups[index].id) {
+            value.groups[index].x += offsetX; value.groups[index].y += offsetY
+        }
+        let otherGroups = Set(movingNodes.compactMap(\.groupID)).subtracting(actualGroups)
+        Self.expandGroupBounds(&value, ids: otherGroups)
+        commit(value)
+    }
     func alignNodes(_ ids: Set<UUID>, axis: TopologyAlignment) {
         guard !busy else { return }
         var value = document; let nodes = value.nodes.filter { ids.contains($0.id) }
@@ -236,6 +266,13 @@ struct TopologyTrafficPoint { let date: Date; let rx: Double; let tx: Double }
         }
         Self.expandGroupBounds(&value, ids: Set(value.nodes.filter { ids.contains($0.id) }.compactMap(\.groupID)))
         commit(value)
+    }
+    private static func clearMissingGroupAnchors(_ document: inout TopologyDocument) {
+        for index in document.groups.indices {
+            guard let anchor = document.groups[index].anchorNodeID else { continue }
+            let groupID = document.groups[index].id
+            if !document.nodes.contains(where: { $0.id == anchor && $0.groupID == groupID }) { document.groups[index].anchorNodeID = nil }
+        }
     }
     private static func expandGroupBounds(_ document: inout TopologyDocument, ids: Set<UUID>) {
         for index in document.groups.indices where ids.contains(document.groups[index].id) {
@@ -571,6 +608,68 @@ struct TopologyTrafficPoint { let date: Date; let rx: Double; let tx: Double }
             if document.nodes[index].wanRegistrations.count >= 16 { document.nodes[index].wanRegistrations.removeFirst() }
             document.nodes[index].wanRegistrations.append(result)
             if self.commit(document) { self.notice = "Владелец IP получен. Регистрация диапазона может отличаться от бренда провайдера; ручное название сохранено." }
+        }
+    }
+    func providerAddress(for nodeID: UUID) -> String? {
+        guard let node = document.nodes.first(where: { $0.id == nodeID }) else { return nil }
+        if node.displayKind == .internet, let address = TopologyProviderLookup.publicAddress(node.displayAddress) { return address }
+        if let target = TopologyProviderMapping.wan(for: nodeID, in: document) { return TopologyProviderLookup.publicAddress(target.wan.address) }
+        return nil
+    }
+    private func providerContext(_ nodeID: UUID, address: String) -> Set<UUID>? {
+        guard let node = document.nodes.first(where: { $0.id == nodeID }) else { return nil }
+        var ids: Set<UUID> = [nodeID]
+        if node.displayWANs.contains(where: { TopologyProviderLookup.publicAddress($0.address) == address }) {
+            ids.formUnion(TopologyProviderMapping.targets(for: nodeID, wanAddress: address, in: document))
+        } else if let target = TopologyProviderMapping.wan(for: nodeID, in: document), TopologyProviderLookup.publicAddress(target.wan.address) == address {
+            ids.insert(target.gatewayID)
+            ids.formUnion(TopologyProviderMapping.targets(for: target.gatewayID, wanAddress: address, in: document))
+        } else if node.displayKind != .internet || TopologyProviderLookup.publicAddress(node.displayAddress) != address { return nil }
+        return ids
+    }
+    @discardableResult func applyProviderIdentity(_ identity: TopologyProviderIdentity, to nodeID: UUID) -> Bool {
+        guard let address = TopologyProviderLookup.publicAddress(identity.address), address == identity.address,
+              let ids = providerContext(nodeID, address: address) else { return false }
+        var value = document
+        for index in value.nodes.indices where ids.contains(value.nodes[index].id) {
+            var next = identity
+            // A transient icon error must not remove a previously verified
+            // icon for the same public IP and ASN. A changed ASN cannot reuse it.
+            if next.iconPNG == nil, let old = value.nodes[index].providerIdentities.first(where: { $0.address == address && $0.asn == identity.asn }) {
+                next.iconPNG = old.iconPNG; next.iconSourceURL = old.iconSourceURL
+            }
+            value.nodes[index].providerIdentities.removeAll { $0.address == address }
+            if value.nodes[index].providerIdentities.count >= 16 { value.nodes[index].providerIdentities.removeFirst() }
+            value.nodes[index].providerIdentities.append(next)
+        }
+        return commit(value)
+    }
+    func lookupProvider(_ nodeID: UUID, address input: String? = nil) {
+        let candidate = input == nil ? providerAddress(for: nodeID) : input.flatMap(TopologyProviderLookup.publicAddress)
+        guard let address = candidate,
+              providerContext(nodeID, address: address) != nil else {
+            notice = "У провайдера нужен публичный WAN IP или однозначная WAN-связь с портом шлюза. Частный адрес не отправляется в сервис ASN."; return
+        }
+        run("Определение ASN и иконки провайдера…") { [weak self] in
+            guard let self else { return }
+            let worker = ToolkitProcess(); self.process = worker; defer { self.process = nil }
+            let result = try await TopologyProviderLookup.lookup(address: address, process: worker)
+            try Task.checkCancellation()
+            guard self.applyProviderIdentity(result.identity, to: nodeID) else { return }
+            self.notice = result.warning.isEmpty ? "ASN и иконка провайдера сохранены. Ручное название сохранено." : result.warning
+        }
+    }
+    func lookupProviderIcon(_ nodeID: UUID, address: String, website: String) {
+        guard providerContext(nodeID, address: address) != nil,
+              let identity = document.nodes.first(where: { $0.id == nodeID })?.providerIdentities.first(where: { $0.address == address }) else {
+            notice = "Сначала определи ASN для текущего публичного WAN IP."; return
+        }
+        run("Загрузка иконки с сайта провайдера…") { [weak self] in
+            guard let self else { return }
+            let worker = ToolkitProcess(); self.process = worker; defer { self.process = nil }
+            let result = try await TopologyProviderLookup.siteIcon(identity: identity, website: website, process: worker)
+            try Task.checkCancellation()
+            if self.applyProviderIdentity(result, to: nodeID) { self.notice = "Иконка с указанного сайта провайдера сохранена. Ручное название сохранено." }
         }
     }
     func exportJSON() {

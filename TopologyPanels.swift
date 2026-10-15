@@ -118,6 +118,13 @@ struct TopologyGroupEditor: View {
                 Picker("Цвет", selection: $group.color) { Text("Синий").tag("blue"); Text("Зелёный").tag("green"); Text("Оранжевый").tag("orange"); Text("Фиолетовый").tag("purple"); Text("Голубой").tag("cyan") }
                 Toggle("Свернуть", isOn: $group.collapsed)
             }
+            Picker("Основное устройство", selection: $group.anchorNodeID) {
+                Text("Автоматически").tag(UUID?.none)
+                ForEach(model.document.nodes.filter { members.contains($0.id) }) { node in
+                    Text(node.displayName).tag(Optional(node.id))
+                }
+            }
+            Text("Свёрнутая область показывает основное устройство и его порты. Автоматически выбирается однозначный коммутатор или шлюз области.").font(.caption).foregroundStyle(.secondary)
             Text("Устройства области").font(.headline)
             HStack { TextField("Найти устройство", text: $query).textFieldStyle(.roundedBorder); Button("Из выделения") { members = model.selectedNodes } }
             ScrollView {
@@ -146,8 +153,9 @@ struct TopologyGroupEditor: View {
                 }.keyboardShortcut(.defaultAction).disabled(group.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.busy)
             }
             if let error = model.error { Text(error).font(.caption).foregroundStyle(.red) }
-        }.padding(20).frame(width: 550, height: 530).dismissOnOutsideClick()
+        }.padding(20).frame(width: 550, height: 590).dismissOnOutsideClick()
             .onAppear { members = existing ? Set(model.document.nodes.filter { $0.groupID == group.id }.map(\.id)) : model.selectedNodes }
+            .onChange(of: members) { _, ids in if let id = group.anchorNodeID, !ids.contains(id) { group.anchorNodeID = nil } }
     }
 }
 

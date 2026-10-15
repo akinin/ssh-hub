@@ -34,6 +34,10 @@ swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$b
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" DocumentationMarkdown.swift DocumentationVisualPage.swift DocumentationVisualTests.swift -o "$build_dir/documentation-visual-tests" -framework AppKit -framework WebKit
 "$build_dir/documentation-visual-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" TopologyData.swift TopologyDataTests.swift -o "$build_dir/topology-data-tests"
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" TopologyCanvasSelection.swift TopologyCanvasSelectionTests.swift -o "$build_dir/topology-selection-tests"
+"$build_dir/topology-selection-tests"
+swiftc -parse-as-library -swift-version 5 -D TOPOLOGY_PROVIDER_TEST -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionProbe.swift Tunnels.swift SSHCredentials.swift ToolkitRuntime.swift SSHLoginPolicy.swift Nmap.swift TCPAvailability.swift TopologyData.swift IPCalculator.swift TopologyProvider.swift TopologyProviderMapping.swift TopologyProviderTests.swift -o "$build_dir/topology-provider-tests" -framework AppKit -framework Security
+"$build_dir/topology-provider-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" TopologyData.swift TopologyExport.swift TopologyExportTests.swift -o "$build_dir/topology-export-tests" -framework AppKit -framework CoreText
 "$build_dir/topology-export-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConnectionAppearance.swift LocalConnections.swift TopologyData.swift TopologyRecordSeed.swift TopologyRecordSeedTests.swift -o "$build_dir/topology-record-seed-tests"
@@ -45,7 +49,7 @@ swiftc -parse-as-library -swift-version 5 -D TOPOLOGY_UNIFI_TEST -sdk "$sdk_dir"
 "$build_dir/topology-unifi-tests"
 swiftc -parse-as-library -swift-version 5 -D TOPOLOGY_UNIFI_TEST -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" TopologyData.swift TopologyUniFi.swift TopologyRouterAPI.swift TopologyRouterAPITests.swift -o "$build_dir/topology-router-tests" -framework Security -framework LocalAuthentication
 "$build_dir/topology-router-tests"
-swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionProbe.swift Tunnels.swift SSHCredentials.swift ToolkitRuntime.swift SSHLoginPolicy.swift Nmap.swift TCPAvailability.swift TopologyData.swift TopologySSH.swift TopologyUniFi.swift TopologyRouterAPI.swift IPCalculator.swift ExtraTools.swift TopologyModel.swift TopologyModelTests.swift -o "$build_dir/topology-model-tests" -framework Security -framework AppKit -framework LocalAuthentication
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionProbe.swift Tunnels.swift SSHCredentials.swift ToolkitRuntime.swift SSHLoginPolicy.swift Nmap.swift TCPAvailability.swift TopologyData.swift TopologySSH.swift TopologyUniFi.swift TopologyRouterAPI.swift IPCalculator.swift ExtraTools.swift TopologyProvider.swift TopologyProviderMapping.swift TopologyModel.swift TopologyModelTests.swift -o "$build_dir/topology-model-tests" -framework Security -framework AppKit -framework LocalAuthentication
 "$build_dir/topology-model-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" TabInformation.swift TabInformationTests.swift -o "$build_dir/tab-information-tests"
 "$build_dir/tab-information-tests"
