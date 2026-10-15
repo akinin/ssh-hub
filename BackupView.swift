@@ -24,7 +24,9 @@ extension AliasStore {
                 guard info.isRegularFile == true, info.isSymbolicLink != true, info.fileSize == Int(item.size), bytes <= 256_000_000 else { throw ConfigError.message("Вложения повреждены или превышают 256 МБ для одного архива.") }
                 return BackupAttachment(metadata: item, data: try Data(contentsOf: url))
             }
-            records.append(BackupRecord(record: record, appearance: appearance(entry), group: group(entry), favorite: isFavorite(entry), commands: try savedCommands.repository.load(entry.favoriteID), document: try DocumentationRepository().load(entry.favoriteID), attachments: attachments, profileIDs: Array(profiles.membership[entry.favoriteID] ?? [profiles.active]), tunnelGatewayID: record.transport?.tunnel.flatMap { exportIDs[$0.sshID] }))
+            let inventory = try InventoryRepository().load(entry.favoriteID)
+            let winbox = try WinboxRepository().load(entry.favoriteID)
+            records.append(BackupRecord(record: record, appearance: appearance(entry), group: group(entry), favorite: isFavorite(entry), commands: try savedCommands.repository.load(entry.favoriteID), document: try DocumentationRepository().load(entry.favoriteID), attachments: attachments, profileIDs: Array(profiles.membership[entry.favoriteID] ?? [profiles.active]), tunnelGatewayID: record.transport?.tunnel.flatMap { exportIDs[$0.sshID] }, inventory: inventory, winbox: winbox, winboxGatewayID: winbox.tunnel.flatMap { exportIDs[$0.sshID] }))
         }
         if let error = CommandLibrary.shared.error { throw ConfigError.message(error) }
         if let error = scanner.templateError { throw ConfigError.message(error) }
@@ -42,11 +44,11 @@ extension AliasStore {
         let activeConnection = connectionSessions.values.contains { session in
             session.files?.busy == true || session.desktop?.connected == true || session.desktop?.starting == true
         }
-        guard !ConsoleStore.shared.hasSessions, !SFTPRegistry.shared.hasSessions, !activeConnection, !scanner.running, !ToolkitSession.pending else { throw ConfigError.message("Заверши активные консольные, графические, файловые сеансы и инструменты перед восстановлением.") }
+        guard !ConsoleStore.shared.hasSessions, !SFTPRegistry.shared.hasSessions, !activeConnection, !scanner.running, !ToolkitSession.pending, !TunnelSession.pending, !RecordLogsModel.pending, !InventoryModel.pending, !winboxModels.values.contains(where: { $0.running || $0.busy }), !WinboxModel.hasPendingOperations else { throw ConfigError.message("Заверши активные консольные, графические, файловые сеансы, захват логов, сбор инвентаризации и WinBox перед восстановлением.") }
         let metadata = try BackupRestoration.install(backup, selected: selected, localRepository: localRepository,
             documents: DocumentationRepository(), commands: savedCommands.repository, attachments: attachmentsRepository,
             templates: TemplateLibrary.shared.custom, writeTemplates: TemplateLibrary.shared.replace,
-            library: CommandLibrary.shared.custom, writeLibrary: CommandLibrary.shared.replace, nmapTemplates: scanner.customTemplates, writeNmapTemplates: scanner.repository.write)
+            library: CommandLibrary.shared.custom, writeLibrary: CommandLibrary.shared.replace, nmapTemplates: scanner.customTemplates, writeNmapTemplates: scanner.repository.write, inventory: InventoryRepository(), winbox: WinboxRepository())
         reload(); scanner.reloadTemplates()
         for (value, entry) in metadata {
             let assigned = Set((value.profileIDs ?? []).compactMap { profileMap[$0] })

@@ -81,13 +81,24 @@ import Network
         let payload = Data((0..<8192).map { UInt8(truncatingIfNeeded: $0) })
         let attachment = BackupAttachment(metadata: ConnectionAttachment(name: "Данные ' ; $(safe).bin", size: Int64(payload.count)), data: payload)
         var document = ConnectionDocument(); document.draft = "fixture-sensitive-document"; document.save()
-        let value = BackupRecord(record: record, appearance: ConnectionAppearance(name: "Название"), group: "Дом", favorite: true, commands: legacy, document: document, attachments: [attachment])
+        var value = BackupRecord(record: record, appearance: ConnectionAppearance(name: "Название"), group: "Дом", favorite: true, commands: legacy, document: document, attachments: [attachment])
+        var inventoryRecord = RecordInventory(); inventoryRecord.manual[.model] = "Fixture model"; inventoryRecord.manual[.serial] = "fixture-private-serial"
+        inventoryRecord.draft = InventoryFields([.model: "Draft model", .serial: "fixture-private-serial"])
+        inventoryRecord.append(InventorySnapshot(collector: .linux, facts: InventoryFields([.operatingSystem: "Fixture Linux"])))
+        value.inventory = inventoryRecord; value.winbox = WinboxSettings(enabled: true, host: "router.example", user: "fixture")
         let backup = HubBackup(records: [value], folders: ["Дом"], folderAppearances: [:], templates: [RecordTemplate(name: "Свой")], commandLibrary: [assigned[0]])
         let secret = "fixture-passphrase"
         let encrypted = try BackupEncryption.seal(backup, password: secret)
         let second = try BackupEncryption.seal(backup, password: secret)
         check(encrypted != second && encrypted.range(of: Data("fixture-sensitive-document".utf8)) == nil, "random nonce/salt and no plaintext document")
         let decrypted = try BackupEncryption.open(encrypted, password: secret)
+        check(decrypted.records[0].inventory == inventoryRecord && decrypted.records[0].winbox == value.winbox && encrypted.range(of: Data("fixture-private-serial".utf8)) == nil, "inventory draft/snapshot and WinBox settings encrypted roundtrip")
+        var legacyMaterials = try JSONSerialization.jsonObject(with: JSONEncoder().encode(backup)) as! [String: Any]
+        var legacyMaterialRecords = legacyMaterials["records"] as! [[String: Any]]
+        for index in legacyMaterialRecords.indices { legacyMaterialRecords[index].removeValue(forKey: "inventory"); legacyMaterialRecords[index].removeValue(forKey: "winbox"); legacyMaterialRecords[index].removeValue(forKey: "winboxGatewayID") }
+        legacyMaterials["records"] = legacyMaterialRecords
+        let legacyMaterialBackup = try JSONDecoder().decode(HubBackup.self, from: JSONSerialization.data(withJSONObject: legacyMaterials))
+        check(legacyMaterialBackup.records[0].inventory == nil && legacyMaterialBackup.records[0].winbox == nil, "2.13 archive without new per-record materials remains readable")
         check(decrypted.commandLibrary == [assigned[0]], "encrypted backup includes the custom command library")
         var oldBackupJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(backup)) as! [String: Any]
         oldBackupJSON.removeValue(forKey: "commandLibrary")
@@ -108,6 +119,10 @@ import Network
         rejects("restore cannot silently write SSH config") { try invalid.validate() }
         invalid = backup; invalid.records[0].record.extraOptions = [SSHOption(key: "Include", value: "/etc/passwd")]
         rejects("backup extra option injection") { try invalid.validate() }
+        invalid = backup; invalid.records[0].inventory?.manual[.notes] = String(repeating: "x", count: 16_385)
+        rejects("inventory archive field limit") { try invalid.validate() }
+        invalid = backup; invalid.records[0].winbox?.port = 0
+        rejects("WinBox archive settings validation") { try invalid.validate() }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("ssh-hub-advanced-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: root) }
@@ -124,12 +139,15 @@ import Network
         try Data("Host fixture\n HostName 127.0.0.1\n".utf8).write(to: configURL)
         let repository = LocalConnectionRepository(config: configURL, root: root.appendingPathComponent("connections"))
         let docs = DocumentationRepository(root: root.appendingPathComponent("docs")), saved = SavedCommandsRepository(root: root.appendingPathComponent("commands")), attachments = AttachmentsRepository(root: root.appendingPathComponent("attachments"))
+        let inventory = InventoryRepository(root: root.appendingPathComponent("Inventory")), winbox = WinboxRepository(root: root.appendingPathComponent("Winbox"))
         var templates: [RecordTemplate] = []
         var library: [SavedConsoleCommand] = []
         let installed = try BackupRestoration.install(decrypted, selected: [record.id], localRepository: repository, documents: docs, commands: saved, attachments: attachments, templates: templates, writeTemplates: { templates = $0 }, library: library, writeLibrary: { library = $0 })
         check(library == decrypted.commandLibrary, "restore includes the custom command library")
         check(installed.count == 1 && installed[0].1.localID == record.id, "restore preserves available stable record ID")
         let restoredKey = installed[0].1.favoriteID
+        let restoredInventory = try inventory.load(restoredKey), restoredWinbox = try winbox.load(restoredKey)
+        check(restoredInventory == inventoryRecord && restoredWinbox == value.winbox, "restored inventory/draft/history and WinBox settings bound to correct record")
         let restoredDocs = try docs.load(restoredKey), restoredCommands = try saved.load(restoredKey), restoredAttachments = try attachments.load(restoredKey)
         check(restoredDocs == document && restoredCommands == legacy && restoredAttachments.count == 1, "restored materials associated with correct record")
         let restoredFile = attachments.file(restoredAttachments[0], key: restoredKey)
@@ -151,16 +169,25 @@ import Network
         check(afterFailure == currentRecords, "failed restore leaves record manifest unchanged")
         let failedEntry = failureBackup.records[0].record.entry(config: configURL, privateConfig: repository.privateConfig(failureBackup.records[0].id))
         check(!FileManager.default.fileExists(atPath: docs.url(for: failedEntry.favoriteID).path) && !FileManager.default.fileExists(atPath: saved.file(failedEntry.favoriteID).path) && !FileManager.default.fileExists(atPath: attachments.folder(failedEntry.favoriteID).path), "failed restore removes only its staged materials")
+        check(!FileManager.default.fileExists(atPath: inventory.url(for: failedEntry.favoriteID).path) && !FileManager.default.fileExists(atPath: winbox.file(failedEntry.favoriteID).path), "failed restore removes only its newly created inventory and WinBox files")
         var routedBackup = decrypted
         var gatewayRecord = routedBackup.records[0]; gatewayRecord.record.id = UUID(); gatewayRecord.record.kind = .ssh; gatewayRecord.record.host = "gateway.example"; gatewayRecord.record.user = "fixture"; gatewayRecord.record.port = "22"; gatewayRecord.record.serial = nil; gatewayRecord.record.title = "Gateway"
         var desktopRecord = gatewayRecord; desktopRecord.record.id = UUID(); desktopRecord.record.kind = .rdp; desktopRecord.record.port = "3389"; desktopRecord.record.host = "desktop.example"; desktopRecord.record.transport = ConnectionSettings(); desktopRecord.record.transport?.tunnel = RecordTunnelSettings(sshID: "original-gateway"); desktopRecord.tunnelGatewayID = gatewayRecord.id
+        desktopRecord.winbox?.tunnel = RecordTunnelSettings(sshID: "original-gateway"); desktopRecord.winboxGatewayID = gatewayRecord.id
         routedBackup.records = [gatewayRecord, desktopRecord]
         let routed = try BackupRestoration.install(routedBackup, selected: [gatewayRecord.id,desktopRecord.id], localRepository: repository, documents: docs, commands: saved, attachments: attachments, templates: templates, writeTemplates: { templates = $0 })
         check(routed[1].1.transport?.tunnel?.sshID == routed[0].1.favoriteID, "backup restores route to the restored SSH gateway")
+        let routedWinbox = try winbox.load(routed[1].1.favoriteID)
+        check(routedWinbox.tunnel?.sshID == routed[0].1.favoriteID, "WinBox tunnel points to restored gateway")
         let routedCopies = try BackupRestoration.install(routedBackup, selected: [gatewayRecord.id,desktopRecord.id], localRepository: repository, documents: docs, commands: saved, attachments: attachments, templates: templates, writeTemplates: { templates = $0 })
         check(routedCopies[0].1.favoriteID != routed[0].1.favoriteID && routedCopies[1].1.transport?.tunnel?.sshID == routedCopies[0].1.favoriteID, "ID conflicts remap gateway references to the correct new copy")
+        let copiedWinbox = try winbox.load(routedCopies[1].1.favoriteID)
+        check(copiedWinbox.tunnel?.sshID == routedCopies[0].1.favoriteID, "WinBox conflict remaps to new gateway copy")
         let missingGateway = try BackupRestoration.install(routedBackup, selected: [desktopRecord.id], localRepository: repository, documents: docs, commands: saved, attachments: attachments, templates: templates, writeTemplates: { templates = $0 })
         check(missingGateway[0].1.transport?.tunnel?.sshID.hasPrefix("missing:") == true, "unselected gateway cannot silently reuse another server or bypass tunnel")
+        let missingWinbox = try winbox.load(missingGateway[0].1.favoriteID)
+        check(missingWinbox.tunnel?.sshID.hasPrefix("missing:") == true, "unselected WinBox gateway remains explicitly unavailable")
+        rejects("restored WinBox never bypasses missing tunnel") { _ = try missingWinbox.request(entry: missingGateway[0].1) }
         var legacyArchive = try JSONSerialization.jsonObject(with: JSONEncoder().encode(decrypted)) as! [String: Any]
         legacyArchive["knowledgeItems"] = [["obsolete": "ignored"]]
         var legacyRecords = legacyArchive["records"] as! [[String: Any]]

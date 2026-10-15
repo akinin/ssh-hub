@@ -42,6 +42,9 @@ struct ActionPalette: View {
             append("tools", "Инструменты", "network") { store.openScanner(entry) }
             append("documentation", "Документация", "doc.text") { store.showDocumentation(entry) }
             append("attachments", "Вложения", "paperclip") { store.showAttachments(entry) }
+            append("inventory", "Инвентаризация", "shippingbox") { store.openPage(entry, section: .inventory) }
+            if entry.canSSH || entry.recordKind == .localShell { append("logs", "Логи", "text.alignleft") { store.openPage(entry, section: .logs) } }
+            if entry.canSSH { append("winbox", "WinBox", "network") { store.openPage(entry, section: .winbox) } }
             append("edit", "Редактировать", "pencil") { store.edit(entry) }
         }
         let terms = query.split(whereSeparator: \.isWhitespace).map(String.init)

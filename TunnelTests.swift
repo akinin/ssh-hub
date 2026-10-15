@@ -64,10 +64,12 @@ import Darwin
         let session = TunnelSession()
         var phases: [TunnelPhase] = []
         let stopped = session.run(profile: profile, alias: "test", config: config, executable: fake, root: root) { report in
+            precondition(TunnelSession.pending, "private tunnel workers must be visible to application shutdown")
             phases.append(report.phase)
             if report.phase == .active { session.cancel() }
         }
         try check(phases.contains(.active) && stopped.phase == .stopped, "confirmed forward active, button cancellation stops master")
+        try check(!TunnelSession.pending, "shutdown waits until tunnel process and control socket cleanup actually finish")
         try check(!(try fm.contentsOfDirectory(atPath: root.path)).contains { $0.hasPrefix("ssh-t-") }, "session resources removed on stop")
         try Data().write(to: failure)
         phases = []

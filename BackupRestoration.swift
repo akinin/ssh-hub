@@ -5,8 +5,11 @@ enum BackupRestoration {
                         documents: DocumentationRepository, commands: SavedCommandsRepository, attachments: AttachmentsRepository,
                         templates: [RecordTemplate], writeTemplates: ([RecordTemplate]) throws -> Void,
                         library: [SavedConsoleCommand] = [], writeLibrary: ([SavedConsoleCommand]) throws -> Void = { _ in },
-                        nmapTemplates: [NmapTemplate] = [], writeNmapTemplates: ([NmapTemplate]) throws -> Void = { _ in }) throws -> [(BackupRecord, SSHAlias)] {
+                        nmapTemplates: [NmapTemplate] = [], writeNmapTemplates: ([NmapTemplate]) throws -> Void = { _ in },
+                        inventory: InventoryRepository? = nil, winbox: WinboxRepository? = nil) throws -> [(BackupRecord, SSHAlias)] {
         try backup.validate()
+        let inventory = inventory ?? InventoryRepository(root: documents.root.deletingLastPathComponent().appendingPathComponent("Inventory"))
+        let winbox = winbox ?? WinboxRepository(root: documents.root.deletingLastPathComponent().appendingPathComponent("Winbox"))
         let before = try localRepository.load()
         var after = before, installed: [URL] = []
         var metadata: [(BackupRecord, SSHAlias)] = []
@@ -15,7 +18,7 @@ enum BackupRestoration {
             var record = value.record
             while true {
                 let entry = record.entry(config: localRepository.config, privateConfig: localRepository.privateConfig(record.id))
-                if !after.contains(where: { $0.id == record.id }) && !FileManager.default.fileExists(atPath: documents.url(for: entry.favoriteID).path) && !FileManager.default.fileExists(atPath: commands.file(entry.favoriteID).path) && !FileManager.default.fileExists(atPath: attachments.folder(entry.favoriteID).path) { break }
+                if !after.contains(where: { $0.id == record.id }) && !FileManager.default.fileExists(atPath: documents.url(for: entry.favoriteID).path) && !FileManager.default.fileExists(atPath: commands.file(entry.favoriteID).path) && !FileManager.default.fileExists(atPath: attachments.folder(entry.favoriteID).path) && !FileManager.default.fileExists(atPath: inventory.url(for: entry.favoriteID).path) && !FileManager.default.fileExists(atPath: winbox.file(entry.favoriteID).path) { break }
                 record.id = UUID()
             }
             after.append(record)
@@ -55,6 +58,13 @@ enum BackupRestoration {
             for (value, entry) in metadata {
                 installed.append(documents.url(for: entry.favoriteID)); try documents.write(value.document, for: entry.favoriteID)
                 installed.append(commands.file(entry.favoriteID)); try commands.write(value.commands, key: entry.favoriteID)
+                if let data = value.inventory {
+                    installed.append(inventory.url(for: entry.favoriteID)); try inventory.write(data, for: entry.favoriteID)
+                }
+                if var settings = value.winbox {
+                    if settings.tunnel != nil { settings.tunnel?.sshID = value.winboxGatewayID.flatMap { restoredGateways[$0] } ?? "missing:" + (value.winboxGatewayID?.uuidString ?? UUID().uuidString) }
+                    installed.append(winbox.file(entry.favoriteID)); try winbox.write(settings, key: entry.favoriteID)
+                }
                 if !value.attachments.isEmpty {
                     let folder = attachments.folder(entry.favoriteID); installed.append(folder)
                     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])

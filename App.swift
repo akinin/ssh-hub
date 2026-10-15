@@ -30,6 +30,9 @@ import ConsoleSupport
     @Published var showingAvailability = false
     var sftpModels: [UUID: SFTPModel] = [:]
     var connectionSessions: [UUID: ConnectionPageSession] = [:]
+    var logModels: [UUID: RecordLogsModel] = [:]
+    var inventoryModels: [UUID: InventoryModel] = [:]
+    var winboxModels: [UUID: WinboxModel] = [:]
     var launchTasks: [UUID: Task<Void, Never>] = [:]
     @Published var selectedPage: UUID?
     let scanner = NmapModel()
@@ -254,6 +257,8 @@ import ConsoleSupport
         for index in pages.indices where pages[index].key == from.favoriteID { pages[index].key = to.favoriteID }
         documentation.copy(from: from.favoriteID, to: to.favoriteID)
         savedCommands.copy(from: from.favoriteID, to: to.favoriteID)
+        copyRecordTools(from: from.favoriteID, to: to.favoriteID)
+        moveWinboxGateway(from: from.favoriteID, to: to.favoriteID)
         do { try attachmentsRepository.copy(from: from.favoriteID, to: to.favoriteID) } catch { self.error = error.localizedDescription }
     }
     func edit(_ entry: SSHAlias) {
@@ -271,6 +276,7 @@ import ConsoleSupport
             setAppearance(appearance(original), for: entry)
             documentation.copy(from: original.favoriteID, to: entry.favoriteID)
             savedCommands.copy(from: original.favoriteID, to: entry.favoriteID)
+            copyRecordTools(from: original.favoriteID, to: entry.favoriteID)
         }
         notice = "Создан дубликат «\(name)». Можно отменить изменение."
     }
@@ -361,6 +367,7 @@ import ConsoleSupport
             if let name { selected = aliases.first { $0.name == name }?.id }
             if current == nil { selected = filtered.first?.id }
             pages.filter { $0.key != nil && entry(for: $0) == nil }.forEach { closePage($0, force: true) }
+            refreshRecordTools()
         } catch { self.error = error.localizedDescription }
     }
     func copy(_ text: String) {
@@ -512,11 +519,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ConsoleStore.shared.closeAll()
         SFTPRegistry.shared.closeAll()
         ToolkitSession.stopAll()
+        RecordLogsModel.stopAll()
+        InventoryModel.stopAll()
         let tunnels = TunnelManager.shared
-        guard tunnels.hasSessions || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending else { return .terminateNow }
+        guard tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations else { return .terminateNow }
         tunnels.stopAll()
         UpdateTermination.finishAfterCleanup(sender) {
-            tunnels.hasSessions || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending
+            tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations
         }
         return .terminateLater
     }
@@ -849,13 +858,17 @@ struct AliasDetail: View {
                     } else if entry.recordKind == .website {
                         tile("Открыть сайт", detail: "В браузере", icon: "globe") { store.openWebsite(entry) }
                     }
+                    if entry.canSSH || entry.recordKind == .localShell {
+                        tile("Логи", detail: "Захват, поиск и анализ", icon: "text.alignleft") { store.openPage(entry, section: .logs) }
+                    }
+                    tile("Инвентаризация", detail: "Оборудование и сведения", icon: "shippingbox") { store.openPage(entry, section: .inventory) }
                     tile("Документация", detail: "Заметки и инструкции", icon: "doc.richtext") { store.showDocumentation(entry) }
                     tile("Вложения", detail: "Файлы записи", icon: "paperclip") { store.showAttachments(entry) }
                     tile("Инструменты", detail: "Nmap, DNS, порты, TLS и IP", icon: "network") { store.openScanner(entry) }
                     tile("Редактировать", detail: "Параметры записи", icon: "pencil") { store.edit(entry) }
                     tile("Группа", detail: store.group(entry).isEmpty ? "Без группы" : store.group(entry), icon: "folder.badge.gearshape") { store.groupingAlias = entry }
                     if entry.canSSH {
-
+                        tile("WinBox", detail: "MikroTik · открыть отдельно", icon: "network") { store.openPage(entry, section: .winbox) }
                         tile("Проверить", detail: "Доступность SSH", icon: "network") { store.check(entry) }.disabled(store.checkingID != nil)
                         tile("Внешний терминал", detail: "Открыть отдельно", icon: "arrow.up.forward.square") { store.connectExternally(entry) }
                     }

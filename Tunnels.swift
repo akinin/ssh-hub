@@ -110,6 +110,10 @@ enum TunnelCommands {
 
 // Owns a foreground SSH master. The worker never accepts host keys or asks for a password.
 final class TunnelSession: @unchecked Sendable {
+    private static let lifecycleLock = NSLock()
+    private static var runningWorkers = 0
+    static var pending: Bool { lifecycleLock.lock(); defer { lifecycleLock.unlock() }; return runningWorkers > 0 }
+    private static func track(_ delta: Int) { lifecycleLock.lock(); runningWorkers += delta; lifecycleLock.unlock() }
     private let lock = NSLock()
     private var master: Process?
     private var control: Process?
@@ -148,6 +152,8 @@ final class TunnelSession: @unchecked Sendable {
     func run(profile: TunnelProfile, alias: String, config: URL,
              executable: URL = URL(fileURLWithPath: "/usr/bin/ssh"), timeout: TimeInterval = 35,
              root: URL = URL(fileURLWithPath: "/private/tmp"), loginEnvironment: [String: String] = [:], update: (TunnelReport) -> Void) -> TunnelReport {
+        Self.track(1)
+        defer { Self.track(-1) }
         if let error = profile.validation { return TunnelReport(phase: .failed, detail: error) }
         guard SSHConfig.matches(alias, "^[A-Za-z0-9_][A-Za-z0-9_.-]*$") else { return TunnelReport(phase: .failed, detail: "Для туннеля нужно обычное имя SSH-алиаса.") }
         let directory = root.appendingPathComponent("ssh-t-" + UUID().uuidString.prefix(12))

@@ -17,6 +17,7 @@ extension AliasStore {
             pages.append(page)
             if section == .connection, let entry { let session = ConnectionPageSession(entry: entry, config: config.url, restored: true); session.gateway = aliases.first { $0.favoriteID == entry.transport?.tunnel?.sshID && $0.canSSH }; connectionSessions[page.id] = session; session.start() }
             if section == .sftp, let entry { sftpModels[page.id] = SFTPModel(entry: entry, config: config.url) }
+            createRecordTools(for: page)
         } else if section == .connection {
             connectionSessions[page.id]?.start()
         }
@@ -44,6 +45,9 @@ extension AliasStore {
         removeDetached(.page(page.id))
         sftpModels.removeValue(forKey: page.id)?.disconnect()
         connectionSessions.removeValue(forKey: page.id)?.stop()
+        logModels.removeValue(forKey: page.id)?.stop()
+        inventoryModels.removeValue(forKey: page.id)?.stop()
+        winboxModels.removeValue(forKey: page.id)?.stop()
         pages.removeAll { $0.id == page.id }; workspace.remove(.page(page.id))
         if page.section == .scanner { scanner.cancel(); tools.stop() }
         syncWorkspaceSelection()
@@ -63,16 +67,17 @@ struct WorkspacePageTab: View {
     let page: EntryPage
     @EnvironmentObject var store: AliasStore
     @ObservedObject private var consoles = ConsoleStore.shared
-    private var title: String { store.tabTitle(.page(page.id), fallback: (page.section == .connection ? store.entry(for: page)?.recordKind?.title ?? page.section.title : page.section.title) + (store.entry(for: page).map { " · " + store.title($0) } ?? "")) }
+    @State private var stateRevision = 0
+    private var title: String { store.tabTitle(.page(page.id), fallback: (store.entry(for: page).map { store.title($0) + " — " } ?? "") + (page.section == .connection ? store.entry(for: page)?.recordKind?.title ?? page.section.title : page.section.title)) }
     var body: some View {
+        let _ = stateRevision
         HStack(spacing: 6) {
             if store.tabStyle(.page(page.id)).isPinned { Image(systemName: "pin.fill").font(.caption2) }
             Button { store.selectPage(page) } label: { Label(title, systemImage: page.section.icon).lineLimit(1).frame(maxWidth: 175) }.buttonStyle(.plain)
-            Button { store.closePage(page) } label: { Image(systemName: "xmark").font(.system(size: 9)) }.buttonStyle(.plain).disabled(!store.canClose(.page(page.id))).help("Закрыть вкладку «" + title + "»").accessibilityLabel("Закрыть: " + title)
-        }.font(.system(size: 11)).padding(.horizontal, 9).frame(height: 28)
+            WorkspaceTabClose(action: { store.closePage(page) }, disabled: !store.canClose(.page(page.id)), title: title)
+        }.padding(.horizontal, 9).frame(height: 28)
             .contentShape(Rectangle()).onTapGesture { store.selectPage(page) }
-            .foregroundStyle(store.tabColor(.page(page.id)) ?? .primary)
-            .background(store.workspace.selection(in: store.workspace.pane(for: .page(page.id)) ?? .primary) == .page(page.id) ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
+            .modifier(WorkspaceTabChrome(selected: store.tabSelected(.page(page.id)), tint: store.tabColor(.page(page.id)) ?? .accentColor))
             .contextMenu {
                 TabOptionsMenu(tab: .page(page.id), title: title)
                 Divider()
@@ -87,9 +92,14 @@ struct WorkspacePageTab: View {
                     Button("Документация") { store.showDocumentation(entry) }
                     if entry.canSSH { Button("SFTP") { store.openSFTP(entry) } }
                     Button("Вложения") { store.showAttachments(entry) }
+                    if entry.canSSH || entry.recordKind == .localShell { Button("Логи") { store.openPage(entry, section: .logs) } }
+                    Button("Инвентаризация") { store.openPage(entry, section: .inventory) }
+                    if entry.canSSH { Button("WinBox") { store.openPage(entry, section: .winbox) } }
                     Button("Показать в дереве") { store.reveal(entry) }
                 }
-            }.modifier(WorkspaceTabDrag(tab: .page(page.id))).help(title)
+            }.modifier(WorkspaceTabDrag(tab: .page(page.id)))
+            .help(store.pageTabInformation(page))
+            .onReceive(store.pageTabChanges(page)) { _ in stateRevision &+= 1 }
     }
 }
 
@@ -193,6 +203,9 @@ struct WorkspacePaneView: View {
                 if page.section == .scanner { NetworkToolsView(model: store.tools, scanner: store.scanner) }
                 else if page.section == .connection, let session = store.connectionSessions[id] { ConnectionPageView(session: session).id(id) }
                 else if page.section == .sftp, let model = store.sftpModels[id] { SFTPView(model: model).id(id) }
+                else if page.section == .logs, let model = store.logModels[id] { RecordLogsView(model: model).id(id) }
+                else if page.section == .inventory, let model = store.inventoryModels[id] { RecordInventoryView(model: model).id(id) }
+                else if page.section == .winbox, let model = store.winboxModels[id] { WinboxView(model: model).id(id) }
                 else if let entry = store.entry(for: page) { EntryDetailScreen(entry: entry, section: page.section).id(id) }
             }
         case nil:

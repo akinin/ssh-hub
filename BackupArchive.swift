@@ -18,6 +18,9 @@ struct BackupRecord: Codable, Identifiable {
     var attachments: [BackupAttachment]
     var profileIDs: [UUID]? = nil
     var tunnelGatewayID: UUID? = nil
+    var inventory: RecordInventory? = nil
+    var winbox: WinboxSettings? = nil
+    var winboxGatewayID: UUID? = nil
 }
 struct HubBackup: Codable {
     var version = 1
@@ -44,6 +47,8 @@ struct HubBackup: Codable {
               templates.count <= 100, Set(templates.map(\.id)).count == templates.count, templates.allSatisfy({ $0.validation == nil }) else { throw ConfigError.message("Архив имеет неподдерживаемую версию или некорректный список записей.") }
         var total = 0
         for value in records {
+            if let inventory = value.inventory { try InventoryRepository.validate(inventory) }
+            if let error = value.winbox?.validation { throw ConfigError.message(error) }
             guard value.record.aliasName == nil, value.record.aliasSource == nil,
                   value.record.validation == nil, value.appearance.validation == nil,
                   AliasTransfer.validGroup(value.group), value.commands.validation == nil else { throw ConfigError.message("В архиве некорректные параметры записи.") }

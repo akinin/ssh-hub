@@ -329,14 +329,15 @@ struct ConsoleTab: View {
     @State private var renaming = false
     @State private var newTitle = ""
     private var entry: SSHAlias { store.aliases.first { $0.favoriteID == session.entry.favoriteID } ?? session.entry }
+    private var displayTitle: String { store.tabTitle(.console(session.id), fallback: session.title + " — " + (entry.recordKind?.title ?? "SSH")) }
     var body: some View {
         HStack(spacing: 7) {
             if store.tabStyle(.console(session.id)).isPinned { Image(systemName: "pin.fill").font(.caption2) }
             Button { consoles.selected = session.id } label: {
-                HStack(spacing: 5) { Image(systemName: "terminal"); Text(store.tabTitle(.console(session.id), fallback: session.title)).lineLimit(1).frame(maxWidth: 150) }
+                HStack(spacing: 5) { Circle().fill(session.finished ? Color.gray : session.awaitingConnection ? .orange : .green).frame(width: 5, height: 5).help(session.finished ? "Сеанс завершён" : session.awaitingConnection ? "Подключение по кнопке" : "Процесс консоли работает"); Image(systemName: entry.recordKind?.icon ?? "terminal"); Text(displayTitle).lineLimit(1).frame(maxWidth: 175) }
             }.buttonStyle(.plain)
-            Button { store.closeConsole(session) } label: { Image(systemName: "xmark").font(.system(size: 9)) }.buttonStyle(.plain).help("Закрыть сеанс").disabled(!store.canClose(.console(session.id)))
-        }.padding(.horizontal, 10).padding(.vertical, 7)
+            WorkspaceTabClose(action: { store.closeConsole(session) }, disabled: !store.canClose(.console(session.id)), title: displayTitle)
+        }.padding(.horizontal, 9).frame(height: 28)
             .contentShape(Rectangle())
             .contextMenu {
                 TabOptionsMenu(tab: .console(session.id), title: session.title)
@@ -352,6 +353,9 @@ struct ConsoleTab: View {
                 Button("Панель управления", systemImage: "gauge.with.dots.needle.50percent") { store.showDashboard(entry) }
                 Button("Документация", systemImage: "doc.richtext") { store.showDocumentation(entry) }
                 Button("Вложения", systemImage: "paperclip") { store.showAttachments(entry) }
+                if entry.canSSH || entry.recordKind == .localShell { Button("Логи", systemImage: "text.alignleft") { store.openPage(entry, section: .logs) } }
+                Button("Инвентаризация", systemImage: "shippingbox") { store.openPage(entry, section: .inventory) }
+                if entry.canSSH { Button("WinBox", systemImage: "network") { store.openPage(entry, section: .winbox) } }
                 Divider()
                 Button("Переподключиться", systemImage: "arrow.clockwise") { consoles.reconnect(session, entry: entry); if entry.canSSH { store.recordConnection(entry, kind: .ssh) } }
                 Button("Дублировать вкладку", systemImage: "plus.square.on.square") { consoles.connect(entry, title: session.title, config: session.config, newSession: true); if entry.canSSH { store.recordConnection(entry, kind: .ssh) } }.disabled(entry.recordKind == .serial)
@@ -372,8 +376,7 @@ struct ConsoleTab: View {
             } message: { Text("Имя записи и SSH-алиас останутся прежними.") }
             .modifier(WorkspaceTabDrag(tab: .console(session.id)))
             .onChange(of: session.title) { _, _ in store.saveWorkspace() }
-            .help(session.entry.recordKind == .serial ? session.title + " · " + (session.entry.serial?.summary ?? "Serial") : "\(session.title) · \(session.entry.user)@\(session.entry.host):\(session.entry.port)")
-            .foregroundStyle(store.tabColor(.console(session.id)) ?? (session.finished ? .secondary : .primary))
-            .background(store.workspace.selection(in: store.workspace.pane(for: .console(session.id)) ?? .primary) == .console(session.id) ? Color.accentColor.opacity(0.17) : Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 5))
+            .help(store.tabInformation(entry: entry, title: session.title, kind: entry.recordKind?.title ?? "SSH", state: entry.recordKind == .serial ? (entry.serial?.summary ?? "Serial") + " · " + session.status : session.status))
+            .modifier(WorkspaceTabChrome(selected: store.tabSelected(.console(session.id)), tint: store.tabColor(.console(session.id)) ?? .accentColor))
     }
 }
