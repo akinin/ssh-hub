@@ -27,7 +27,7 @@ struct ActionPalette: View {
             PaletteAction(id: "columns", title: "Две панели рядом", detail: "Рабочая область", icon: "rectangle.split.2x1", run: { store.arrangeWorkspace(.columns) }),
             PaletteAction(id: "rows", title: "Две панели одна под другой", detail: "Рабочая область", icon: "rectangle.split.1x2", run: { store.arrangeWorkspace(.rows) }),
             PaletteAction(id: "single", title: "Одна панель", detail: "Рабочая область", icon: "rectangle", run: { store.arrangeWorkspace(.none) }),
-            PaletteAction(id: "scanner", title: "Инструменты", detail: "Nmap, DNS, TCP, TLS, IP, Ping, HTTP, Wake-on-LAN", icon: "network", run: { store.openScanner() })
+            PaletteAction(id: "scanner", title: "Инструменты", detail: "Nmap, DNS, TCP, TLS, IP, Ping, HTTP, Wake-on-LAN, iperf3, RDAP, Bonjour, SSH, преобразования", icon: "network", run: { store.openScanner() })
         ]
         for section in NetworkTool.allCases {
             values.append(PaletteAction(id: "tool:" + section.rawValue, title: section.title, detail: "Инструменты", icon: section.icon, run: { store.openScanner(tool: section) }))

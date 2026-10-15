@@ -2,10 +2,10 @@ import SwiftUI
 import AppKit
 
 enum NetworkTool: String, CaseIterable, Identifiable {
-    case nmap, dns, ports, tls, ip, route, http, wake
+    case nmap, dns, ports, tls, ip, route, http, wake, speed, registration, bonjour, ssh, transform
     var id: String { rawValue }
-    var title: String { switch self { case .nmap: return "Nmap"; case .dns: return "DNS"; case .ports: return "Порты"; case .tls: return "TLS"; case .ip: return "IP-калькулятор"; case .route: return "Ping / маршрут"; case .http: return "HTTP"; case .wake: return "Wake-on-LAN" } }
-    var icon: String { switch self { case .nmap: return "network"; case .dns: return "globe"; case .ports: return "cable.connector"; case .tls: return "lock.shield"; case .ip: return "number"; case .route: return "point.topleft.down.to.point.bottomright.curvepath"; case .http: return "globe.americas"; case .wake: return "power" } }
+    var title: String { switch self { case .nmap: return "Nmap"; case .dns: return "DNS"; case .ports: return "Порты"; case .tls: return "TLS"; case .ip: return "IP-калькулятор"; case .route: return "Ping / маршрут"; case .http: return "HTTP"; case .wake: return "Wake-on-LAN"; case .speed: return "Скорость сети"; case .registration: return "Whois / RDAP"; case .bonjour: return "Bonjour / mDNS"; case .ssh: return "Проверка SSH"; case .transform: return "Преобразования" } }
+    var icon: String { switch self { case .nmap: return "network"; case .dns: return "globe"; case .ports: return "cable.connector"; case .tls: return "lock.shield"; case .ip: return "number"; case .route: return "point.topleft.down.to.point.bottomright.curvepath"; case .http: return "globe.americas"; case .wake: return "power"; case .speed: return "speedometer"; case .registration: return "info.circle"; case .bonjour: return "antenna.radiowaves.left.and.right"; case .ssh: return "terminal"; case .transform: return "arrow.left.arrow.right" } }
 }
 @MainActor final class NetworkToolsModel: ObservableObject {
     @Published var section = NetworkTool.nmap
@@ -27,13 +27,33 @@ enum NetworkTool: String, CaseIterable, Identifiable {
     @Published var cidr = "192.168.1.15/24"
     @Published var splitPrefix = "26"
     @Published var checkIP = ""
+    @Published var speedPort = 5201
+    @Published var speedSeconds = 10
+    @Published var speedStreams = 1
+    @Published var speedUDP = false
+    @Published var speedReverse = false
+    @Published var speedBandwidth = 0
+    @Published var whoisServer = ""
+    @Published var registrationQuery = ""
+    @Published var useRDAP = true
+    @Published var bonjourType = "_ssh._tcp"
+    @Published var sshPort = "22"
+    @Published var transformInput = ""
+    @Published var transformOperation = TextTransform.base64Encode
+    @Published var milliseconds = false
+    @Published var checksumAlgorithm = ChecksumAlgorithm.sha256
+    @Published var expectedChecksum = ""
+    @Published var iperfExecutable: URL?
+    init() { refreshIperf() }
+    var iperfRequest: IperfRequest { IperfRequest(host:host,port:speedPort,seconds:speedSeconds,streams:speedStreams,udp:speedUDP,reverse:speedReverse,bandwidth:speedBandwidth) }
+    func refreshIperf() { iperfExecutable = NmapDependency.executable("iperf3",custom:UserDefaults.standard.string(forKey:"iperfExecutable.v1")) }
     private var sessions: [NetworkTool: ToolkitSession] = [:]
     var runner: ToolkitSession {
         if let value = sessions[section] { return value }; let value = ToolkitSession(); sessions[section] = value; return value
     }
     func stop() { sessions.values.forEach { $0.stop() } }
     func setEntry(_ entry: SSHAlias) {
-        entryID = entry.favoriteID; host = entry.host; portSet = entry.port
+        entryID = entry.favoriteID; host = entry.host; portSet = entry.port; sshPort = entry.port; registrationQuery = entry.host
         if let website = entry.website, let parsed = URL(string: website), let domain = parsed.host { host = domain; port = String(parsed.port ?? (parsed.scheme == "https" ? 443 : 80)); url = website }
         else { port = "443"; url = "https://" + (host.contains(":") ? "[" + host + "]" : host) }
     }
@@ -55,6 +75,7 @@ struct NetworkToolsView: View {
                 }.padding(.horizontal, 12).padding(.vertical, 10).fixedSize(horizontal: false, vertical: true)
                 Divider()
                 if model.section == .nmap { NmapView(model: scanner) }
+                else if [.speed,.registration,.bonjour,.ssh,.transform].contains(model.section) { ExtraToolsView(model:model,runner:model.runner).id(model.section).padding(12) }
                 else { ToolkitToolsView(model: model, runner: model.runner).id(model.section).padding(12) }
             }.frame(width: viewport.size.width, height: viewport.size.height, alignment: .topLeading).clipped()
         }.onChange(of: scanner.target) { _, value in if !value.contains(","), NmapRequest.targetSize(value) != nil, !value.contains("/") { model.host = value } }
@@ -81,7 +102,7 @@ struct ToolkitToolsView: View {
                     case .route: routeControls
                     case .http: httpControls
                     case .wake: wakeControls
-                    case .nmap: EmptyView()
+                    default: EmptyView()
                     }
                 }.disabled(runner.busy && section != .tls)
             }.frame(maxHeight: section == .ip ? 165 : 200)
