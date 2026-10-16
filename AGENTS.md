@@ -6,6 +6,9 @@
 
 ## Структура
 
+- RecordSSHConnectionFields и RecordSSHAliasFields общие для обоих редакторов; блок алиаса расположен после основных полей и разделителя.
+- В 2.18 отключение raw SSH-алиаса создаёт LocalConnectionRecord с originIdentity: favoriteID и Keychain account сохраняют исходную идентичность. UUID относится только к приватному конфигу/локальному хранилищу. rawSSHOptions сохраняет исходные кавычки и повторные директивы, запрещает Host/Match/Include; inheritedSSHValues сохраняет отсутствующие User/Port/HostName, пока они не изменены. Приватный target — исходное имя для Host-шаблонов. В архивах originIdentity и inheritedSSHValues сбрасываются перед восстановлением, чтобы новые записи не захватывали существующие материалы. При повторном подключении используйте текущую запись по favoriteID.
+
 - RecordEditorShell объединяет редакторы, состояние черновика принадлежит внешнему view, смена раздела не сбрасывает ввод. Алиас — в «Подключение». Для NSMenuItem на macOS 27 public preferredImageVisibility выставляется .visible (1) через guarded KVC, чтобы продолжать сборку стабильным SDK 26.5. Не меняйте глобальные настройки меню.
 
 - QuickConnectionTarget в ConsoleLaunch.swift разбирает только ограниченные адреса/порты, SSH передаётся как один ssh:// target после --, без shell/изменения конфига. isQuickConnection — только runtime; быстрые страницы находят entry в собственном ConnectionPageSession, не попадают в список и restore. ConnectionPassword не читает Keychain для быстрых подключений. Никаких тестовых подключений к пользовательским адресам.

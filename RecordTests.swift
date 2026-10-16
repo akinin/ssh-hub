@@ -2,10 +2,91 @@ import Foundation
 
 @main enum RecordTests {
     static func check(_ value: Bool, file: StaticString = #file, line: UInt = #line) { precondition(value, file: file, line: line) }
+    static func aliasLifecycle(root: URL) throws {
+        let file = root.appendingPathComponent("alias-config"), config = SSHConfig(url: file)
+        let source = """
+        # Fixture, never a real server
+        Host device sibling
+            HostName 192.0.2.55
+            User demo
+            Port 2222
+            IdentityFile ~/.ssh/test-one
+            IdentityFile "~/.ssh/test two"
+            IdentitiesOnly no
+            LocalForward 127.0.0.1:45670 192.0.2.9:80
+            ProxyCommand /usr/bin/false
+            PreferredAuthentications keyboard-interactive,publickey
+        Host device*
+            ServerAliveInterval 57
+        Host *
+            ConnectTimeout 9
+        """ + "\n"
+        try Data(source.utf8).write(to: file)
+        let raw = try config.load().aliases.first { $0.name == "device" }!
+        let snapshot = try config.editSnapshot(raw)
+        let record = try LocalConnectionRecord.detached(from: snapshot, draft: AliasDraft(entry: raw), title: "Fixture")
+        let repo = LocalConnectionRepository(config: file, root: root.appendingPathComponent("detached"))
+        let change = try config.delete(snapshot)
+        try repo.write([record], expected: [])
+        let entry = record.entry(config: file, privateConfig: repo.privateConfig(record.id))
+        check(entry.favoriteID == raw.favoriteID && entry.sshAlias == nil && entry.sshTarget == "device")
+        check(try repo.load() == [record])
+        check(try config.load().aliases.map(\.name) == ["sibling"])
+        check(try Data(contentsOf: change.backup) == Data(source.utf8))
+        func resolved(_ file: URL, _ target: String) throws -> String {
+            let process = Process(), output = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh"); process.arguments = ["-G", "-F", file.path, target]
+            process.standardOutput = output; process.standardError = output
+            try process.run(); let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self); process.waitUntilExit()
+            check(process.terminationStatus == 0); return text
+        }
+        let privateText = try String(contentsOf: repo.privateConfig(record.id))
+        check(privateText.contains("LocalForward 127.0.0.1:45670 192.0.2.9:80"))
+        let effective = try resolved(repo.privateConfig(record.id), entry.sshTarget)
+        check(effective.contains("serveraliveinterval 57\n") && effective.contains("identitiesonly no\n") && effective.contains("proxycommand /usr/bin/false\n"))
+        check(effective.contains("identityfile ~/.ssh/test-one\n") && effective.contains("identityfile ~/.ssh/test two\n"))
+        var linked = record; linked.aliasName = "device-renamed"; linked.aliasSource = file
+        let created = try config.importAliases([linked.draft], expectedData: config.load().data)
+        try repo.write([linked], expected: [record])
+        let renamed = try config.load().aliases.first { $0.name == "device-renamed" }!
+        check(linked.entry(config: file, privateConfig: repo.privateConfig(record.id), alias: renamed).favoriteID == raw.favoriteID)
+        check(renamed.options.filter { $0.key.lowercased() == "identityfile" }.count == 2 && renamed.value("IdentitiesOnly") == "no")
+        _ = try config.undo(created); try repo.write([record], expected: [linked])
+        _ = try config.undo(change); try repo.write([], expected: [record])
+        check(try Data(contentsOf: file) == Data(source.utf8))
+        // Missing endpoint directives continue to inherit defaults after detaching.
+        let inheritedFile = root.appendingPathComponent("alias-inherited")
+        let inheritedSource = "Host bare\n    ProxyCommand /usr/bin/false\nHost *\n    User inherited-user\n    Port 2201\n"
+        try Data(inheritedSource.utf8).write(to: inheritedFile)
+        let inheritedConfig = SSHConfig(url: inheritedFile), inheritedRaw = try inheritedConfig.load().aliases[0]
+        let inherited = try LocalConnectionRecord.detached(from: inheritedConfig.editSnapshot(inheritedRaw), draft: AliasDraft(entry: inheritedRaw), title: "Inherited")
+        let inheritedRepo = LocalConnectionRepository(config: inheritedFile, root: root.appendingPathComponent("inherited-private"))
+        _ = try inheritedConfig.delete(inheritedConfig.editSnapshot(inheritedRaw)); try inheritedRepo.write([inherited], expected: [])
+        let inheritedEffective = try resolved(inheritedRepo.privateConfig(inherited.id), "bare")
+        check(inheritedEffective.contains("user inherited-user\n") && inheritedEffective.contains("port 2201\n") && inheritedEffective.contains("hostname bare\n"))
+        // Preserve a nonstandard explicit authentication combination until the user changes its mode.
+        let customFile = root.appendingPathComponent("auth-custom")
+        try Data("Host custom\n    HostName 192.0.2.66\n    PubkeyAuthentication no\n    PreferredAuthentications keyboard-interactive\n    PasswordAuthentication no\n".utf8).write(to: customFile)
+        let customConfig = SSHConfig(url: customFile), customRaw = try customConfig.load().aliases[0]
+        let customRecord = try LocalConnectionRecord.detached(from: customConfig.editSnapshot(customRaw), draft: AliasDraft(entry: customRaw), title: "Custom")
+        check(customRecord.draft.block.contains("PasswordAuthentication no") && customRecord.draft.block.contains("PreferredAuthentications keyboard-interactive"))
+        var changedAuth = customRecord; changedAuth.authentication = .keyAndPassword
+        check(changedAuth.draft.block.contains("PreferredAuthentications publickey,password,keyboard-interactive") && !changedAuth.draft.block.contains("PasswordAuthentication no"))
+        // Old JSON has no new optional fields; malformed directives never escape the private Host block.
+        let old = try JSONDecoder().decode(LocalConnectionRecord.self, from: Data("{\"id\":\"00000000-0000-0000-0000-000000000001\",\"kind\":\"ssh\",\"title\":\"Old\",\"host\":\"192.0.2.1\",\"user\":\"demo\",\"port\":\"22\",\"identity\":\"\",\"jump\":\"\",\"authentication\":\"automatic\",\"website\":\"\",\"extraOptions\":[]}".utf8))
+        check(old.originIdentity == nil && old.rawSSHOptions == nil && old.validation == nil)
+        for unsafe in ["Host evil", "Match all", "Include /tmp/evil", "User demo\nHost evil", ""] {
+            var invalid = record; invalid.rawSSHOptions = [unsafe]; check(invalid.validation != nil)
+        }
+        var duplicate = record; duplicate.id = UUID()
+        do { try repo.write([record, duplicate], expected: []); fatalError("duplicate origin accepted") } catch {}
+        print("Alias lifecycle checks passed: detach/re-enable/rename/undo, stable materials identity, repeated and quoted SSH options, inherited defaults, legacy JSON and invalid directives")
+    }
     static func main() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("ssh-record-checks-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
+        try aliasLifecycle(root: root)
         let config = root.appendingPathComponent("config")
         let original = Data("Host inherited\n HostName 192.0.2.2\nHost *\n ServerAliveInterval 43\n".utf8)
         try original.write(to: config)

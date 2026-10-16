@@ -1,9 +1,9 @@
 import SwiftUI
 
 private enum RecordCategory: String, CaseIterable, Identifiable {
-    case popular = "Популярные", sessions = "Сеансы", information = "Информация", folders = "Папки", tools = "Инструменты"
+    case all = "Все", sessions = "Сеансы", information = "Информация", folders = "Папки", tools = "Инструменты"
     var id: String { rawValue }
-    var icon: String { switch self { case .popular: return "heart.fill"; case .sessions: return "desktopcomputer"; case .information: return "doc.text"; case .folders: return "folder.fill"; case .tools: return "wrench.and.screwdriver" } }
+    var icon: String { switch self { case .all: return "square.grid.2x2"; case .sessions: return "desktopcomputer"; case .information: return "doc.text"; case .folders: return "folder.fill"; case .tools: return "wrench.and.screwdriver" } }
 }
 private struct RecordTypeChoice: Identifiable {
     let id: String
@@ -36,11 +36,11 @@ private struct RecordTypeChoice: Identifiable {
 struct RecordChooserView: View {
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) private var dismiss
-    @State private var category: RecordCategory = .popular
+    @State private var category: RecordCategory = .all
     @State private var query = ""
     @State private var selection = "ssh"
     @State private var kind: RecordKind?
-    private var choices: [RecordTypeChoice] { RecordTypeChoice.all.filter { (category == .popular || $0.category == category) && (query.isEmpty || ($0.title + " " + $0.subtitle).localizedCaseInsensitiveContains(query)) } }
+    private var choices: [RecordTypeChoice] { RecordTypeChoice.all.filter { (category == .all || $0.category == category) && (query.isEmpty || ($0.title + " " + $0.subtitle).localizedCaseInsensitiveContains(query)) } }
     var body: some View {
         if let kind { RecordEditorView(kind: kind, initialGroup: store.creatingRecordFolder, back: { self.kind = nil }).environmentObject(store) }
         else {

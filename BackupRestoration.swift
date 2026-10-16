@@ -91,7 +91,7 @@ enum BackupRestoration {
         var metadata: [(BackupRecord, SSHAlias)] = []
         // New local records: existing SSH config and existing material files are never replaced.
         for value in backup.records where selected.contains(value.id) {
-            var record = value.record
+            var record = value.record; record.originIdentity = nil; record.aliasName = nil; record.aliasSource = nil; record.inheritedSSHValues = nil
             while true {
                 let entry = record.entry(config: localRepository.config, privateConfig: localRepository.privateConfig(record.id))
                 if !after.contains(where: { $0.id == record.id }) && !FileManager.default.fileExists(atPath: documents.url(for: entry.favoriteID).path) && !FileManager.default.fileExists(atPath: commands.file(entry.favoriteID).path) && !FileManager.default.fileExists(atPath: attachments.folder(entry.favoriteID).path) && !FileManager.default.fileExists(atPath: inventory.url(for: entry.favoriteID).path) && !FileManager.default.fileExists(atPath: winbox.file(entry.favoriteID).path) { break }

@@ -68,7 +68,7 @@ struct HubBackup: Codable {
         for value in records {
             if let inventory = value.inventory { try InventoryRepository.validate(inventory) }
             if let error = value.winbox?.validation { throw ConfigError.message(error) }
-            guard value.record.aliasName == nil, value.record.aliasSource == nil,
+            guard value.record.aliasName == nil, value.record.aliasSource == nil, value.record.originIdentity == nil,
                   value.record.validation == nil, value.appearance.validation == nil,
                   AliasTransfer.validGroup(value.group), value.commands.validation == nil else { throw ConfigError.message("В архиве некорректные параметры записи.") }
             let doc = value.document

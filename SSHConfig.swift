@@ -7,6 +7,13 @@ struct SSHOption: Identifiable, Equatable, Codable {
     var id: String { key + "=" + value }
 }
 
+struct SSHRecordIdentity: Codable, Equatable {
+    var source: URL
+    var name: String
+    var key: String { source.standardizedFileURL.path + "::" + name.lowercased() }
+    var valid: Bool { source.isFileURL && source.path.hasPrefix("/") && SSHConfig.matches(name, "^[A-Za-z0-9_][A-Za-z0-9_.-]*$") }
+}
+
 struct SSHAlias: Identifiable {
     let name: String
     let source: URL
@@ -19,12 +26,13 @@ struct SSHAlias: Identifiable {
     var recordAlias: String?
     var serial: SerialSettings?
     var transport: ConnectionSettings?
+    var originIdentity: SSHRecordIdentity?
     var isQuickConnection = false
     var id: String { localID.map { "record:" + $0.uuidString } ?? "\(source.path):\(line):\(name)" }
     var canSSH: Bool { recordKind == nil || recordKind == .ssh }
     var canConnect: Bool { canSSH || recordKind?.isSession == true }
     var isConsole: Bool { canSSH || recordKind?.isConsole == true }
-    var sshTarget: String { localID == nil ? name : connectionFile != nil ? "connection" : recordAlias ?? "connection" }
+    var sshTarget: String { localID == nil ? name : connectionFile != nil ? originIdentity?.name ?? "connection" : recordAlias ?? "connection" }
     var sshAlias: String? { localID == nil ? name : recordAlias }
     var secondaryTitle: String {
         if canSSH { return sshAlias.map { "\($0) (\(host))" } ?? host }
@@ -44,7 +52,7 @@ struct SSHAlias: Identifiable {
     func value(_ key: String) -> String? {
         options.first { $0.key.lowercased() == key.lowercased() }?.value
     }
-    var host: String { value("HostName") ?? name }
+    var host: String { value("HostName") ?? originIdentity?.name ?? name }
     var user: String { value("User") ?? NSUserName() }
     var port: String { value("Port") ?? "22" }
     var command: String {
@@ -155,6 +163,10 @@ struct AliasDraft {
     var identity = ""
     var jump = ""
     var authentication: SSHAuthentication = .automatic
+    var rawOptions: [String] = []
+    var manageIdentitiesOnly = true
+    var manageAuthentication = true
+    var inheritedFields: Set<String> = []
     var trimmedName: String { name.trimmingCharacters(in: .whitespaces) }
     var trimmedHost: String { host.trimmingCharacters(in: .whitespaces) }
 
@@ -181,20 +193,31 @@ struct AliasDraft {
         if !jump.isEmpty && !SSHConfig.matches(jump, "^[A-Za-z0-9_.:@,%+\\-\\[\\]]+$") {
             return "Промежуточный сервер: алиас или user@host:port. Несколько серверов разделяются запятой."
         }
+        if let error = Self.validateRawOptions(rawOptions) { return error }
+        return nil
+    }
+    static func validateRawOptions(_ lines: [String]) -> String? {
+        guard lines.count <= 2000, lines.reduce(0, { $0 + $1.utf8.count }) <= 256_000,
+              lines.allSatisfy({ line in
+                  let parts = SSHConfig.tokens(line)
+                  return !line.contains(where: { $0.isNewline || $0 == "\0" }) && parts.count > 1 &&
+                      SSHConfig.matches(parts[0], "^[A-Za-z][A-Za-z0-9]+$") && !["host", "match", "include"].contains(parts[0].lowercased())
+              }) else { return "Некорректные дополнительные параметры SSH." }
         return nil
     }
 
     var block: String {
         var result = "Host \(trimmedName)\n"
-        result += "    HostName \(SSHConfig.configQuote(trimmedHost))\n"
-        result += "    User \(SSHConfig.configQuote(user.trimmingCharacters(in: .whitespaces)))\n"
-        result += "    Port \(port)\n"
+        if !inheritedFields.contains("hostname") { result += "    HostName \(SSHConfig.configQuote(trimmedHost))\n" }
+        if !inheritedFields.contains("user") { result += "    User \(SSHConfig.configQuote(user.trimmingCharacters(in: .whitespaces)))\n" }
+        if !inheritedFields.contains("port") { result += "    Port \(port)\n" }
         if !identity.trimmingCharacters(in: .whitespaces).isEmpty {
             result += "    IdentityFile \(SSHConfig.configQuote(identity.trimmingCharacters(in: .whitespaces)))\n"
-            result += "    IdentitiesOnly yes\n"
+            if manageIdentitiesOnly { result += "    IdentitiesOnly yes\n" }
         }
-        for (key, value) in authentication.options { result += "    \(key) \(value)\n" }
+        if manageAuthentication { for (key, value) in authentication.options { result += "    \(key) \(value)\n" } }
         if !jump.isEmpty { result += "    ProxyJump \(SSHConfig.configQuote(jump))\n" }
+        result += rawOptions.map { "    " + $0 + "\n" }.joined()
         return result
     }
 }

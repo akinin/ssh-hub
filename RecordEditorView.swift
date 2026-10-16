@@ -7,6 +7,53 @@ enum RecordEditorSection: String, Identifiable {
     var title: String { switch self { case .general: return "Общие"; case .connection: return "Подключение"; case .key: return "SSH-ключ"; case .availability: return "Доступность"; case .commands: return "Команды"; case .preview: return "SSH-конфиг" } }
     var icon: String { switch self { case .general: return "slider.horizontal.3"; case .connection: return "cable.connector"; case .key: return "key"; case .availability: return "waveform.path.ecg"; case .commands: return "terminal"; case .preview: return "doc.text" } }
 }
+struct RecordSSHConnectionFields: View {
+    @Binding var host: String
+    @Binding var user: String
+    @Binding var port: String
+    @Binding var jump: String
+    @Binding var authentication: SSHAuthentication
+    @Binding var password: String
+    @Binding var keepPassword: Bool
+    @Binding var removePassword: Bool
+    let reusePassword: Bool
+    let identifier: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            RecordFieldRow("Сервер") { TextField("IP или имя сервера", text: $host).accessibilityIdentifier(identifier + "Host") }
+            RecordFieldRow("Пользователь") { TextField("root", text: $user).accessibilityIdentifier(identifier + "User") }
+            RecordFieldRow("Способ входа") {
+                Picker("Способ входа", selection: $authentication) { ForEach(SSHAuthentication.allCases) { Text($0.title).tag($0) } }.labelsHidden().accessibilityIdentifier(identifier + "Authentication")
+            }
+            if authentication.usesPassword {
+                if keepPassword { RecordFieldRow("Пароль") { SecureField(reusePassword && !removePassword ? "Сохранён · оставь пустым" : "Запросить при подключении", text: $password).accessibilityIdentifier(identifier + "Password") } }
+                Toggle("Сохранить в Связке ключей macOS", isOn: $keepPassword).toggleStyle(.switch)
+                if reusePassword && !removePassword { Button("Удалить сохранённый пароль") { removePassword = true } }
+                Text("Пароль хранится в Связке ключей. Пустое поле без сохранённого пароля — ввод при подключении.").font(.caption).foregroundStyle(.secondary)
+            }
+            if authentication == .keyAndPassword { Text("Сначала ключ; пароль используется, если сервер его запросит. Пароль приватного ключа вводится отдельно.").font(.caption).foregroundStyle(.secondary) }
+            RecordFieldRow("Порт") { TextField("22", text: $port).accessibilityIdentifier(identifier + "Port") }
+            RecordFieldRow("ProxyJump") { TextField("user@host:port или алиас", text: $jump).accessibilityIdentifier(identifier + "Jump") }
+        }.textFieldStyle(.roundedBorder)
+    }
+}
+struct RecordSSHAliasFields: View {
+    @Binding var enabled: Bool
+    @Binding var name: String
+    let existingAlias: Bool
+    let identifier: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle("SSH-алиас в конфиге", isOn: $enabled).toggleStyle(.switch).accessibilityIdentifier(identifier + "Enabled")
+            if enabled {
+                TextField("Имя SSH-алиаса", text: $name, prompt: Text("my-server")).textFieldStyle(.roundedBorder).accessibilityIdentifier(identifier)
+                Text("Алиас будет сохранён в SSH-конфиг.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text(existingAlias ? "При сохранении алиас удалится из SSH-конфига. Запись и её материалы останутся в SSH Hub." : "Запись хранится в SSH Hub. SSH-алиас можно включить позже.").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
 struct RecordEditorShell<Content: View, Actions: View>: View {
     let title: String
     let subtitle: String
@@ -65,6 +112,11 @@ struct LocalRecordChange {
 }
 
 extension AliasStore {
+    func aliasNameReservations(excluding recordID: UUID? = nil) -> [SSHAlias] {
+        rawAliases + localRecords.filter { $0.id != recordID }.compactMap { record in
+            record.originIdentity.map { SSHAlias(name: $0.name, source: $0.source, line: 0) }
+        }
+    }
     var localRepository: LocalConnectionRepository { LocalConnectionRepository(config: config.url) }
     func commitRecord(_ record: LocalConnectionRecord, expected: [LocalConnectionRecord], appearance: ConnectionAppearance, group: String, ssh: ConfigChange?, template: SSHAlias?) throws {
         var records = expected
@@ -150,6 +202,7 @@ struct RecordEditorView: View {
     private var candidate: LocalConnectionRecord {
         var value = record; value.title = appearance.trimmedName; value.aliasName = createAlias ? aliasName.trimmingCharacters(in: .whitespaces) : nil
         value.host = value.host.trimmingCharacters(in: .whitespaces); value.user = value.user.trimmingCharacters(in: .whitespaces)
+        value.aliasSuggestion = aliasName.trimmingCharacters(in: .whitespaces)
         value.aliasSource = createAlias ? aliasSnapshot?.entry.source ?? store.config.url : nil
         return value
     }
@@ -168,7 +221,7 @@ struct RecordEditorView: View {
         if let error = appearance.validation ?? candidate.validation { return error }
         if !AliasTransfer.validGroup(group) { return "Путь папки — до 40 символов, без переносов строк." }
         if password.contains(where: { $0.isNewline || $0 == "\0" }) { return "Пароль должен занимать одну строку." }
-        if createAlias { return candidate.draft.validation(existing: store.rawAliases.filter { $0.id != aliasSnapshot?.entry.id }) }
+        if createAlias { return candidate.draft.validation(existing: store.aliasNameReservations(excluding: original?.id).filter { $0.id != aliasSnapshot?.entry.id }) }
         return nil
     }
     private var editorSections: [RecordEditorSection] {
@@ -193,11 +246,7 @@ struct RecordEditorView: View {
                 if kind == .ssh {
                     fields
                     Divider()
-                    Toggle("Создать SSH-алиас", isOn: $createAlias).toggleStyle(.switch).disabled(original?.aliasName != nil)
-                    if createAlias {
-                        TextField("Имя SSH-алиаса", text: $aliasName, prompt: Text("my-server")).textFieldStyle(.roundedBorder).accessibilityIdentifier("recordAlias")
-                        Text("Алиас будет сохранён в SSH-конфиг.").font(.caption).foregroundStyle(.secondary)
-                    } else { Text("Запись хранится в SSH Hub. Алиас можно создать позже.").font(.caption).foregroundStyle(.secondary) }
+                    RecordSSHAliasFields(enabled: $createAlias, name: $aliasName, existingAlias: original?.aliasName != nil, identifier: "recordAlias")
 
                 } else if kind == .serial { SerialSettingsFields(settings: Binding(get: { record.serial ?? SerialSettings() }, set: { record.serial = $0 })) }
                 else if kind.isWeb { TextField("Адрес сайта", text: $record.website, prompt: Text("https://example.com")).textFieldStyle(.roundedBorder).accessibilityIdentifier("recordWebsite") }
@@ -295,19 +344,7 @@ struct RecordEditorView: View {
         }
     }
     private var fields: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            LabeledContent("Сервер") { TextField("IP или имя сервера", text: $record.host).textFieldStyle(.roundedBorder).accessibilityIdentifier("recordHost") }
-            LabeledContent("Пользователь") { TextField("root", text: $record.user).textFieldStyle(.roundedBorder).accessibilityIdentifier("recordUser") }
-            Picker("Способ входа", selection: $record.authentication) { ForEach(SSHAuthentication.allCases) { Text($0.title).tag($0) } }
-            if record.authentication.usesPassword {
-                if keepPassword { SecureField("Пароль", text: $password, prompt: Text(reusePassword && !removePassword ? "Сохранён · оставь пустым" : "Ввести при подключении")).textFieldStyle(.roundedBorder) }
-                Toggle("Сохранить в Связке ключей macOS", isOn: $keepPassword).toggleStyle(.switch)
-                if reusePassword && !removePassword { Button("Удалить сохранённый пароль") { removePassword = true } }
-            }
-            if record.authentication == .keyAndPassword { Text("Сначала используется ключ. Если сервер запросит пароль, он будет запрошен или взят из Связки ключей. Пароль ключа вводится отдельно.").font(.caption).foregroundStyle(.secondary) }
-            RecordFieldRow("Порт") { TextField("22", text: $record.port).textFieldStyle(.roundedBorder) }
-            RecordFieldRow("ProxyJump") { TextField("user@host:port или алиас", text: $record.jump).textFieldStyle(.roundedBorder) }
-        }
+        RecordSSHConnectionFields(host: $record.host, user: $record.user, port: $record.port, jump: $record.jump, authentication: $record.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: reusePassword, identifier: "record")
     }
     private func load() {
         do {
@@ -321,10 +358,11 @@ struct RecordEditorView: View {
             if let original {
                 if let name = original.aliasName, let alias = try store.config.load().aliases.first(where: { $0.name == name && $0.source == original.aliasSource }) {
                     aliasSnapshot = try store.config.editSnapshot(alias)
+                    if let aliasSnapshot { try record.preserveOptions(from: aliasSnapshot, draft: AliasDraft(entry: alias)) }
                     record.host = alias.host; record.user = alias.user; record.port = alias.port
                     record.identity = alias.value("IdentityFile") ?? ""; record.jump = alias.value("ProxyJump") ?? ""; record.authentication = alias.authentication
                 }
-                createAlias = original.aliasName != nil; aliasName = original.aliasName ?? ""
+                createAlias = original.aliasName != nil; aliasName = original.aliasName ?? original.aliasSuggestion ?? original.originIdentity?.name ?? ""
                 let entry = store.aliases.first { $0.localID == original.id }
                 appearance = entry.map(store.appearance) ?? ConnectionAppearance(name: original.title)
                 if appearance.name.isEmpty { appearance.name = original.title }
@@ -369,7 +407,7 @@ struct RecordEditorView: View {
             if createAlias {
                 if let aliasSnapshot { ssh = try store.config.update(aliasSnapshot, draft: candidate.draft) }
                 else { ssh = try store.config.importAliases([candidate.draft], expectedData: expectedConfig) }
-            }
+            } else if let aliasSnapshot { ssh = try store.config.delete(aliasSnapshot) }
             if let blueprint {
                 let commandFile = store.savedCommands.repository.file(target.favoriteID), documentFile = DocumentationRepository().url(for: target.favoriteID)
                 guard !FileManager.default.fileExists(atPath: commandFile.path), !FileManager.default.fileExists(atPath: documentFile.path) else { throw ConfigError.message("Материалы с таким ID уже существуют. Открой создание заново.") }

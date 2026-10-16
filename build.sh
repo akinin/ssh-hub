@@ -40,7 +40,7 @@ swiftc -parse-as-library -swift-version 5 -D TOPOLOGY_PROVIDER_TEST -sdk "$sdk_d
 "$build_dir/topology-provider-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" TopologyData.swift TopologyExport.swift TopologyExportTests.swift -o "$build_dir/topology-export-tests" -framework AppKit -framework CoreText
 "$build_dir/topology-export-tests"
-swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConnectionAppearance.swift LocalConnections.swift TopologyData.swift TopologyRecordSeed.swift TopologyRecordSeedTests.swift -o "$build_dir/topology-record-seed-tests"
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift LocalConnections.swift TopologyData.swift TopologyRecordSeed.swift TopologyRecordSeedTests.swift -o "$build_dir/topology-record-seed-tests"
 "$build_dir/topology-record-seed-tests"
 "$build_dir/topology-data-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" TopologyData.swift TopologySSH.swift TopologySSHTests.swift -o "$build_dir/topology-ssh-tests"

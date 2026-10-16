@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Darwin
 
 struct LocalConnectionRecord: Codable, Identifiable, Equatable {
     var id = UUID()
@@ -17,15 +18,54 @@ struct LocalConnectionRecord: Codable, Identifiable, Equatable {
     var aliasName: String?
     var aliasSource: URL?
     var extraOptions: [SSHOption] = []
+    var rawSSHOptions: [String]?
+    var originIdentity: SSHRecordIdentity?
+    var aliasSuggestion: String?
+    var preserveIdentitiesOnly: Bool?
+    var preservedAuthentication: SSHAuthentication?
+    var inheritedSSHValues: [String: String]?
+    mutating func preserveOptions(from snapshot: AliasEditSnapshot, draft: AliasDraft) throws {
+        let text = try SSHConfig.editedPreview(snapshot, draft: draft)
+        var consumed = Set<String>()
+        let managed = Set(["hostname", "user", "port", "identityfile", "proxyjump"])
+        rawSSHOptions = text.components(separatedBy: .newlines).dropFirst().filter { line in
+            guard let key = SSHConfig.tokens(line).first?.lowercased() else { return false }
+            if managed.contains(key), consumed.insert(key).inserted { return false }
+            return true
+        }
+        extraOptions = []; preserveIdentitiesOnly = true; preservedAuthentication = draft.authentication
+        inheritedSSHValues = [:]
+        for (key, before, after) in [("HostName", snapshot.entry.host, draft.trimmedHost), ("User", snapshot.entry.user, draft.user.trimmingCharacters(in: .whitespaces)), ("Port", snapshot.entry.port, draft.port)] where snapshot.entry.value(key) == nil && before == after {
+            inheritedSSHValues?[key.lowercased()] = after
+        }
+    }
+    static func detached(from snapshot: AliasEditSnapshot, draft: AliasDraft, title: String) throws -> Self {
+        var record = Self(); record.title = title.isEmpty ? snapshot.entry.name : title
+        record.host = draft.trimmedHost; record.user = draft.user.trimmingCharacters(in: .whitespaces)
+        record.port = draft.port; record.identity = draft.identity; record.jump = draft.jump; record.authentication = draft.authentication
+        record.originIdentity = SSHRecordIdentity(source: snapshot.entry.source, name: snapshot.entry.name)
+        record.aliasSuggestion = draft.trimmedName
+        try record.preserveOptions(from: snapshot, draft: draft)
+        return record
+    }
     var draft: AliasDraft {
         var value = AliasDraft(); value.name = aliasName ?? "connection"
         value.host = host; value.user = user; value.port = port; value.identity = identity; value.jump = jump; value.authentication = authentication
+        let authenticationKeys = Set(["pubkeyauthentication", "preferredauthentications", "passwordauthentication", "kbdinteractiveauthentication"])
+        value.manageAuthentication = preservedAuthentication != authentication
+        value.rawOptions = (rawSSHOptions ?? []).filter { !value.manageAuthentication || !authenticationKeys.contains(SSHConfig.tokens($0).first?.lowercased() ?? "") }
+        value.manageIdentitiesOnly = preserveIdentitiesOnly != true
+        for (key, text) in [("hostname", value.trimmedHost), ("user", value.user.trimmingCharacters(in: .whitespaces)), ("port", value.port)] where inheritedSSHValues?[key] == text {
+            if key != "hostname" || aliasName == nil || aliasName == originIdentity?.name { value.inheritedFields.insert(key) }
+        }
         return value
     }
     var validation: String? {
         if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Укажи название записи." }
         if let error = ConnectionAppearance(name: title).validation { return error }
         if kind != .ssh && aliasName != nil { return "SSH-алиас доступен только для записей SSH." }
+        if let originIdentity, kind != .ssh || !originIdentity.valid { return "Некорректная исходная SSH-запись." }
+        if let error = AliasDraft.validateRawOptions(rawSSHOptions ?? []) { return error }
         if kind == .serial { return (serial ?? SerialSettings()).validation }
         if kind == .ssh { return draft.validation(existing: []) }
         if kind.isWeb || kind == .webdav, !Self.validWebsite(website) { return "Укажи полный адрес: https://example.com." }
@@ -52,12 +92,14 @@ struct LocalConnectionRecord: Codable, Identifiable, Equatable {
     func entry(config: URL, privateConfig: URL, alias: SSHAlias? = nil) -> SSHAlias {
         var options = alias?.options ?? [SSHOption(key: "HostName", value: host), SSHOption(key: "User", value: user), SSHOption(key: "Port", value: port)]
         if alias == nil {
-            if !identity.isEmpty { options += [SSHOption(key: "IdentityFile", value: identity), SSHOption(key: "IdentitiesOnly", value: "yes")] }
+            if !identity.isEmpty { options.append(SSHOption(key: "IdentityFile", value: identity)); if preserveIdentitiesOnly != true { options.append(SSHOption(key: "IdentitiesOnly", value: "yes")) } }
             if !jump.isEmpty { options.append(SSHOption(key: "ProxyJump", value: jump)) }
-            options += authentication.options.map { SSHOption(key: $0.0, value: $0.1) } + extraOptions
+            if draft.manageAuthentication { options += authentication.options.map { SSHOption(key: $0.0, value: $0.1) } }
+            options += extraOptions
+            options += draft.rawOptions.map { line in let parts = SSHConfig.tokens(line); return SSHOption(key: parts[0], value: parts.dropFirst().joined(separator: " ")) }
         }
         return SSHAlias(name: aliasName ?? title, source: config, line: 0, options: options,
-                        localID: id, connectionFile: alias == nil ? privateConfig : nil, recordKind: kind, website: website, recordAlias: aliasName, serial: serial, transport: transport)
+                        localID: id, connectionFile: alias == nil ? privateConfig : nil, recordKind: kind, website: website, recordAlias: aliasName, serial: serial, transport: transport, originIdentity: originIdentity)
     }
 }
 
@@ -85,7 +127,7 @@ struct LocalConnectionRepository {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         // Only app-private transport files are written here. ~/.ssh/config is changed solely by an explicit alias operation.
         for record in records where record.kind == .ssh {
-            var local = record.draft; local.name = "connection"
+            var local = record.draft; local.name = record.originIdentity?.name ?? "connection"
             let extras = record.extraOptions.map { "    \($0.key) \(SSHConfig.configQuote($0.value))\n" }.joined()
             let text = local.block + extras + "\nHost *\nInclude \(SSHConfig.configQuote(config.path))\nInclude /etc/ssh/ssh_config\n"
             let url = privateConfig(record.id)
@@ -93,11 +135,16 @@ struct LocalConnectionRepository {
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        try encoder.encode(records).write(to: file, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        let staged = root.appendingPathComponent(".records-" + UUID().uuidString + ".json")
+        defer { try? FileManager.default.removeItem(at: staged) }
+        try encoder.encode(records).write(to: staged, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: staged.path)
+        guard Darwin.rename(staged.path, file.path) == 0 else { throw ConfigError.message("Не удалось сохранить записи.") }
     }
     private func validate(_ records: [LocalConnectionRecord]) throws {
         guard records.count <= 1000, Set(records.map(\.id)).count == records.count else { throw ConfigError.message("Можно хранить до 1000 отдельных записей.") }
+        let identities = records.compactMap { $0.originIdentity?.key }
+        guard Set(identities).count == identities.count else { throw ConfigError.message("Исходная SSH-запись уже добавлена.") }
         for record in records {
             if let error = record.validation { throw ConfigError.message(error) }
             for option in record.extraOptions {

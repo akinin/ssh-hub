@@ -313,7 +313,7 @@ struct ConsolePane: View {
                         Button("Уменьшить масштаб") { session.changeZoom(-0.1) }
                         Button("Сбросить масштаб") { session.changeZoom(0) }
                         Button(session.recording ? "Остановить запись вывода" : "Записывать вывод") { session.toggleRecording() }.disabled(session.awaitingConnection || session.finished)
-                        Button("Дублировать SSH-сеанс") { consoles.connect(session.entry, title: session.title, config: session.config, newSession: true) }.disabled(session.entry.recordKind == .serial)
+                        Button("Дублировать SSH-сеанс") { store.connect(store.aliases.first { $0.favoriteID == session.entry.favoriteID } ?? session.entry, newSession: true) }.disabled(session.entry.recordKind == .serial)
                     } label: { Image(systemName: "ellipsis.circle") }.menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 24)
                         .popover(isPresented: $compactAppearance, arrowEdge: .top) { ConsolePreferencesView() }
                 } else {
@@ -323,10 +323,10 @@ struct ConsolePane: View {
                 Button("\(Int(session.zoom * 100))%") { session.changeZoom(0) }.help("Сбросить масштаб · ⌘0")
                 Button { session.changeZoom(0.1) } label: { Image(systemName: "plus.magnifyingglass") }.help("Увеличить масштаб · ⌘+")
                 Button { session.toggleRecording() } label: { Image(systemName: session.recording ? "record.circle.fill" : "record.circle").foregroundStyle(session.recording ? Color.red : Color.primary) }.help("Сохранять вывод сеанса в журнал (до 50 МБ)").disabled(session.awaitingConnection || session.finished)
-                Button("Дублировать", systemImage: "plus.square.on.square") { consoles.connect(session.entry, title: session.title, config: session.config, newSession: true) }.labelStyle(.iconOnly).help("Дублировать SSH-сеанс").disabled(session.entry.recordKind == .serial)
+                Button("Дублировать", systemImage: "plus.square.on.square") { store.connect(store.aliases.first { $0.favoriteID == session.entry.favoriteID } ?? session.entry, newSession: true) }.labelStyle(.iconOnly).help("Дублировать SSH-сеанс").disabled(session.entry.recordKind == .serial)
                 }
                 if session.finished {
-                    Button("Подключиться снова", systemImage: "arrow.clockwise") { store.connect(session.entry, newSession: true) }.labelStyle(.iconOnly).help("Подключиться снова")
+                    Button("Подключиться снова", systemImage: "arrow.clockwise") { store.connect(store.aliases.first { $0.favoriteID == session.entry.favoriteID } ?? session.entry, newSession: true) }.labelStyle(.iconOnly).help("Подключиться снова")
                 }
             }.controlSize(.small)
     }

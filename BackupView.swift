@@ -11,12 +11,12 @@ extension AliasStore {
             var record = localRecords.first(where: { $0.id == entry.localID }) ?? LocalConnectionRecord()
             record.id = exportIDs[entry.favoriteID]!
             record.kind = entry.recordKind ?? .ssh; record.title = title(entry)
-            record.aliasName = nil; record.aliasSource = nil
+            record.aliasName = nil; record.aliasSource = nil; record.originIdentity = nil; record.aliasSuggestion = nil; record.inheritedSSHValues = nil
             record.host = entry.host; record.user = entry.user; record.port = entry.port
             record.identity = entry.value("IdentityFile") ?? ""; record.jump = entry.value("ProxyJump") ?? ""
             record.authentication = entry.authentication; record.website = entry.website ?? ""; record.serial = entry.serial
             let known = Set(["hostname", "user", "port", "identityfile", "identitiesonly", "proxyjump", "pubkeyauthentication", "preferredauthentications", "passwordauthentication", "kbdinteractiveauthentication", "host", "match", "include"])
-            record.extraOptions = entry.options.filter { !known.contains($0.key.lowercased()) } + Array(entry.options.filter { $0.key.lowercased() == "identityfile" }.dropFirst())
+            if record.rawSSHOptions == nil { record.extraOptions = entry.options.filter { !known.contains($0.key.lowercased()) } + Array(entry.options.filter { $0.key.lowercased() == "identityfile" }.dropFirst()) }
             let attachments = try attachmentsRepository.load(entry.favoriteID).map { item -> BackupAttachment in
                 let url = attachmentsRepository.file(item, key: entry.favoriteID)
                 let info = try url.resourceValues(forKeys: [.fileSizeKey, .isSymbolicLinkKey, .isRegularFileKey])

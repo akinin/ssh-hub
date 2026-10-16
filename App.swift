@@ -359,9 +359,13 @@ import ConsoleSupport
                 guard let name = record.aliasName else { return nil }
                 return snapshot.aliases.first { $0.name == name && $0.source == record.aliasSource }
             }
-            aliases = snapshot.aliases.filter { item in !linked.contains(where: { $0.id == item.id }) } + records.map { record in
+            let loadedAliases = snapshot.aliases.filter { item in !linked.contains(where: { $0.id == item.id }) } + records.map { record in
                 record.entry(config: config.url, privateConfig: localRepository.privateConfig(record.id), alias: linked.first { $0.name == record.aliasName && $0.source == record.aliasSource })
             }
+            guard Set(loadedAliases.map(\.favoriteID)).count == loadedAliases.count else {
+                throw ConfigError.message("Имя отключённого SSH-алиаса занято другим блоком в конфиге. Переименуй новый блок в SSH-конфиге и обнови список.")
+            }
+            aliases = loadedAliases
             profiles.discover(aliases.map(\.favoriteID)); persistProfiles()
             for (id, session) in Array(connectionSessions) {
                 guard let entry = aliases.first(where: { $0.favoriteID == session.entry.favoriteID }) else { continue }
@@ -964,6 +968,7 @@ struct CreateAliasView: View {
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) var dismiss
     @State private var draft = AliasDraft()
+    @State private var aliasEnabled = true
     @State private var appearance = ConnectionAppearance()
     @State private var group = ""
     @State private var monitorEnabled = false
@@ -978,7 +983,6 @@ struct CreateAliasView: View {
     @State private var storedPassword = false
     @State private var removePassword = false
     @State private var previewExpanded = false
-    @FocusState private var nameFocused: Bool
     init(editing: AliasEditSnapshot? = nil, duplicating: AliasEditSnapshot? = nil, existing: [SSHAlias] = []) {
         self.editing = editing
         self.duplicating = duplicating
@@ -987,7 +991,7 @@ struct CreateAliasView: View {
         _draft = State(initialValue: initial)
     }
     private var credentialTarget: SSHAlias {
-        SSHAlias(name: draft.trimmedName, source: editing?.entry.source ?? store.config.url, line: 0,
+        SSHAlias(name: !aliasEnabled ? editing?.entry.name ?? draft.trimmedName : draft.trimmedName, source: editing?.entry.source ?? store.config.url, line: 0,
             options: [SSHOption(key: "HostName", value: draft.trimmedHost), SSHOption(key: "User", value: draft.user.trimmingCharacters(in: .whitespaces)), SSHOption(key: "Port", value: draft.port)])
     }
     private var canReuseSavedPassword: Bool {
@@ -998,8 +1002,9 @@ struct CreateAliasView: View {
         guard let entry = editing?.entry, entry.host == draft.trimmedHost, entry.user == draft.user.trimmingCharacters(in: .whitespaces), entry.port == draft.port, (entry.value("ProxyJump") ?? "") == draft.jump else { return nil }
         return entry
     }
-    private var validation: String? { (password.contains(where: { $0.isNewline || $0 == "\0" }) ? "Пароль должен занимать одну строку." : nil) ?? (!AliasTransfer.validGroup(group) ? "Проверь путь папки." : nil) ?? appearance.validation ?? draft.validation(existing: store.rawAliases.filter { $0.id != editing?.entry.id }) }
-    private var preview: String { (editing ?? duplicating).flatMap { try? SSHConfig.editedPreview($0, draft: draft) } ?? draft.block }
+    private var validatedDraft: AliasDraft { var value = draft; if !aliasEnabled { value.name = "connection" }; return value }
+    private var validation: String? { (password.contains(where: { $0.isNewline || $0 == "\0" }) ? "Пароль должен занимать одну строку." : nil) ?? (!AliasTransfer.validGroup(group) ? "Проверь путь папки." : nil) ?? appearance.validation ?? validatedDraft.validation(existing: aliasEnabled ? store.aliasNameReservations().filter { $0.id != editing?.entry.id } : []) }
+    private var preview: String { if !aliasEnabled { return "SSH-алиас будет удалён из общего конфига. Запись останется в SSH Hub и будет использовать отдельный конфиг подключения." }; return (editing ?? duplicating).flatMap { try? SSHConfig.editedPreview($0, draft: draft) } ?? draft.block }
     var body: some View {
         RecordEditorShell(title: duplicating != nil ? "Дублирование записи" : editing == nil ? "Новая запись · SSH" : "Редактирование записи", subtitle: "SSH · остальные параметры и комментарии сохраняются", icon: editing == nil ? "plus.square" : "pencil", sections: [.general, .connection, .key, .availability, .commands, .preview], selection: $editorSection) {
             switch editorSection {
@@ -1029,7 +1034,7 @@ struct CreateAliasView: View {
             }
         }.dismissOnOutsideClick()
             .onAppear {
-                expectedData = store.data; nameFocused = true
+                expectedData = store.data
                 if let entry = (editing ?? duplicating)?.entry { appearance = store.appearance(entry) }
                 group = (editing ?? duplicating).map { store.group($0.entry) } ?? store.creatingRecordFolder
                 monitorInterval = store.availability.interval
@@ -1044,27 +1049,15 @@ struct CreateAliasView: View {
             }
     }
     private var connectionFields: some View {
-            VStack(alignment: .leading, spacing: 12) {
-                RecordFieldRow("Алиас") { TextField("например, my-server", text: $draft.name).focused($nameFocused).accessibilityIdentifier("aliasName") }
-
-                RecordFieldRow("Сервер") { TextField("IP или имя сервера", text: $draft.host).accessibilityIdentifier("aliasHost") }
-                RecordFieldRow("Пользователь") { TextField("root", text: $draft.user).accessibilityIdentifier("aliasUser") }
-                Picker("Способ входа", selection: $draft.authentication) {
-                    ForEach(SSHAuthentication.allCases) { Text($0.title).tag($0) }
-                }.accessibilityIdentifier("aliasAuthentication")
-                if draft.authentication.usesPassword {
-                    if keepPassword { RecordFieldRow("Пароль") { SecureField(canReuseSavedPassword && !removePassword ? "Сохранён · оставь пустым" : "Запросить при подключении", text: $password).accessibilityIdentifier("aliasPassword") } }
-                    Toggle("Сохранить в Связке ключей macOS", isOn: $keepPassword)
-                    if canReuseSavedPassword && !removePassword {
-                        Button("Удалить сохранённый пароль") { removePassword = true; storedPassword = false }
-                    }
-                    Text("Пароль хранится в Связке ключей. Пустое поле без сохранённого пароля — ввод при подключении.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                if draft.authentication == .keyAndPassword { Text("Сначала ключ; пароль используется, если сервер его запросит. Пароль приватного ключа вводится отдельно.").font(.caption).foregroundStyle(.secondary) }
-                RecordFieldRow("Порт") { TextField("22", text: $draft.port).accessibilityIdentifier("aliasPort") }
-                RecordFieldRow("ProxyJump") { TextField("например, gateway", text: $draft.jump).accessibilityIdentifier("aliasJump") }
-            }.textFieldStyle(.roundedBorder)
+        VStack(alignment: .leading, spacing: 16) {
+            RecordSSHConnectionFields(host: $draft.host, user: $draft.user, port: $draft.port, jump: $draft.jump, authentication: $draft.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: canReuseSavedPassword, identifier: "alias")
+            Divider()
+            if editing != nil {
+                RecordSSHAliasFields(enabled: $aliasEnabled, name: $draft.name, existingAlias: true, identifier: "aliasName")
+            } else {
+                TextField("Имя SSH-алиаса", text: $draft.name, prompt: Text("my-server")).textFieldStyle(.roundedBorder).accessibilityIdentifier("aliasName")
+            }
+        }
     }
     func chooseKey() {
         let panel = NSOpenPanel()
@@ -1079,6 +1072,7 @@ struct CreateAliasView: View {
         }
     }
     func save() {
+        guard validation == nil else { return }
         let target = credentialTarget
         var credentialChanged = false
         var previousPassword: String?
@@ -1095,6 +1089,21 @@ struct CreateAliasView: View {
                 previousPassword = try SSHPasswordStore.password(for: target, config: store.config.url)
                 try SSHPasswordStore.set(replacement, for: target, config: store.config.url)
                 credentialChanged = true
+            }
+            if let editing, !aliasEnabled {
+                let expected = try store.localRepository.load()
+                let record = try LocalConnectionRecord.detached(from: editing, draft: draft, title: appearance.trimmedName.isEmpty ? store.title(editing.entry) : appearance.trimmedName)
+                let change = try store.config.delete(editing)
+                do { try store.commitRecord(record, expected: expected, appearance: appearance, group: group, ssh: change, template: nil) }
+                catch {
+                    let failure = error.localizedDescription
+                    do { _ = try store.config.undo(change) }
+                    catch { throw ConfigError.message(failure + "\nНе удалось восстановить SSH-конфиг: " + error.localizedDescription) }
+                    throw ConfigError.message(failure)
+                }
+                if let saved = store.aliases.first(where: { $0.localID == record.id }) { store.availability.apply(entry: saved, enabled: monitorEnabled, interval: monitorInterval, available: store.aliases) }
+                store.notice = nil
+                dismiss(); return
             }
             if let editing {
                 let change = try store.config.update(editing, draft: draft)

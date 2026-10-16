@@ -33,7 +33,7 @@ extension AliasDraft {
 }
 
 extension SSHAlias {
-    var favoriteID: String { source.standardizedFileURL.path + "::" + (localID.map { "record:" + $0.uuidString } ?? name.lowercased()) }
+    var favoriteID: String { originIdentity?.key ?? source.standardizedFileURL.path + "::" + (localID.map { "record:" + $0.uuidString } ?? name.lowercased()) }
 }
 
 extension SSHConfig {
