@@ -30,6 +30,8 @@ struct ActionPalette: View {
             PaletteAction(id: "single", title: "Одна панель", detail: "Рабочая область", icon: "rectangle", run: { store.arrangeWorkspace(.none) }),
             PaletteAction(id: "scanner", title: "Инструменты", detail: "Nmap, DNS, TCP, TLS, IP, Ping, HTTP, Wake-on-LAN, iperf3, RDAP, Bonjour, SSH, преобразования", icon: "wrench.and.screwdriver", run: { store.openScanner() })
         ]
+        for panel in OperationsPanel.allCases { values.append(PaletteAction(id: "operations:" + panel.rawValue, title: panel.title, detail: "Работа · " + store.profileName, icon: panel.icon, run: { store.operationsPanel = panel })) }
+        values.append(PaletteAction(id: "assistant", title: "ИИ-помощник", detail: "Анализ выбранного текста по подтверждению", icon: "sparkles", run: { store.presentAssistant() }))
         for section in NetworkTool.allCases {
             values.append(PaletteAction(id: "tool:" + section.rawValue, title: section.title, detail: "Инструменты", icon: section.icon, run: { store.openScanner(tool: section) }))
         }

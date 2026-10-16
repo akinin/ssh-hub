@@ -56,7 +56,7 @@ final class HubTerminalView: LocalProcessTerminalView {
 
 @MainActor final class ConsoleSession: NSObject, ObservableObject, Identifiable, LocalProcessTerminalViewDelegate {
     let id: UUID
-    let entry: SSHAlias
+    private(set) var entry: SSHAlias
     @Published var title: String
     let config: URL
     @Published private(set) var status = "Подключение…"
@@ -135,7 +135,7 @@ final class HubTerminalView: LocalProcessTerminalView {
             guard let helper = Bundle.main.url(forAuxiliaryExecutable: "SSHSerial"), let settings = entry.serial, settings.validation == nil else { status = "Некорректные параметры serial port"; finished = true; finishEvent(); return terminal }
             launch = ConsoleLaunch(executable: helper.path, arguments: settings.arguments)
         } else {
-            do { launch = try ConnectionLaunch.console(entry, config: config) }
+            do { entry = try SSHPasswordStore.preparedEntry(for: entry, config: config); launch = try ConnectionLaunch.console(entry, config: config) }
             catch { status = error.localizedDescription; finished = true; terminal.feed(text: status + "\r\n"); finishEvent(); return terminal }
         }
         if entry.canSSH, entry.authentication.usesPassword,

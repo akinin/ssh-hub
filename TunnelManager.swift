@@ -39,9 +39,13 @@ import Combine
     }
     func start(_ profile: TunnelProfile, aliases: [SSHAlias], config: URL) {
         guard sessions[profile.id] == nil else { return }
-        guard let entry = aliases.first(where: { $0.canSSH && $0.favoriteID == profile.aliasID }) else {
+        guard let original = aliases.first(where: { $0.canSSH && $0.favoriteID == profile.aliasID }) else {
             reports[profile.id] = TunnelReport(phase: .failed, detail: "SSH-алиас недоступен. Отредактируй туннель и выбери другой."); return
         }
+        let prepared: SSHAlias
+        do { prepared = try SSHPasswordStore.preparedEntry(for: original, config: config) }
+        catch { reports[profile.id] = TunnelReport(phase: .failed, detail: error.localizedDescription); return }
+        let entry = prepared
         if let conflict = profiles.first(where: { $0.id != profile.id && $0.localPort == profile.localPort && report($0.id).phase.busy }) {
             reports[profile.id] = TunnelReport(phase: .failed, detail: "Порт \(profile.localPort) используется туннелем «\(conflict.name)»."); return
         }

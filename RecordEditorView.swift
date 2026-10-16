@@ -348,7 +348,7 @@ struct RecordEditorView: View {
     }
     private func load() {
         do {
-            record = original ?? LocalConnectionRecord(); record.kind = kind; group = initialGroup
+            record = original ?? seed ?? LocalConnectionRecord(); record.kind = kind; group = initialGroup
             monitorInterval = store.availability.interval
             if kind.hasPassword { record.authentication = .password }
             if original == nil { record.port = kind.defaultPort; if kind.hasPassword { record.authentication = .password; record.user = kind == .ftp || kind == .ftps ? "anonymous" : "" } }
@@ -367,7 +367,7 @@ struct RecordEditorView: View {
                 appearance = entry.map(store.appearance) ?? ConnectionAppearance(name: original.title)
                 if appearance.name.isEmpty { appearance.name = original.title }
                 group = entry.map(store.group) ?? ""
-                storedPassword = SSHPasswordStore.hasPassword(for: target, config: store.config.url)
+                storedPassword = SSHPasswordStore.hasStoredPassword(for: target, config: store.config.url)
                 monitorEnabled = entry.map { store.availability.selected.contains($0.favoriteID) } ?? false
             } else if let blueprint {
                 appearance.name = blueprint.name; record.host = blueprint.host; record.user = blueprint.user
@@ -401,7 +401,7 @@ struct RecordEditorView: View {
         do {
             let changePassword = removePassword || (record.authentication.usesPassword && ((!keepPassword && reusePassword) || (keepPassword && !password.isEmpty)))
             if changePassword {
-                previousPassword = try SSHPasswordStore.password(for: target, config: store.config.url)
+                previousPassword = try SSHPasswordStore.storedPassword(for: target, config: store.config.url)
                 try SSHPasswordStore.set(keepPassword && !removePassword && !password.isEmpty ? password : nil, for: target, config: store.config.url); credentialChanged = true
             }
             if createAlias {

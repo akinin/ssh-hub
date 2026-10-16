@@ -3,6 +3,7 @@ import AppKit
 
 struct RecordLogsView: View {
     @ObservedObject var model: RecordLogsModel
+    @EnvironmentObject private var store: AliasStore
     @State private var error: String?
     @State private var notice: String?
     @State private var analysis: String?
@@ -125,12 +126,18 @@ struct RecordLogsView: View {
     private var exportButtons: some View {
         HStack(spacing: 8) {
             Button { analysis = RemoteLogAnalysis.report(visible) } label: { Image(systemName: "chart.bar.doc.horizontal") }.help("Анализ отфильтрованных строк").accessibilityLabel("Анализ логов").disabled(visible.isEmpty)
+            Button { analyzeWithAssistant() } label: { Image(systemName: "sparkles") }.help("Передать выбранные или отфильтрованные строки в предпросмотр ИИ").accessibilityLabel("Разобрать фрагмент с ИИ").disabled(model.exportText.isEmpty)
             Button("Во вложения", systemImage: "paperclip") { saveAttachment() }.disabled(model.exportText.isEmpty)
             Button { saveFile() } label: { Image(systemName: "square.and.arrow.down") }.help("Сохранить выбранные или отфильтрованные строки в файл").accessibilityLabel("Сохранить логи в файл").disabled(model.exportText.isEmpty)
             Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(model.exportText, forType: .string) } label: { Image(systemName: "doc.on.doc") }.help("Копировать выбранные или отфильтрованные строки").accessibilityLabel("Копировать логи").disabled(model.exportText.isEmpty)
         }
     }
     private var clearButton: some View { Button("Очистить", systemImage: "trash") { model.clear() }.disabled(model.lines.isEmpty && model.capturedCount == 0) }
+    private func analyzeWithAssistant() {
+        let text = model.exportText
+        guard text.utf8.count <= 95_000 else { error = "Выдели или отфильтруй фрагмент до 95 КБ для анализа с ИИ."; return }
+        store.presentAssistant(text, entry: model.entry)
+    }
     private func color(_ level: RemoteLogLevel) -> Color { switch level { case .error: return .red; case .warning: return .orange; case .info: return .blue; case .debug, .other: return .secondary } }
     private var filename: String { "Logs-" + ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-") + ".txt" }
     private func saveFile() {

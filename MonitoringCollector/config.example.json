@@ -1,0 +1,35 @@
+{
+  "listen": "127.0.0.1",
+  "port": 8787,
+  "concurrency": 8,
+  "retention_days": 30,
+  "targets": [
+    {
+      "id": "server-ssh",
+      "name": "Сервер · SSH",
+      "kind": "tcp",
+      "host": "192.0.2.10",
+      "port": 22,
+      "interval_seconds": 60,
+      "timeout_seconds": 5
+    },
+    {
+      "id": "website",
+      "name": "Веб-панель",
+      "kind": "http",
+      "url": "https://example.com/",
+      "expected_status": [200, 204],
+      "interval_seconds": 60,
+      "timeout_seconds": 5
+    },
+    {
+      "id": "wan2-lte",
+      "name": "WAN2 · LTE MikroTik",
+      "kind": "wan",
+      "host": "192.0.2.1",
+      "port": 443,
+      "interval_seconds": 30,
+      "timeout_seconds": 3
+    }
+  ]
+}

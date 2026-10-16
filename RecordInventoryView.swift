@@ -68,6 +68,7 @@ import AppKit
             guard let self else { return }
             defer { running.remove(token) }
             do {
+                let entry = try SSHPasswordStore.preparedEntry(for: self.entry, config: config)
                 let process = ToolkitProcess(); worker = process
                 let result: ToolkitResult
                 if isLocal { result = try await process.run("/bin/sh", ["-c", InventoryCollection.command(.macOS)], timeout: 25) }
@@ -136,7 +137,7 @@ struct RecordInventoryView: View {
                             Button("Повторить чтение") { model.reload() }
                         } else {
                             collectionControls(width: geometry.size.width)
-                            if let latest = model.record.snapshots.last { Text("Последний снимок: " + latest.date.formatted() + " · " + latest.collector.title).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                            if let latest = model.record.snapshots.last { Text("Последний снимок: " + latest.date.formatted() + " · " + latest.sourceTitle).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
                             if !model.notice.isEmpty { Text(model.notice).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
                             Divider()
                             switch mode {
@@ -214,7 +215,7 @@ struct RecordInventoryView: View {
     @ViewBuilder private var collectedFields: some View {
         if let snapshot {
             VStack(alignment: .leading, spacing: 12) {
-                Text(snapshot.collector.title + " · " + snapshot.date.formatted()).font(.caption).foregroundStyle(.secondary)
+                Text(snapshot.sourceTitle + " · " + snapshot.date.formatted()).font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button("Выбрать все") { model.selected = Set(snapshot.facts.populated) }
                     Button("Снять выбор") { model.selected = [] }
@@ -253,7 +254,7 @@ struct RecordInventoryView: View {
                         HStack(alignment: .top) {
                             VStack(alignment: .leading) {
                                 Text(snapshot.date.formatted()).font(.headline)
-                                Text(snapshot.collector.title).font(.caption).foregroundStyle(.secondary)
+                                Text(snapshot.sourceTitle).font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer(minLength: 0)
                             Button("Открыть") { snapshotID = snapshot.id; model.selected = Set(snapshot.facts.populated); mode = .collected }.controlSize(.small)

@@ -80,6 +80,8 @@ struct InventorySnapshot: Codable, Equatable, Identifiable {
     var date = Date()
     var collector: InventoryCollector
     var facts: InventoryFields
+    var source: String? = nil
+    var sourceTitle: String { source ?? collector.title }
 }
 
 struct RecordInventory: Codable, Equatable {
@@ -178,7 +180,7 @@ struct InventoryRepository {
         guard validFields(inventory.manual), inventory.draft.map(validFields) ?? true,
               inventory.modified.map({ $0.timeIntervalSince1970.isFinite }) ?? true,
               inventory.snapshots.count <= 20, Set(inventory.snapshots.map(\.id)).count == inventory.snapshots.count,
-              inventory.snapshots.allSatisfy({ validFields($0.facts) && $0.date.timeIntervalSince1970.isFinite }) else { throw InventoryError.invalidData }
+              inventory.snapshots.allSatisfy({ validFields($0.facts) && $0.date.timeIntervalSince1970.isFinite && ($0.source.map { $0.utf8.count <= 512 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) } ?? true) }) else { throw InventoryError.invalidData }
     }
 }
 

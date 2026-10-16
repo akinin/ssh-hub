@@ -49,6 +49,10 @@ struct AppSettingsView: View {
                     }
                     Text("GitHub Releases · проверка не чаще раза в сутки, установка по нажатию.").font(.caption).foregroundStyle(.secondary)
                 }
+                Section("Работа") {
+                    ForEach(OperationsPanel.allCases) { panel in Button { dismiss(); DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { store.operationsPanel = panel } } label: { Label(panel.title + "…", systemImage: panel.icon) } }
+                    Button("ИИ-помощник…", systemImage: "sparkles") { dismiss(); store.presentAssistant() }
+                }
                 Section("Перенос подключений") {
                     Button("Резервное копирование с паролем…") { dismiss(); DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { store.showingBackup = true } }
                     HStack {

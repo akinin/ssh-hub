@@ -118,6 +118,7 @@ final class DesktopFrameDelivery: @unchecked Sendable {
     func start() {
         guard !starting, !connected else { return }
         do {
+            let entry = try SSHPasswordStore.preparedEntry(for: self.entry, config: config)
             let password = try ConnectionPassword.read(entry, config: config)
             generation = UUID(); let token = generation; displayControl = false; lastSize = .zero; clipboardChange = -1; starting = true; status = "Подключение…"; image = nil
             let frames = DesktopFrameDelivery { [weak self] w,h,data in if self?.generation == token { self?.update(w,h,data) } }

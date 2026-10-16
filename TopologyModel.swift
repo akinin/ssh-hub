@@ -355,6 +355,7 @@ struct TopologyTrafficPoint { let date: Date; let rx: Double; let tx: Double }
     func collect(_ entry: SSHAlias, collector: TopologyCollector) {
         run("Сбор сетевых сведений · " + entry.name) { [weak self] in
             guard let self else { return }
+            let entry = try SSHPasswordStore.preparedEntry(for: entry, config: self.config)
             let worker = ToolkitProcess(); self.process = worker
             defer { self.process = nil; self.login?.stop(); self.login = nil }
             let result: ToolkitResult

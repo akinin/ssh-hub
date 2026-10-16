@@ -4,9 +4,35 @@ import LocalAuthentication
 import AppKit
 import Darwin
 
+// Runtime providers are optional so existing isolated transports retain their previous behavior.
+// A bound but unavailable shared preset is a hard failure, never a per-record secret fallback.
+enum SSHSharedPasswordResolution {
+    case unbound, value(String?), blocked(String)
+}
+
 // The target identity is part of the account: changing a server cannot send its old password to a different host.
 enum SSHPasswordStore {
     private static let service = "com.olshaniki.sshhub.ssh-password.v1"
+    private static let providerLock = NSLock()
+    private static var sharedHasPassword: ((SSHAlias, URL) -> Bool)?
+    private static var sharedPassword: ((SSHAlias, URL) -> SSHSharedPasswordResolution)?
+    private static var sharedPreparedEntry: ((SSHAlias, URL) throws -> SSHAlias)?
+    static func installSharedCredentials(hasPassword: ((SSHAlias, URL) -> Bool)?, password: ((SSHAlias, URL) -> SSHSharedPasswordResolution)?, preparedEntry: ((SSHAlias, URL) throws -> SSHAlias)?) {
+        providerLock.lock(); defer { providerLock.unlock() }
+        sharedHasPassword = hasPassword; sharedPassword = password; sharedPreparedEntry = preparedEntry
+    }
+    static func preparedEntry(for entry: SSHAlias, config: URL) throws -> SSHAlias {
+        providerLock.lock(); let provider = sharedPreparedEntry; providerLock.unlock()
+        if let provider { return try provider(entry, config) }
+        guard entry.sharedCredentialScope == nil && entry.credentialRuntimeScope == nil else { throw ConfigError.message("Профиль общих учётных данных больше не активен.") }
+        return entry
+    }
+    static func hasStoredPassword(for entry: SSHAlias, config: URL) -> Bool {
+        var query = query(account(for: entry, config: config)); query[kSecReturnAttributes as String] = true
+        let context = LAContext(); context.interactionNotAllowed = true
+        query[kSecUseAuthenticationContext as String] = context
+        return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
+    }
     static func account(for entry: SSHAlias, config: URL) -> String {
         var fields = [config.standardizedFileURL.path, (entry.originIdentity?.name.lowercased() ?? entry.localID?.uuidString ?? entry.name.lowercased()), entry.user, entry.host.lowercased(), entry.port]
         if !entry.canSSH { fields += [entry.recordKind?.rawValue ?? "", entry.website ?? "", entry.transport?.domain ?? ""] }
@@ -17,12 +43,23 @@ enum SSHPasswordStore {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
     }
     static func hasPassword(for entry: SSHAlias, config: URL) -> Bool {
-        var query = query(account(for: entry, config: config)); query[kSecReturnAttributes as String] = true
-        let context = LAContext(); context.interactionNotAllowed = true
-        query[kSecUseAuthenticationContext as String] = context
-        return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
+        providerLock.lock(); let provider = sharedHasPassword; providerLock.unlock()
+        if entry.sharedCredentialScope != nil || provider?(entry, config) == true { return true }
+        return hasStoredPassword(for: entry, config: config)
     }
     static func password(for entry: SSHAlias, config: URL) throws -> String? {
+        providerLock.lock(); let provider = sharedPassword; providerLock.unlock()
+        if provider == nil, entry.credentialRuntimeScope != nil { throw ConfigError.message("Профиль общих учётных данных больше не активен.") }
+        switch provider?(entry, config) ?? .unbound {
+        case .unbound:
+            guard entry.sharedCredentialScope == nil else { throw ConfigError.message("Профиль общих учётных данных больше не активен.") }
+            return try storedPassword(for: entry, config: config)
+        case .value(let value): return value
+        case .blocked(let message): throw ConfigError.message(message)
+        }
+    }
+    // Editors and rollback paths must operate on the original per-record secret.
+    static func storedPassword(for entry: SSHAlias, config: URL) throws -> String? {
         var query = query(account(for: entry, config: config)); query[kSecReturnData as String] = true
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)

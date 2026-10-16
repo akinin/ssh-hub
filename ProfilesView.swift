@@ -12,9 +12,11 @@ extension AliasStore {
     func switchProfile(_ id: UUID) {
         guard id != profiles.active, profiles.profiles.contains(where: { $0.id == id }) else { return }
         saveWorkspace(); restoringWorkspace = true
+        stopOperations(clear: true)
         ToolkitSession.stopAll()
         closeAllTabs(force: true); tabStyles = [:]; selected = nil
         profiles.active = id; persistProfiles(); query = ""; groupFilter = "all"
+        _ = credentialVault(); reloadSearchMetadata()
         restoreWorkspace(); restoringWorkspace = false
         if pages.isEmpty && ConsoleStore.shared.sessions.isEmpty, let first = profileEntries.first { showDashboard(first) }
         saveWorkspace()

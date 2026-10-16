@@ -92,7 +92,7 @@ extension AliasStore {
             }
         }
     }
-    func finishWorkspace() { saveWorkspace(); endingWorkspace = true; availability.stop(); launchTasks.values.forEach { $0.cancel() }; connectionSessions.values.forEach { $0.stop() }; logModels.values.forEach { $0.stop() }; inventoryModels.values.forEach { $0.stop() }; winboxModels.values.forEach { $0.stop() }; topologyModels.values.forEach { $0.stop() } }
+    func finishWorkspace() { stopOperations(clear: true); saveWorkspace(); endingWorkspace = true; availability.stop(); launchTasks.values.forEach { $0.cancel() }; connectionSessions.values.forEach { $0.stop() }; logModels.values.forEach { $0.stop() }; inventoryModels.values.forEach { $0.stop() }; winboxModels.values.forEach { $0.stop() }; topologyModels.values.forEach { $0.stop() } }
     func acceptTabDrop(_ token: String?, pane: WorkspacePane, before: WorkspaceTab? = nil) -> Bool {
         guard let token, let tab = WorkspaceTab(dragToken: token),
               pages.contains(where: { .page($0.id) == tab }) || ConsoleStore.shared.sessions.contains(where: { .console($0.id) == tab }) else { return false }

@@ -28,11 +28,16 @@ struct SSHAlias: Identifiable {
     var transport: ConnectionSettings?
     var originIdentity: SSHRecordIdentity?
     var isQuickConnection = false
+    // Runtime-only binding. Never serialize a profile scope or temporary SSH target.
+    var credentialRuntimeScope: String?
+    var sharedCredentialScope: String?
+    var preparedConfigSource: URL?
+    var preparedSSHTarget: String?
     var id: String { localID.map { "record:" + $0.uuidString } ?? "\(source.path):\(line):\(name)" }
     var canSSH: Bool { recordKind == nil || recordKind == .ssh }
     var canConnect: Bool { canSSH || recordKind?.isSession == true }
     var isConsole: Bool { canSSH || recordKind?.isConsole == true }
-    var sshTarget: String { localID == nil ? name : connectionFile != nil ? originIdentity?.name ?? "connection" : recordAlias ?? "connection" }
+    var sshTarget: String { preparedSSHTarget ?? (localID == nil ? name : connectionFile != nil ? originIdentity?.name ?? "connection" : recordAlias ?? "connection") }
     var sshAlias: String? { localID == nil ? name : recordAlias }
     var secondaryTitle: String {
         if canSSH { return sshAlias.map { "\($0) (\(host))" } ?? host }

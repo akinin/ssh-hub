@@ -34,10 +34,11 @@ enum BackupRestoration {
     }
     // Profile edits stay in the caller's value copy until all files install.
     // Even a corrupted map or a dangling symlink reserves its existing profile.
-    static func profileMapping(_ backup: HubBackup, profiles: inout HubProfiles, topology: TopologyRepository) throws -> [UUID: UUID] {
+    static func profileMapping(_ backup: HubBackup, profiles: inout HubProfiles, topology: TopologyRepository, operationsConfig: URL? = nil, operationsRoot: URL? = nil) throws -> [UUID: UUID] {
         try backup.validate()
         var mapping: [UUID: UUID] = [:]
         let mapProfiles = Set((backup.topologies ?? []).map(\.profileID))
+        let operationProfiles = Set((backup.operations ?? []).map(\.profileID))
         var sources = backup.profiles ?? []
         if let first = sources.first {
             var sourceProfiles = HubProfiles(); sourceProfiles.profiles = sources; sourceProfiles.active = first.id
@@ -50,14 +51,19 @@ enum BackupRestoration {
         for source in sources {
             let existing = profiles.profiles.first { $0.name.caseInsensitiveCompare(source.name) == .orderedSame }
             var target = try existing?.id ?? profiles.add(source.name)
-            if mapProfiles.contains(source.id), try topologyProfileExists(topology, target) {
-                let suffix = " (карта из архива)", prefix = String(source.name.prefix(40 - suffix.count))
+            func occupied(_ id: UUID) throws -> Bool {
+                if mapProfiles.contains(source.id), try topologyProfileExists(topology, id) { return true }
+                if operationProfiles.contains(source.id), let config = operationsConfig, try BackupOperations.occupied(config: config, profileID: id, root: operationsRoot) { return true }
+                return false
+            }
+            if try occupied(target) {
+                let suffix = " (из архива)", prefix = String(source.name.prefix(40 - suffix.count))
                 var candidate = prefix + suffix, counter = 2
                 while profiles.profiles.contains(where: { $0.name.caseInsensitiveCompare(candidate) == .orderedSame }) {
-                    let numbered = " (карта из архива \(counter))"; candidate = String(source.name.prefix(40 - numbered.count)) + numbered; counter += 1
+                    let numbered = " (из архива \(counter))"; candidate = String(source.name.prefix(40 - numbered.count)) + numbered; counter += 1
                 }
                 target = try profiles.add(candidate)
-                while try topologyProfileExists(topology, target) {
+                while try occupied(target) {
                     profiles.profiles.removeAll { $0.id == target }
                     target = try profiles.add(candidate)
                 }
@@ -184,6 +190,8 @@ enum BackupRestoration {
                 try topology.write(copy, overwrite: false)
                 installed.append(topology.url(for: copy.id))
             }
+            let operationFiles = try BackupOperations.restored(backup.operations ?? [], config: localRepository.config, profileMap: topologyProfileMap, recordKeys: restoredRecordKeys, root: documents.root.deletingLastPathComponent())
+            installed += try BackupOperationFile.installAll(operationFiles)
             try writeTemplates(newTemplates)
             try writeLibrary(newLibrary)
             try writeNmapTemplates(newNmapTemplates)

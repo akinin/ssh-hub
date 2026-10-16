@@ -33,8 +33,10 @@ struct HubBackup: Codable {
     var profiles: [HubProfile]? = nil
     var nmapTemplates: [NmapTemplate]? = nil
     var topologies: [TopologyDocument]? = nil
+    var operations: [BackupOperations]? = nil
     static let maximumBytes = 350_000_000
     func validate() throws {
+        try BackupOperations.validate(operations ?? [], recordIDs: Set(records.map(\.id)), profileIDs: Set((profiles ?? []).map(\.id)))
         try CommandCatalog.validate(commandLibrary ?? [])
         try NmapTemplates.validate(nmapTemplates ?? [])
         if let topologies {

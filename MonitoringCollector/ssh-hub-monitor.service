@@ -1,0 +1,26 @@
+[Unit]
+Description=SSH Hub monitoring collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ssh-hub-monitor
+Group=ssh-hub-monitor
+Environment=SSH_HUB_MONITOR_TOKEN_FILE=/etc/ssh-hub-monitor/token
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /opt/ssh-hub-monitor/collector.py --config /etc/ssh-hub-monitor/config.json --database /var/lib/ssh-hub-monitor/history.sqlite
+StateDirectory=ssh-hub-monitor
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=25
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ssh-hub-monitor
+
+[Install]
+WantedBy=multi-user.target

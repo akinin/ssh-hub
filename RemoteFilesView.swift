@@ -19,6 +19,7 @@ import AppKit
     func connect() {
         guard !busy else { return }
         do {
+            let entry = try SSHPasswordStore.preparedEntry(for: self.entry, config: config)
             let password = try ConnectionPassword.read(entry, config: config)
             client = RemoteFilesClient(entry: entry, password: password); connected = true; refresh()
         } catch is CancellationError { status = "Подключение отменено" }

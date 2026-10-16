@@ -24,6 +24,16 @@ import ConsoleSupport
     var detachedWindows: [WorkspaceTab: DetachedWorkspaceWindow] = [:]
     @Published var detachedTabs: Set<WorkspaceTab> = []
     @Published var showingPalette = false
+    @Published var operationsPanel: OperationsPanel?
+    @Published var assistantVisible = false
+    @Published var assistantExpanded = false
+    @Published var assistantCommandReview: AssistantCommandReview?
+    var assistant: AssistantChatModel?
+    @Published var infrastructureImport: InfrastructureImportTarget?
+    var sharedCredentials: SharedCredentialVault?
+    var infrastructure: InfrastructureIntegrationModel?
+    var monitoring: MonitoringModel?
+    var maintenance: MaintenanceModel?
     @Published var showingCommandLibrary = false
     @Published var showingBackup = false
     @Published var showingTemplates = false
@@ -44,6 +54,7 @@ import ConsoleSupport
     let documentation = DocumentationWorkspace()
     let savedCommands = SavedCommandsWorkspace()
     let availability = AvailabilityMonitor()
+    @Published var searchMetadata = SearchMetadata()
     @Published var query = ""
     @Published var error: String?
     @Published var warnings: [String] = []
@@ -112,6 +123,7 @@ import ConsoleSupport
         if pages.isEmpty && ConsoleStore.shared.sessions.isEmpty, let initial = current ?? filtered.first { showDashboard(initial) }
         saveWorkspace()
         availability.configure(entries: aliases)
+        _ = credentialVault(); reloadSearchMetadata()
     }
     var ordered: [SSHAlias] {
         aliases.sorted {
@@ -123,7 +135,7 @@ import ConsoleSupport
         (groupFilter == "recent" ? recentAliases : ordered).filter { entry in
             let matchesGroup = groupFilter == "all" || groupFilter == "recent" || (groupFilter == "favorites" && isFavorite(entry)) || (groupFilter == "ungrouped" && group(entry).isEmpty) || (groupFilter.hasPrefix("group:") && (ConnectionTree.normalized(group(entry)) == String(groupFilter.dropFirst(6)) || ConnectionTree.normalized(group(entry)).hasPrefix(String(groupFilter.dropFirst(6)) + "/")))
             let matchesAvailability = (groupFilter == "available" || groupFilter == "unavailable") && availability.selected.contains(entry.favoriteID) && availability.results[entry.favoriteID]?.reachable == (groupFilter == "available")
-            return profiles.contains(entry.favoriteID) && (matchesGroup || matchesAvailability) && (query.isEmpty || "\(title(entry)) \(entry.name) \(entry.host) \(entry.user) \(entry.website ?? "") \(group(entry))".localizedCaseInsensitiveContains(query))
+            return profiles.contains(entry.favoriteID) && (matchesGroup || matchesAvailability || matchesSmartFolder(entry)) && (query.isEmpty || "\(title(entry)) \(entry.name) \(entry.host) \(entry.user) \(entry.website ?? "") \(group(entry))".localizedCaseInsensitiveContains(query))
         }
     }
     func showDocumentation(_ entry: SSHAlias) {
@@ -259,6 +271,7 @@ import ConsoleSupport
     }
     private func persistFavorites() { UserDefaults.standard.set(Array(favorites).sorted(), forKey: "favoriteAliases.v1") }
     private func moveFavorite(from: SSHAlias, to: SSHAlias) {
+        moveOperationsRecord(from: from.favoriteID, to: to.favoriteID)
         moveSidebarOrder(from: from.favoriteID, to: to.favoriteID)
         availability.move(from: from.favoriteID, to: to.favoriteID, available: aliases)
         if let membership = profiles.membership.removeValue(forKey: from.favoriteID) { profiles.membership[to.favoriteID] = membership; persistProfiles() }
@@ -434,6 +447,9 @@ import ConsoleSupport
     }
     func connectExternally(_ entry: SSHAlias) {
         guard entry.canSSH else { return }
+        let prepared: SSHAlias
+        do { prepared = try SSHPasswordStore.preparedEntry(for: entry, config: config.url) } catch { self.error = error.localizedDescription; return }
+        let entry = prepared
         runInTerminal(TerminalCommands.connection(entry, config: config.url), record: entry, kind: .ssh)
     }
     func openSFTP(_ entry: SSHAlias) {
@@ -442,7 +458,7 @@ import ConsoleSupport
     }
     func terminalSFTP(_ entry: SSHAlias) {
         guard entry.canSSH else { return }
-        do { runInTerminal(try TerminalCommands.sftp(entry, config: config.url), record: entry, kind: .sftp) }
+        do { let entry = try SSHPasswordStore.preparedEntry(for: entry, config: config.url); runInTerminal(try TerminalCommands.sftp(entry, config: config.url), record: entry, kind: .sftp) }
         catch { self.error = error.localizedDescription }
     }
     func copySFTP(_ entry: SSHAlias) {
@@ -535,6 +551,11 @@ import ConsoleSupport
                     Button("Отменить изменение алиаса") { store.undo() }
                         .keyboardShortcut("z", modifiers: [.command, .option]).disabled(store.undoChange == nil)
                 }
+                CommandMenu("Работа") {
+                    ForEach(OperationsPanel.allCases) { panel in Button { store.operationsPanel = panel } label: { Label(panel.title + "…", systemImage: panel.icon) } }
+                    Divider()
+                    Button("ИИ-помощник…", systemImage: "sparkles") { store.presentAssistant() }
+                }
                 CommandMenu("Подключения") { StatusMenu().environmentObject(store) }
             }
     }
@@ -554,10 +575,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         InventoryModel.stopAll()
         TopologyModel.stopAll()
         let tunnels = TunnelManager.shared
-        guard tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending else { return .terminateNow }
+        guard tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MaintenanceModel.pending || AssistantAPI.pending else { return .terminateNow }
         tunnels.stopAll()
         UpdateTermination.finishAfterCleanup(sender) {
-            tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending
+            tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MaintenanceModel.pending || AssistantAPI.pending
         }
         return .terminateLater
     }
@@ -708,7 +729,7 @@ struct MainView: View {
         case "available": return "Доступные"
         case "unavailable": return "Недоступные"
         case "ungrouped": return "Без группы"
-        default: return String(store.groupFilter.dropFirst("group:".count))
+        default: if store.groupFilter.hasPrefix("smart:"), let id = UUID(uuidString: String(store.groupFilter.dropFirst(6))) { return store.searchMetadata.folders.first { $0.id == id }?.name ?? "Умная папка" }; return String(store.groupFilter.dropFirst("group:".count))
         }
     }
     private func filterOption(_ title: String, value: String) -> some View {
@@ -739,6 +760,7 @@ struct MainView: View {
                         filterOption("Доступные", value: "available")
                         filterOption("Недоступные", value: "unavailable")
                         filterOption("Без группы", value: "ungrouped")
+                        if !store.searchMetadata.folders.isEmpty { Divider(); ForEach(store.searchMetadata.folders) { filterOption($0.name, value: "smart:" + $0.id.uuidString) } }
                         if !store.groupNames.isEmpty { Divider() }
                         ForEach(store.groupNames, id: \.self) { filterOption($0, value: "group:" + $0) }
                     } label: {
@@ -772,6 +794,11 @@ struct MainView: View {
                 .toolbar(removing: .sidebarToggle)
         } detail: {
             WorkspaceView()
+                .inspector(isPresented: $store.assistantVisible) {
+                    AssistantHostView(expanded: false).environmentObject(store).inspectorColumnWidth(min: 360, ideal: 420, max: 560)
+                }
+                .onChange(of: store.selected) { _, _ in store.refreshAssistantContext() }
+                .onChange(of: store.assistantVisible) { _, visible in if !visible && !store.assistantExpanded { store.assistant?.stop() } }
         }
         .frame(minWidth: 780, minHeight: 550)
         .background(WindowTitleBehavior().frame(width: 0, height: 0))
@@ -807,6 +834,7 @@ struct MainView: View {
                         .onAppear { store.reloadTopologyMapIndex() }
                         .onChange(of: store.profiles.active) { _, _ in store.reloadTopologyMapIndex() }
                         .onChange(of: store.config.url) { _, _ in store.reloadTopologyMapIndex() }
+                    toolbarButton("ИИ-помощник", symbol: "sparkles", help: "Показать или скрыть ИИ-помощника") { if store.assistantVisible || store.assistantExpanded { store.closeAssistant() } else { store.presentAssistant() } }
                     toolbarButton("Настройки", symbol: "gearshape", help: "Настройки · ⌘,") { store.showingSettings = true }
                     toolbarButton("Новая запись", symbol: "plus", help: "Новая запись · ⌘N") { store.newRecord() }
                 }.padding(.horizontal, 10).fixedSize(horizontal: true, vertical: true)
@@ -838,6 +866,16 @@ struct MainView: View {
         .sheet(isPresented: $store.showingBackup) { BackupView().environmentObject(store) }
         .sheet(isPresented: $store.showingTemplates) { TemplatesView().environmentObject(store) }
         .sheet(isPresented: $store.showingAvailability) { AvailabilityView(monitor: store.availability).environmentObject(store) }
+        .sheet(item: $store.operationsPanel) { OperationsPanelView(panel: $0).environmentObject(store) }
+        .sheet(isPresented: $store.assistantExpanded, onDismiss: { if !store.assistantVisible { store.assistant?.stop() } }) { AssistantHostView(expanded: true).environmentObject(store).frame(width: 900, height: 720) }
+        .sheet(item: $store.assistantCommandReview) { target in
+            MaintenanceReviewView(plan: target.plan) {
+                store.maintenanceModel().run(target.plan, current: store.profileEntries, config: store.config.url)
+                store.assistantCommandReview = nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { store.operationsPanel = .maintenance }
+            }
+        }
+        .sheet(item: $store.infrastructureImport) { InfrastructureRecordCreation(value: $0.value).environmentObject(store) }
         .sheet(isPresented: $store.showingSettings) { AppSettingsView().environmentObject(store) }
         .sheet(isPresented: $store.showingKeys) { KeyManagerView().environmentObject(store) }
         .sheet(isPresented: $store.showingHistory) { HistoryView().environmentObject(store) }
@@ -1054,7 +1092,7 @@ struct CreateAliasView: View {
                 group = (editing ?? duplicating).map { store.group($0.entry) } ?? store.creatingRecordFolder
                 monitorInterval = store.availability.interval
                 monitorEnabled = editing.map { store.availability.selected.contains($0.entry.favoriteID) } ?? false
-                if let entry = editing?.entry { storedPassword = SSHPasswordStore.hasPassword(for: entry, config: store.config.url) }
+                if let entry = editing?.entry { storedPassword = SSHPasswordStore.hasStoredPassword(for: entry, config: store.config.url) }
             }
             .sheet(isPresented: $generatingKey) {
                 GenerateKeyView(directory: store.config.sshDirectory) { url in
@@ -1098,10 +1136,10 @@ struct CreateAliasView: View {
             else if draft.authentication.usesPassword && keepPassword && canReuseSavedPassword && !removePassword,
                     let original = editing?.entry,
                     SSHPasswordStore.account(for: original, config: store.config.url) != SSHPasswordStore.account(for: target, config: store.config.url) {
-                replacement = try SSHPasswordStore.password(for: original, config: store.config.url); changePassword = replacement != nil
+                replacement = try SSHPasswordStore.storedPassword(for: original, config: store.config.url); changePassword = replacement != nil
             }
             if changePassword {
-                previousPassword = try SSHPasswordStore.password(for: target, config: store.config.url)
+                previousPassword = try SSHPasswordStore.storedPassword(for: target, config: store.config.url)
                 try SSHPasswordStore.set(replacement, for: target, config: store.config.url)
                 credentialChanged = true
             }

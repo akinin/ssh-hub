@@ -229,6 +229,7 @@ import Network
         rejects("Nmap restore write failure") { _ = try BackupRestoration.install(nmapDecrypted, selected: [], localRepository: repository, documents: docs, commands: saved, attachments: attachments, templates: templates, writeTemplates: { templates = $0 }, nmapTemplates: priorNmap, writeNmapTemplates: { value in if value != priorNmap { throw ConfigError.message("fixture write failure") }; nmapTemplates = value }) }
         check(nmapTemplates == priorNmap, "Nmap restore failure preserves original templates")
         try topologyBackupTests(root: root, repository: repository, docs: docs, saved: saved, attachments: attachments, record: value)
+        try operationBackupTests(root: root, record: value)
         let logID = UUID(), logRoot = root.appendingPathComponent("logs")
         let logger = try SessionOutputLog(id: logID, root: logRoot)
         try logger.append(Data("output-one\n".utf8)); logger.close()
@@ -333,7 +334,7 @@ import Network
         var profiles = HubProfiles()
         let mapping = try BackupRestoration.profileMapping(decoded, profiles: &profiles, topology: mapRepository)
         let target = mapping[sourceProfile.id]!
-        check(target != HubProfiles.homeID && profiles.profiles.contains(where: { $0.id == target && $0.name == "Home (карта из архива)" }), "existing map creates separate archive profile")
+        check(target != HubProfiles.homeID && profiles.profiles.contains(where: { $0.id == target && $0.name == "Home (из архива)" }), "existing map creates separate archive profile")
         let installed = try BackupRestoration.install(decoded, selected: [record.id], localRepository: repository, documents: docs, commands: saved, attachments: attachments,
             templates: [], writeTemplates: { _ in }, topology: mapRepository, topologyProfileMap: mapping)
         let restoredMap = try mapRepository.load(target), restoredKey = installed[0].1.favoriteID
@@ -356,7 +357,7 @@ import Network
         }
         let manifestAfterCollision = try repository.load(); check(manifestAfterCollision == manifestBeforeCollision, "map collision fails before any record persistence")
         let secondMapping = try BackupRestoration.profileMapping(decoded, profiles: &profiles, topology: mapRepository), secondTarget = secondMapping[sourceProfile.id]!
-        check(secondTarget != target && profiles.profiles.contains(where: { $0.id == secondTarget && $0.name == "Home (карта из архива 2)" }), "repeated restore creates unique map profile")
+        check(secondTarget != target && profiles.profiles.contains(where: { $0.id == secondTarget && $0.name == "Home (из архива 2)" }), "repeated restore creates unique map profile")
         let manualOnly = try BackupRestoration.install(decoded, selected: [], localRepository: repository, documents: docs, commands: saved, attachments: attachments,
             templates: [], writeTemplates: { _ in }, topology: mapRepository, topologyProfileMap: secondMapping)
         let detachedMap = try mapRepository.load(secondTarget)
@@ -407,5 +408,80 @@ import Network
         rejects("corrupt saved map blocks archive capture instead of becoming empty") {
             _ = try BackupRestoration.savedTopologies(profileIDs: [sourceProfile.id], repository: mapRepository, exportIDs: [primaryKey: record.id])
         }
+    }
+    static func operationBackupTests(root: URL, record: BackupRecord) throws {
+        let base = root.appendingPathComponent("OperationsArchiveTests", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let config = base.appendingPathComponent("config")
+        try Data("# isolated operations archive fixture\n".utf8).write(to: config)
+        let repository = LocalConnectionRepository(config: config, root: base.appendingPathComponent("Connections"))
+        let docs = DocumentationRepository(root: base.appendingPathComponent("Documentation"))
+        let commands = SavedCommandsRepository(root: base.appendingPathComponent("Commands"))
+        let attachments = AttachmentsRepository(root: base.appendingPathComponent("Attachments"))
+        let topology = TopologyRepository(root: base.appendingPathComponent("Topology"))
+        let profile = HubProfile(name: "Home"), presetID = UUID()
+        var source = record
+        source.record.id = UUID(); source.record.kind = .ssh; source.record.title = "Operations fixture"; source.record.host = "127.0.0.1"; source.record.user = "fixture"; source.record.port = "22"
+        source.record.serial = nil; source.record.transport = nil; source.profileIDs = [profile.id]; source.winbox = nil
+        let key = "backup:" + source.id.uuidString
+        let credentials = SharedCredentialDocument(presets: [SharedCredentialPreset(id: presetID, title: "Fixture operators", username: "fixture", authentication: .password)], bindings: [key: presetID], requiresAuthentication: false)
+        let operation = BackupOperations(profileID: profile.id,
+            search: SearchMetadata(tags: [key: ["production"]], folders: [SmartRecordFolder(name: "Серверы", tag: "production", kind: .ssh)]),
+            workflows: [MaintenanceWorkflow(name: "Проверка fixture", steps: [MaintenanceStep(title: "Нагрузка", command: "uptime")])],
+            credentials: credentials,
+            integrations: [InfrastructureConnection(provider: .proxmox, title: "Fixture PVE", baseURL: "https://pve.example.test:8006", tokenID: "reader@pve!fixture"), InfrastructureConnection(provider: .docker, title: "Fixture Docker", dockerRecordKey: key)],
+            monitoring: MonitoringSettings(endpoint: "https://monitor.example.test", pollSeconds: 30, notifyChanges: true),
+            assistant: AssistantSettings(enabled: true, model: "synthetic-model"),
+            chats: [AssistantChatDocument(title: "Explicit archive chat", recordKey: key, recordTitle: "Operations fixture", turns: [AssistantChatTurn(role: "user", content: "Explain fixture")])])
+        let backup = HubBackup(records: [source], folders: [], folderAppearances: [:], templates: [], profiles: [profile], operations: [operation])
+        let encrypted = try BackupEncryption.seal(backup, password: "fixture-operation-passphrase")
+        let decoded = try BackupEncryption.open(encrypted, password: "fixture-operation-passphrase")
+        check(decoded.operations?.count == 1 && decoded.operations?[0].credentials?.bindings[key] == presetID, "encrypted archive retains operations metadata and record references")
+        check(encrypted.range(of: Data("synthetic-model".utf8)) == nil && encrypted.range(of: Data("monitor.example.test".utf8)) == nil, "operation settings are encrypted")
+        var oldJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(backup)) as! [String: Any]
+        oldJSON.removeValue(forKey: "operations")
+        let legacy = try JSONDecoder().decode(HubBackup.self, from: JSONSerialization.data(withJSONObject: oldJSON)); try legacy.validate()
+        check(legacy.operations == nil, "2.18 archive without operations remains readable")
+        var invalid = backup; invalid.operations?[0].profileID = UUID()
+        rejects("unknown operations profile") { try invalid.validate() }
+        invalid = backup; invalid.operations?[0].credentials?.bindings["backup:" + UUID().uuidString] = presetID
+        rejects("unknown operations record") { try invalid.validate() }
+        let existing = SearchMetadata(tags: [:], folders: [SmartRecordFolder(name: "Existing data")])
+        let existingFile = HubFeatureFile(feature: "Search", config: config, profile: HubProfiles.homeID, root: base)
+        try existingFile.write(existing)
+        let originalBytes = try Data(contentsOf: existingFile.url)
+        var destination = HubProfiles()
+        let mapping = try BackupRestoration.profileMapping(decoded, profiles: &destination, topology: topology, operationsConfig: config, operationsRoot: base)
+        let target = mapping[profile.id]!
+        check(target != HubProfiles.homeID, "operations metadata reserves existing profile even with no network maps")
+        let featureURLs = BackupOperations.files(config: config, profileID: target, root: base)
+        var reachedAfterOperations = false
+        rejects("late persistence failure rolls back installed operations") {
+            _ = try BackupRestoration.install(decoded, selected: [source.id], localRepository: repository, documents: docs, commands: commands, attachments: attachments,
+                templates: [], writeTemplates: { _ in
+                    reachedAfterOperations = reachedAfterOperations || featureURLs.allSatisfy { FileManager.default.fileExists(atPath: $0.path) }
+                    throw ConfigError.message("fixture failure after operations install")
+                }, topology: topology, topologyProfileMap: mapping)
+        }
+        let afterFailure = try repository.load(), existingAfterFailure = try Data(contentsOf: existingFile.url)
+        check(reachedAfterOperations && afterFailure.isEmpty && featureURLs.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) }, "all seven operation files were committed before failure and removed by outer rollback")
+        check(existingAfterFailure == originalBytes, "rollback leaves existing profile byte exact")
+        let failedEntry = source.record.entry(config: config, privateConfig: repository.privateConfig(source.id))
+        check(!FileManager.default.fileExists(atPath: docs.url(for: failedEntry.favoriteID).path) && !FileManager.default.fileExists(atPath: commands.file(failedEntry.favoriteID).path) && !FileManager.default.fileExists(atPath: attachments.folder(failedEntry.favoriteID).path) && !FileManager.default.fileExists(atPath: repository.privateConfig(source.id).path), "failed archive leaves no restored record materials or private transport config")
+        let installed = try BackupRestoration.install(decoded, selected: [source.id], localRepository: repository, documents: docs, commands: commands, attachments: attachments,
+            templates: [], writeTemplates: { _ in }, topology: topology, topologyProfileMap: mapping)
+        let restoredKey = installed[0].1.favoriteID
+        let restoredSearch = try HubFeatureFile(feature: "Search", config: config, profile: target, root: base).load(SearchMetadata.self, fallback: .init())
+        let restoredCredentials = try SharedCredentialRepository(config: config, profileID: target, root: base.appendingPathComponent("SharedCredentials")).load()
+        let restoredIntegrations = try InfrastructureRepository(configURL: config, profileID: target, root: base.appendingPathComponent("Integrations")).load()
+        let restoredMonitor = try MonitoringRepository(configURL: config, profileID: target, root: base.appendingPathComponent("Monitoring")).read()
+        let restoredAssistant = try HubFeatureFile(feature: "Assistant", config: config, profile: target, root: base).load(AssistantSettings.self, fallback: .init())
+        check(restoredSearch.tags[restoredKey] == ["production"] && restoredCredentials.bindings[restoredKey] == restoredCredentials.presets.first?.id, "full archive remaps search and credential bindings to installed records")
+        check(restoredCredentials.presets.first?.id != presetID && restoredCredentials.requiresAuthentication && !restoredAssistant.enabled && !restoredMonitor.notifyChanges, "restored secrets have fresh references and optional activity stays disabled")
+        check(restoredIntegrations.first(where: { $0.provider == .docker })?.dockerRecordKey == restoredKey && restoredIntegrations.first?.id != operation.integrations?.first?.id, "Docker source is remapped and API tokens cannot bind to original integration IDs")
+        var repeatProfiles = destination
+        let repeatMapping = try BackupRestoration.profileMapping(decoded, profiles: &repeatProfiles, topology: topology, operationsConfig: config, operationsRoot: base)
+        check(repeatMapping[profile.id] != target && repeatMapping[profile.id] != HubProfiles.homeID, "repeated archive restore obtains another metadata profile")
+        print("Operation archive checks passed: old archives, encrypted metadata, profile conflicts, full record remap and failure after all seven feature files install")
     }
 }
