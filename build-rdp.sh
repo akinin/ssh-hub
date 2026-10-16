@@ -13,11 +13,11 @@ fetch_source() {
 }
 fetch_source freerdp-3.32.2.tar.gz e95a505c0057e4d06a3b120477c421028769deba4db9c639ef3465d050f0955c https://github.com/FreeRDP/FreeRDP/releases/download/3.32.2/freerdp-3.32.2.tar.gz
 fetch_source openssl-3.6.4.tar.gz 9bffaa1ad1e07b354c21bd3324ec02fa15579f45a7d0494b3e74bc449b7333ef https://github.com/openssl/openssl/releases/download/openssl-3.6.4/openssl-3.6.4.tar.gz
-if [[ ! -f "$cache_dir/openssl-3.6.4/libssl.a" ]]; then
+if [[ ! -f "$cache_dir/openssl-3.6.4/libssl.a" || ! -f "$cache_dir/openssl-3.6.4/include/openssl/macros.h" || ! -f "$cache_dir/openssl-3.6.4/include/openssl/md4.h" ]]; then
   tar -xzf "$cache_dir/openssl-3.6.4.tar.gz" -C "$cache_dir"
   (cd "$cache_dir/openssl-3.6.4"; ./Configure darwin64-arm64-cc no-shared no-tests no-module --openssldir=/etc/ssl -mmacosx-version-min=14.0 -isysroot "$sdk"; make -j6 build_libs)
 fi
-if [[ ! -d "$cache_dir/freerdp-3.32.2" ]]; then tar -xzf "$cache_dir/freerdp-3.32.2.tar.gz" -C "$cache_dir"; fi
+if [[ ! -f "$cache_dir/freerdp-3.32.2/CMakeLists.txt" ]]; then tar -xzf "$cache_dir/freerdp-3.32.2.tar.gz" -C "$cache_dir"; fi
 "$cmake_bin" -S "$cache_dir/freerdp-3.32.2" -B "$cache_dir/build" -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_SYSROOT="$sdk" \
   -DCMAKE_EXPORT_NO_PACKAGE_REGISTRY=ON -DCMAKE_EXPORT_PACKAGE_REGISTRY=OFF \

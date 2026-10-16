@@ -56,7 +56,7 @@ struct HubBackup: Codable {
             }
         }
         if let profiles {
-            guard profiles.count <= 50, Set(profiles.map(\.id)).count == profiles.count, profiles.allSatisfy({ HubProfiles.validName($0.name) }), Set(profiles.map { $0.name.lowercased() }).count == profiles.count else { throw ConfigError.message("Некорректные профили архива.") }
+            guard profiles.count <= 50, Set(profiles.map(\.id)).count == profiles.count, profiles.allSatisfy({ $0.valid }), Set(profiles.map { $0.name.lowercased() }).count == profiles.count else { throw ConfigError.message("Некорректные профили архива.") }
             let valid = Set(profiles.map(\.id))
             guard records.allSatisfy({ Set($0.profileIDs ?? []).isSubset(of: valid) }) else { throw ConfigError.message("Неизвестный профиль записи в архиве.") }
         }

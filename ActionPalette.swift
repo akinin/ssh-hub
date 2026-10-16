@@ -28,7 +28,7 @@ struct ActionPalette: View {
             PaletteAction(id: "columns", title: "Две панели рядом", detail: "Рабочая область", icon: "rectangle.split.2x1", run: { store.arrangeWorkspace(.columns) }),
             PaletteAction(id: "rows", title: "Две панели одна под другой", detail: "Рабочая область", icon: "rectangle.split.1x2", run: { store.arrangeWorkspace(.rows) }),
             PaletteAction(id: "single", title: "Одна панель", detail: "Рабочая область", icon: "rectangle", run: { store.arrangeWorkspace(.none) }),
-            PaletteAction(id: "scanner", title: "Инструменты", detail: "Nmap, DNS, TCP, TLS, IP, Ping, HTTP, Wake-on-LAN, iperf3, RDAP, Bonjour, SSH, преобразования", icon: "network", run: { store.openScanner() })
+            PaletteAction(id: "scanner", title: "Инструменты", detail: "Nmap, DNS, TCP, TLS, IP, Ping, HTTP, Wake-on-LAN, iperf3, RDAP, Bonjour, SSH, преобразования", icon: "wrench.and.screwdriver", run: { store.openScanner() })
         ]
         for section in NetworkTool.allCases {
             values.append(PaletteAction(id: "tool:" + section.rawValue, title: section.title, detail: "Инструменты", icon: section.icon, run: { store.openScanner(tool: section) }))
@@ -36,11 +36,11 @@ struct ActionPalette: View {
         for entry in store.profileEntries {
             let title = store.title(entry), detail = [entry.name, entry.host, entry.user, store.group(entry)].joined(separator: " · ")
             func append(_ action: String, _ verb: String, _ icon: String, _ run: @escaping () -> Void) { values.append(PaletteAction(id: entry.favoriteID + ":" + action, title: verb + " · " + title, detail: detail, icon: icon, run: run)) }
-            if entry.canConnect { append("connect", "Подключиться", "terminal") { store.connect(entry) } }
-            if entry.recordKind == .website { append("website", "Открыть сайт", "globe") { store.openWebsite(entry) } }
+            if entry.canConnect && entry.recordKind?.isWeb != true { append("connect", "Подключиться", "terminal") { store.connect(entry) } }
+            if entry.recordKind?.isWeb == true { append("website", "Открыть внутри", "macwindow") { store.openWebsite(entry) }; append("browser", "Открыть в браузере", "arrow.up.forward.square") { store.openWebsiteInBrowser(entry) } }
             if entry.canSSH { append("sftp", "SFTP", "folder") { store.openSFTP(entry) }; append("check", "Проверить SSH", "checkmark.shield") { store.check(entry) } }
             append("dashboard", "Панель", "gauge.with.dots.needle.50percent") { store.showDashboard(entry) }
-            append("tools", "Инструменты", "network") { store.openScanner(entry) }
+            append("tools", "Инструменты", "wrench.and.screwdriver") { store.openScanner(entry) }
             append("documentation", "Документация", "doc.text") { store.showDocumentation(entry) }
             append("attachments", "Вложения", "paperclip") { store.showAttachments(entry) }
             append("inventory", "Инвентаризация", "shippingbox") { store.openPage(entry, section: .inventory) }

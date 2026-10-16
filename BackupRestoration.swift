@@ -38,7 +38,16 @@ enum BackupRestoration {
         try backup.validate()
         var mapping: [UUID: UUID] = [:]
         let mapProfiles = Set((backup.topologies ?? []).map(\.profileID))
-        for source in backup.profiles ?? [] {
+        var sources = backup.profiles ?? []
+        if let first = sources.first {
+            var sourceProfiles = HubProfiles(); sourceProfiles.profiles = sources; sourceProfiles.active = first.id
+            sourceProfiles.membership = Dictionary(uniqueKeysWithValues: backup.records.map { ($0.id.uuidString, Set($0.profileIDs ?? [first.id])) })
+            sourceProfiles.migrateFolders(legacy: backup.folders, appearances: backup.folderAppearances, groups: Dictionary(uniqueKeysWithValues: backup.records.map { ($0.id.uuidString, $0.group) }), keys: backup.records.map { $0.id.uuidString })
+            sources = sourceProfiles.profiles
+        } else {
+            profiles.mergeFolders(HubProfile(name: "Архив", folderPaths: backup.folders, folderAppearances: backup.folderAppearances), into: profiles.active)
+        }
+        for source in sources {
             let existing = profiles.profiles.first { $0.name.caseInsensitiveCompare(source.name) == .orderedSame }
             var target = try existing?.id ?? profiles.add(source.name)
             if mapProfiles.contains(source.id), try topologyProfileExists(topology, target) {
@@ -53,8 +62,10 @@ enum BackupRestoration {
                     target = try profiles.add(candidate)
                 }
             }
+            profiles.mergeFolders(source, into: target)
             mapping[source.id] = target
         }
+        guard profiles.valid else { throw ConfigError.message("Настройки папок после восстановления превышают лимиты профилей.") }
         return mapping
     }
     static func install(_ backup: HubBackup, selected: Set<UUID>, localRepository: LocalConnectionRepository,

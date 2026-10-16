@@ -5,7 +5,26 @@ import Network
 @main struct AdvancedTests {
     static func check(_ value: @autoclosure () -> Bool, _ message: String) { if !value() { fatalError(message) } }
     static func rejects(_ message: String, _ action: () throws -> Void) { do { try action(); fatalError("Expected rejection: " + message) } catch {} }
+    static func profileFolderArchive() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("profile-folder-archive-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = TopologyRepository(root: root)
+        let home = HubProfile(id: HubProfiles.homeID, name: "Home", folderPaths: ["VPN"], folderAppearances: ["VPN": ConnectionAppearance(name: "source")])
+        let work = HubProfile(id: HubProfiles.workID, name: "Work", folderPaths: ["Office"], folderAppearances: [:])
+        let backup = HubBackup(records: [], folders: ["VPN", "Office"], folderAppearances: [:], templates: [], profiles: [home, work])
+        var destination = HubProfiles(); destination.profiles[0].folderPaths = ["Local"]; destination.profiles[0].folderAppearances = ["VPN": ConnectionAppearance(name: "manual")]
+        let mapping = try BackupRestoration.profileMapping(backup, profiles: &destination, topology: repository)
+        check(mapping[home.id] == HubProfiles.homeID && Set(destination.profiles[0].folderPaths ?? []) == ["VPN", "Local"], "profile archive merges only its mapped folders")
+        check(destination.profiles[1].folderPaths == ["Office"] && destination.profiles[0].folderAppearances?["VPN"]?.name == "manual", "folder scope and existing logo preserved during restore")
+        var invalid = backup; invalid.profiles?[0].folderPaths = ["../bad"]
+        rejects("invalid folder in profile archive") { try invalid.validate() }
+        let legacy = HubBackup(records: [], folders: ["Legacy empty"], folderAppearances: [:], templates: [])
+        _ = try BackupRestoration.profileMapping(legacy, profiles: &destination, topology: repository)
+        check(destination.profiles[0].folderPaths?.contains("Legacy empty") == true && destination.profiles[1].folderPaths == ["Office"], "old archives restore empty folders only into active profile")
+        print("Profile folder archive checks passed: mapped profiles, merging, existing appearance, validation and legacy restore")
+    }
     static func main() async throws {
+        try profileFolderArchive()
         var profiles = HubProfiles(); profiles.discover(["existing"])
         check(profiles.contains("existing") && !profiles.contains("existing", in: HubProfiles.workID), "existing records migrate to Home only")
         let lab = try profiles.add("Lab"); try profiles.rename(lab, name: "Servers")

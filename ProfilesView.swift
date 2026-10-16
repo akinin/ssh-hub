@@ -5,7 +5,10 @@ extension AliasStore {
     var profilesKey: String { "profiles.v1." + SHA256.hash(data: Data(config.url.standardizedFileURL.path.utf8)).map { String(format: "%02x", $0) }.joined() }
     var profileEntries: [SSHAlias] { ordered.filter { profiles.contains($0.favoriteID) } }
     var profileName: String { profiles.profiles.first { $0.id == profiles.active }?.name ?? "Home" }
-    func persistProfiles() { if let data = try? JSONEncoder().encode(profiles) { UserDefaults.standard.set(data, forKey: profilesKey) } }
+    func persistProfiles() {
+        guard profiles.valid, let data = try? JSONEncoder().encode(profiles), data.count <= 20_000_000 else { error = "Настройки профилей слишком большие или повреждены. Изменения не сохранены."; return }
+        UserDefaults.standard.set(data, forKey: profilesKey)
+    }
     func switchProfile(_ id: UUID) {
         guard id != profiles.active, profiles.profiles.contains(where: { $0.id == id }) else { return }
         saveWorkspace(); restoringWorkspace = true
@@ -42,7 +45,7 @@ struct ProfilesView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Профили").font(.title2).bold()
-            Text("У каждого профиля свой набор вкладок. При переключении соединения завершаются; возвращённые вкладки подключаются по кнопке. Библиотека команд общая.").font(.caption).foregroundStyle(.secondary)
+            Text("У каждого профиля свои записи, папки, значки папок и вкладки. При переключении соединения завершаются; возвращённые вкладки подключаются по кнопке. Библиотека команд общая.").font(.caption).foregroundStyle(.secondary)
             HStack(alignment: .top, spacing: 16) {
                 VStack {
                     List(store.profiles.profiles, selection: $selected) { Text($0.name).tag($0.id) }.frame(width: 170)

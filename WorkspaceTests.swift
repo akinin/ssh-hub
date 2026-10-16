@@ -5,6 +5,7 @@ import Foundation
         if !value() { throw ConfigError.message("FAIL: " + message) }
     }
     static func main() throws {
+        try profileFolders()
         try namedMapSnapshots()
         if CommandLine.arguments.contains("--maps-only") {
             print("Workspace named-map tests passed: legacy compatibility, multiple maps, pane/window/style persistence, malformed keys and duplicate identity")
@@ -128,6 +129,28 @@ import Foundation
         print("Workspace tests passed: split panes, moves, focus, reconnect, collapse, closing; auth transitions, OpenSSH config, nested tree, export, destination binding, secure askpass channel")
     }
 
+    static func profileFolders() throws {
+        var state = HubProfiles(); state.discover(["home", "shared"])
+        state.assign("shared", to: HubProfiles.workID, enabled: true)
+        let legacy = ["VPN", "Shared", "Empty"]
+        state.migrateFolders(legacy: legacy, appearances: ["VPN": ConnectionAppearance(name: "fixture"), "Shared": ConnectionAppearance(name: "shared")], groups: ["home": "VPN/Servers", "shared": "Shared"], keys: ["home", "shared"])
+        let home = state.profiles.first { $0.id == HubProfiles.homeID }!, work = state.profiles.first { $0.id == HubProfiles.workID }!
+        try require(Set(home.folderPaths ?? []) == Set(legacy), "Home receives own and empty legacy folders")
+        try require(work.folderPaths == ["Shared"] && work.folderAppearances?["VPN"] == nil, "Work does not inherit Home folders or icons")
+        let migrated = state
+        state.active = HubProfiles.workID
+        state.migrateFolders(legacy: ["Leak"], appearances: [:], groups: [:], keys: [])
+        try require(state.profiles == migrated.profiles, "migration is idempotent across profile switching")
+        let id = try state.add("Fresh")
+        try require(state.profiles.first { $0.id == id }?.folderPaths == [], "new profiles start with no folders")
+        let roundtrip = try JSONDecoder().decode(HubProfiles.self, from: JSONEncoder().encode(state))
+        try require(roundtrip == state && state.valid, "profile folders survive persistence")
+        let old = try JSONDecoder().decode(HubProfile.self, from: Data("{\"id\":\"659F5011-D630-4CB0-87A8-49E923858141\",\"name\":\"Home\"}".utf8))
+        try require(old.folderPaths == nil && old.valid, "old profiles remain readable and migrate once")
+        var invalid = old; invalid.folderPaths = ["../bad"]
+        try require(!invalid.valid, "invalid folder paths rejected")
+        print("Profile folder checks passed: legacy ownership, shared records, empty folders, independent profiles, idempotence and persistence")
+    }
     static func namedMapSnapshots() throws {
         let profile = UUID(), homeMap = UUID(), workMap = UUID()
         let legacy = EntryPage(section: .topology)

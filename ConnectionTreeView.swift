@@ -3,6 +3,14 @@ import AppKit
 import Combine
 
 extension AliasStore {
+    var collapsedFolderIDs: [String] {
+        get {
+            let key = "collapsedFolders.v2." + profilesKey + "." + profiles.active.uuidString
+            let data = UserDefaults.standard.data(forKey: key) ?? UserDefaults.standard.data(forKey: "collapsedFolders.v1") ?? Data()
+            return (try? JSONDecoder().decode([String].self, from: data)) ?? []
+        }
+        set { UserDefaults.standard.set(try? JSONEncoder().encode(newValue), forKey: "collapsedFolders.v2." + profilesKey + "." + profiles.active.uuidString) }
+    }
     private var sidebarOrderKey: String { "sidebarOrder.v1." + profilesKey + "." + profiles.active.uuidString }
     var sidebarOrder: [String: [String]] { UserDefaults.standard.dictionary(forKey: sidebarOrderKey) as? [String: [String]] ?? [:] }
     func moveSidebarEntry(_ entry: SSHAlias, to folder: String, before anchor: String?) {
@@ -84,8 +92,8 @@ struct ConnectionTreeView: NSViewRepresentable {
         private var contextItem: TreeItem?
         private var lastStoreSelection: String?
         private var collapsed: Set<String> {
-            get { Set((try? JSONDecoder().decode([String].self, from: UserDefaults.standard.data(forKey: "collapsedFolders.v1") ?? Data())) ?? []) }
-            set { UserDefaults.standard.set(try? JSONEncoder().encode(Array(newValue).sorted()), forKey: "collapsedFolders.v1") }
+            get { Set(store.collapsedFolderIDs) }
+            set { store.collapsedFolderIDs = Array(newValue).sorted() }
         }
         init(store: AliasStore) {
             self.store = store
@@ -98,7 +106,7 @@ struct ConnectionTreeView: NSViewRepresentable {
             updating = true; defer { updating = false }
             let nodes = ConnectionTree.build(entries: store.filtered, groups: store.groups,
                                          folders: store.query.isEmpty && store.groupFilter == "all" ? store.folders : [], order: store.sidebarOrder, title: store.title)
-            var presentation = [store.query, store.groupFilter]
+            var presentation = [store.profiles.active.uuidString, store.query, store.groupFilter]
             func describe(_ nodes: [ConnectionTreeNode]) {
                 for node in nodes {
                     presentation += [node.id, node.title]
@@ -226,7 +234,7 @@ struct ConnectionTreeView: NSViewRepresentable {
             menu.removeAllItems()
             if let outline { contextItem = outline.item(atRow: outline.clickedRow) as? TreeItem }
             func add(_ title: String, _ action: String) {
-                let symbols = ["connect": "play.circle", "sftp": "folder", "external": "arrow.up.forward.square", "website": "globe", "dashboard": "rectangle.grid.2x2", "documentation": "doc.richtext", "attachments": "paperclip", "edit": "pencil", "appearance": "photo", "group": "folder.badge.gearshape", "favorite": "star", "template": "square.stack", "duplicate": "plus.square.on.square", "copy": "doc.on.doc", "export": "square.and.arrow.up", "delete": "trash", "record": "plus", "folder": "folder.badge.plus", "folderLogo": "photo", "subfolder": "folder.badge.plus"]
+                let symbols = ["connect": "play.circle", "sftp": "folder", "external": "arrow.up.forward.square", "website": "macwindow", "browser": "arrow.up.forward.square", "dashboard": "rectangle.grid.2x2", "documentation": "doc.richtext", "attachments": "paperclip", "edit": "pencil", "appearance": "photo", "group": "folder.badge.gearshape", "favorite": "star", "template": "square.stack", "duplicate": "plus.square.on.square", "copy": "doc.on.doc", "export": "square.and.arrow.up", "delete": "trash", "record": "plus", "folder": "folder.badge.plus", "folderLogo": "photo", "subfolder": "folder.badge.plus"]
                 let item = NSMenuItem(title: title, action: #selector(menuAction(_:)), keyEquivalent: "")
                 item.image = NSImage(systemSymbolName: symbols[action] ?? "circle", accessibilityDescription: nil)
                 // Public macOS 27 API: .visible == 1. Keep the stable macOS 26 SDK build compatible with older systems.
@@ -235,9 +243,9 @@ struct ConnectionTreeView: NSViewRepresentable {
             }
             if let item = contextItem {
                 if let entry = item.node.entry {
-                    if entry.canConnect { add("Подключиться", "connect") }
+                    if entry.recordKind?.isWeb == true { add("Открыть внутри", "website"); add("Открыть в браузере", "browser") }
+                    else if entry.canConnect { add("Подключиться", "connect") }
                     if entry.canSSH { add("Открыть SFTP", "sftp"); add("Во внешнем терминале", "external") }
-                    else if entry.recordKind == .website { add("Открыть сайт", "website") }
                     add("Панель управления", "dashboard")
                     menu.addItem(.separator()); add("Документация", "documentation"); add("Вложения", "attachments"); add("Редактировать…", "edit"); add("Название и логотип…", "appearance"); add("Переместить в папку…", "group")
                     add(store.isFavorite(entry) ? "Убрать из избранного" : "В избранное", "favorite")
@@ -260,6 +268,7 @@ struct ConnectionTreeView: NSViewRepresentable {
                 case "sftp": store.openSFTP(entry)
                 case "external": store.connectExternally(entry)
                 case "website": store.openWebsite(entry)
+                case "browser": store.openWebsiteInBrowser(entry)
                 case "dashboard": store.showDashboard(entry)
                 case "attachments": store.showAttachments(entry)
                 case "documentation": store.showDocumentation(entry)

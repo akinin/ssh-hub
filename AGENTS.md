@@ -6,6 +6,9 @@
 
 ## Структура
 
+- В 2.18.1 HubProfile.folderPaths/folderAppearances optional: nil означает старые данные, [] — явно пустой профиль. migrateFolders распределяет старые папки по membership записей, пустые отдаёт активному профилю; миграция однократная. Папки и collapsedFolders.v2 привязаны к config/profile. Архив remap/merge выполняет в копии HubProfiles до успешного install; значки назначения не заменять.
+- WebsiteIcon в ConnectionLogo.swift загружает только по кнопке: ограниченные HTML/ICO/PNG, объявленные link rel icon/apple-touch-icon и /favicon.ico. URLSession ephemeral без cookie/credential storage; редиректы только в тот же origin или HTTPS-upgrade того же host, без отключения TLS. URL без userinfo; query/fragment исходной страницы не отправлять. Результат — PNG, менять appearance только после успешной загрузки и сохранять запись обычным Save. Тесты только с собственным localhost HTTP.
+
 - RecordSSHConnectionFields и RecordSSHAliasFields общие для обоих редакторов; блок алиаса расположен после основных полей и разделителя.
 - В 2.18 отключение raw SSH-алиаса создаёт LocalConnectionRecord с originIdentity: favoriteID и Keychain account сохраняют исходную идентичность. UUID относится только к приватному конфигу/локальному хранилищу. rawSSHOptions сохраняет исходные кавычки и повторные директивы, запрещает Host/Match/Include; inheritedSSHValues сохраняет отсутствующие User/Port/HostName, пока они не изменены. Приватный target — исходное имя для Host-шаблонов. В архивах originIdentity и inheritedSSHValues сбрасываются перед восстановлением, чтобы новые записи не захватывали существующие материалы. При повторном подключении используйте текущую запись по favoriteID.
 

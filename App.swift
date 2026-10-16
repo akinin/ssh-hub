@@ -60,8 +60,14 @@ import ConsoleSupport
     @Published var checkingID: String?
     @Published var results: [String: ConnectionResult] = [:]
     @Published var groups: [String: String] = [:]
-    @Published var folders: [String] = []
-    @Published var folderAppearances: [String: ConnectionAppearance] = [:]
+    var folders: [String] {
+        get { profiles.profiles.first { $0.id == profiles.active }?.folderPaths ?? [] }
+        set { if let index = profiles.profiles.firstIndex(where: { $0.id == profiles.active }) { profiles.profiles[index].folderPaths = newValue } }
+    }
+    var folderAppearances: [String: ConnectionAppearance] {
+        get { profiles.profiles.first { $0.id == profiles.active }?.folderAppearances ?? [:] }
+        set { if let index = profiles.profiles.firstIndex(where: { $0.id == profiles.active }) { profiles.profiles[index].folderAppearances = newValue } }
+    }
     @Published var stylingFolder: FolderStyleTarget?
     @Published var creatingFolder = false
     @Published var folderParent = ""
@@ -92,10 +98,8 @@ import ConsoleSupport
         } else if let testPath = Bundle.main.object(forInfoDictionaryKey: "SSHConfigPath") as? String {
             config = SSHConfig(url: URL(fileURLWithPath: testPath))
         } else { config = SSHConfig() }
-        if let data = UserDefaults.standard.data(forKey: profilesKey), data.count <= 2_000_000, let value = try? JSONDecoder().decode(HubProfiles.self, from: data), value.valid { profiles = value }
+        if let data = UserDefaults.standard.data(forKey: profilesKey), data.count <= 20_000_000, let value = try? JSONDecoder().decode(HubProfiles.self, from: data), value.valid { profiles = value }
         favorites = Set(UserDefaults.standard.stringArray(forKey: "favoriteAliases.v1") ?? [])
-        folderAppearances = ConnectionAppearance.decode(UserDefaults.standard.data(forKey: "folderAppearance.v1"))
-        folders = (UserDefaults.standard.stringArray(forKey: "folderPaths.v1") ?? []).filter(ConnectionTree.validPath)
         groups = UserDefaults.standard.dictionary(forKey: "aliasGroups.v1") as? [String: String] ?? [:]
         history = ConnectionHistory.decode(UserDefaults.standard.data(forKey: "connectionHistory.v1"))
         appearances = ConnectionAppearance.decode(UserDefaults.standard.data(forKey: "connectionAppearance.v1"))
@@ -135,13 +139,16 @@ import ConsoleSupport
         guard let value = entry.website, LocalConnectionRecord.validWebsite(value), entry.recordKind?.isWeb == true else { return }
         openPage(entry, section: .connection)
     }
+    func openWebsiteInBrowser(_ entry: SSHAlias) {
+        guard entry.recordKind?.isWeb == true, let text = entry.website, LocalConnectionRecord.validWebsite(text), let url = URL(string: text) else { return }
+        NSWorkspace.shared.open(url)
+    }
     func newRecord(in folder: String = "") { creatingRecordFolder = ConnectionTree.normalized(folder); creatingAlias = true }
     func reveal(_ entry: SSHAlias) {
         query = ""; groupFilter = "all"
         let path = ConnectionTree.normalized(group(entry)).split(separator: "/").map(String.init)
         let ancestors = Set((1...max(1, path.count)).map { "folder:" + path.prefix($0).joined(separator: "/") })
-        let collapsed = (try? JSONDecoder().decode([String].self, from: UserDefaults.standard.data(forKey: "collapsedFolders.v1") ?? Data())) ?? []
-        UserDefaults.standard.set(try? JSONEncoder().encode(collapsed.filter { !ancestors.contains($0) }), forKey: "collapsedFolders.v1")
+        collapsedFolderIDs = collapsedFolderIDs.filter { !ancestors.contains($0) }
         selected = entry.id; revealRequest += 1
     }
     func appearance(_ entry: SSHAlias) -> ConnectionAppearance { appearances[entry.favoriteID] ?? ConnectionAppearance() }
@@ -159,14 +166,17 @@ import ConsoleSupport
     func folderAppearance(_ path: String) -> ConnectionAppearance { folderAppearances[ConnectionTree.normalized(path)] ?? ConnectionAppearance() }
     func setFolderAppearance(_ value: ConnectionAppearance, path: String) {
         guard value.validation == nil else { return }
+        let previous = profiles
         folderAppearances = ConnectionAppearance.setting(ConnectionAppearance(logo: value.logo), for: ConnectionTree.normalized(path), in: folderAppearances)
-        if let data = try? JSONEncoder().encode(folderAppearances) { UserDefaults.standard.set(data, forKey: "folderAppearance.v1") }
+        guard profiles.valid else { profiles = previous; error = "Значки папок превышают допустимый размер настроек профилей."; return }
+        persistProfiles()
     }
     func addFolder(_ path: String) {
         let path = ConnectionTree.normalized(path)
         guard ConnectionTree.validPath(path) else { return }
+        guard folders.contains(path) || folders.count < 1000 else { error = "В профиле можно создать до 1000 папок."; return }
         folders = Array(Set(folders + [path])).sorted()
-        UserDefaults.standard.set(folders, forKey: "folderPaths.v1")
+        persistProfiles()
         folderParent = ""
     }
     var countText: String {
@@ -366,7 +376,11 @@ import ConsoleSupport
                 throw ConfigError.message("Имя отключённого SSH-алиаса занято другим блоком в конфиге. Переименуй новый блок в SSH-конфиге и обнови список.")
             }
             aliases = loadedAliases
-            profiles.discover(aliases.map(\.favoriteID)); persistProfiles()
+            profiles.discover(aliases.map(\.favoriteID))
+            if profiles.profiles.contains(where: { $0.folderPaths == nil }) {
+            profiles.migrateFolders(legacy: UserDefaults.standard.stringArray(forKey: "folderPaths.v1") ?? [], appearances: ConnectionAppearance.decode(UserDefaults.standard.data(forKey: "folderAppearance.v1")), groups: groups, keys: aliases.map(\.favoriteID))
+            }
+            persistProfiles()
             for (id, session) in Array(connectionSessions) {
                 guard let entry = aliases.first(where: { $0.favoriteID == session.entry.favoriteID }) else { continue }
                 let gateway = aliases.first { $0.favoriteID == entry.transport?.tunnel?.sshID && $0.canSSH }
@@ -776,7 +790,7 @@ struct MainView: View {
                         Button("Шаблоны записей…", systemImage: "square.stack") { store.showingTemplates = true }
                         Button("Статус доступности…", systemImage: "waveform.path.ecg") { store.showingAvailability = true }
                         Divider()
-                        Button("Инструменты…", systemImage: "network") { store.openScanner() }
+                        Button("Инструменты…", systemImage: "wrench.and.screwdriver") { store.openScanner() }
                         Button("Сетевая карта…", systemImage: "point.3.connected.trianglepath.dotted") { store.openTopology() }
                         Divider()
                         Button("Создать SSH-ключ…", systemImage: "key.fill") { store.generatingKey = true }
@@ -887,7 +901,8 @@ struct AliasDetail: View {
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 165), spacing: 10)], spacing: 10) {
                     if entry.recordKind?.isWeb == true {
-                        tile("Открыть сайт", detail: "Во вкладке SSH Hub", icon: "globe") { store.openWebsite(entry) }
+                        tile("Открыть внутри", detail: "Во вкладке SSH Hub", icon: "macwindow") { store.openWebsite(entry) }
+                        tile("Открыть в браузере", detail: entry.transport?.tunnel == nil ? "Браузер по умолчанию" : "Напрямую, без SSH-туннеля", icon: "arrow.up.forward.square") { store.openWebsiteInBrowser(entry) }
                     } else if entry.canConnect {
                         tile("Подключиться", detail: entry.canSSH ? "Консоль SSH" : entry.recordKind?.title ?? "Сеанс", icon: entry.recordKind?.icon ?? "cable.connector") { store.connect(entry) }
                     }
@@ -900,7 +915,7 @@ struct AliasDetail: View {
                     tile("Инвентаризация", detail: "Оборудование и сведения", icon: "shippingbox") { store.openPage(entry, section: .inventory) }
                     tile("Документация", detail: "Заметки и инструкции", icon: "doc.richtext") { store.showDocumentation(entry) }
                     tile("Вложения", detail: "Файлы записи", icon: "paperclip") { store.showAttachments(entry) }
-                    tile("Инструменты", detail: "Nmap, DNS, порты, TLS и IP", icon: "network") { store.openScanner(entry) }
+                    tile("Инструменты", detail: "Nmap, DNS, порты, TLS и IP", icon: "wrench.and.screwdriver") { store.openScanner(entry) }
                     tile("Редактировать", detail: "Параметры записи", icon: "pencil") { store.edit(entry) }
                     if entry.canSSH {
                         tile("Проверить", detail: "Доступность SSH", icon: "network") { store.check(entry) }.disabled(store.checkingID != nil)

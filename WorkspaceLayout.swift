@@ -4,7 +4,7 @@ enum WorkspaceMetrics { static let footerHeight: CGFloat = 44 }
 
 enum EntryDetailSection: String, Codable { case overview, documentation, attachments, scanner, sftp, connection, logs, inventory, winbox, topology
     var title: String { switch self { case .overview: return "Панель"; case .documentation: return "Документация"; case .attachments: return "Вложения"; case .sftp: return "SFTP"; case .scanner: return "Инструменты"; case .connection: return "Подключение"; case .logs: return "Логи"; case .inventory: return "Инвентаризация"; case .winbox: return "WinBox"; case .topology: return "Сетевая карта" } }
-    var icon: String { switch self { case .overview: return "gauge.with.dots.needle.50percent"; case .documentation: return "doc.richtext"; case .attachments: return "paperclip"; case .sftp: return "folder"; case .scanner: return "network"; case .connection: return "link"; case .logs: return "text.alignleft"; case .inventory: return "shippingbox"; case .winbox: return "network.badge.shield.half.filled"; case .topology: return "point.3.connected.trianglepath.dotted" } }
+    var icon: String { switch self { case .overview: return "gauge.with.dots.needle.50percent"; case .documentation: return "doc.richtext"; case .attachments: return "paperclip"; case .sftp: return "folder"; case .scanner: return "wrench.and.screwdriver"; case .connection: return "link"; case .logs: return "text.alignleft"; case .inventory: return "shippingbox"; case .winbox: return "network.badge.shield.half.filled"; case .topology: return "point.3.connected.trianglepath.dotted" } }
 }
 struct EntryPage: Identifiable, Codable {
     var id = UUID()

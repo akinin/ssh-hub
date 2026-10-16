@@ -235,7 +235,7 @@ struct RecordEditorView: View {
         RecordEditorShell(title: original == nil ? "Новая запись · " + kind.title : "Редактирование записи", subtitle: kind.title + " · параметры и материалы", icon: kind.icon, sections: editorSections, selection: $editorSection, back: back) {
             switch editorSection {
             case .general:
-                ConnectionAppearanceFields(appearance: $appearance, fallback: "Название записи")
+                ConnectionAppearanceFields(appearance: $appearance, fallback: "Название записи", website: record.website)
                 RecordFieldRow("Папка") {
                     HStack {
                         TextField("Без папки", text: $group).textFieldStyle(.roundedBorder)

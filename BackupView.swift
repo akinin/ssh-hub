@@ -31,7 +31,11 @@ extension AliasStore {
         if let error = CommandLibrary.shared.error { throw ConfigError.message(error) }
         if let error = scanner.templateError { throw ConfigError.message(error) }
         let maps = try BackupRestoration.savedTopologies(profileIDs: profiles.profiles.map(\.id), repository: TopologyRepository(config: config.url), exportIDs: exportIDs)
-        let backup = HubBackup(records: records, folders: folders, folderAppearances: folderAppearances, templates: TemplateLibrary.shared.custom, commandLibrary: CommandLibrary.shared.custom, profiles: profiles.profiles, nmapTemplates: scanner.customTemplates, topologies: maps)
+        let backupFolders = Array(Set(profiles.profiles.flatMap { $0.folderPaths ?? [] })).sorted()
+        let backupFolderAppearances = profiles.profiles.reduce(into: [String: ConnectionAppearance]()) { result, profile in
+            for (path, value) in profile.folderAppearances ?? [:] where result[path] == nil { result[path] = value }
+        }
+        let backup = HubBackup(records: records, folders: backupFolders, folderAppearances: backupFolderAppearances, templates: TemplateLibrary.shared.custom, commandLibrary: CommandLibrary.shared.custom, profiles: profiles.profiles, nmapTemplates: scanner.customTemplates, topologies: maps)
         try backup.validate(); return backup
     }
     func restoreBackup(_ backup: HubBackup, selected: Set<UUID>) throws {
@@ -56,10 +60,6 @@ extension AliasStore {
         }
         profiles = restoredProfiles; persistProfiles()
         topologyModels.values.forEach { $0.entries = profileEntries; $0.reload() }
-        folders = Array(Set(folders + backup.folders)).sorted()
-        for (path, value) in backup.folderAppearances where folderAppearances[path] == nil { folderAppearances[path] = value }
-        UserDefaults.standard.set(folders, forKey: "folderPaths.v1")
-        UserDefaults.standard.set(try JSONEncoder().encode(folderAppearances), forKey: "folderAppearance.v1")
         UserDefaults.standard.set(Array(favorites), forKey: "favoriteAliases.v1")
         notice = "Восстановлено записей: \(metadata.count), сетевых карт: \((backup.topologies ?? []).count). Существующие данные сохранены; совпадения добавлены отдельно."
     }

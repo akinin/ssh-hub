@@ -22,6 +22,8 @@ struct ConnectionIcon: View {
 struct ConnectionAppearanceFields: View {
     @Binding var appearance: ConnectionAppearance
     let fallback: String
+    var website = ""
+    @State private var choosingWebsite = false
     @State private var error: String?
     var body: some View {
         HStack(spacing: 16) {
@@ -41,8 +43,11 @@ struct ConnectionAppearanceFields: View {
                     .textFieldStyle(.roundedBorder).accessibilityIdentifier("connectionDisplayName")
                 Text("Название отображается в дереве. Нажми на логотип, чтобы заменить его.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Button("Иконка с сайта…", systemImage: "globe") { choosingWebsite = true }.controlSize(.small)
                 if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
             }
+        }.sheet(isPresented: $choosingWebsite) {
+            WebsiteIconView(address: website) { data in appearance.logo = data; error = nil }
         }
     }
     private func chooseLogo() {
@@ -64,7 +69,7 @@ struct ConnectionAppearanceView: View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Название и логотип").font(.title2).bold()
             Text(entry.secondaryTitle).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-            ConnectionAppearanceFields(appearance: $appearance, fallback: entry.name)
+            ConnectionAppearanceFields(appearance: $appearance, fallback: entry.name, website: entry.website ?? "")
             if let validation = appearance.validation { Text(validation).font(.caption).foregroundStyle(.red) }
             HStack {
                 Spacer()
@@ -73,5 +78,36 @@ struct ConnectionAppearanceView: View {
                     .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(appearance.validation != nil)
             }
         }.padding(24).frame(width: 490).dismissOnOutsideClick().onAppear { appearance = store.appearance(entry) }
+    }
+}
+
+
+struct WebsiteIconView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var address: String
+    @State private var task: Task<Void, Never>?
+    @State private var error: String?
+    let apply: (Data) -> Void
+    init(address: String, apply: @escaping (Data) -> Void) { _address = State(initialValue: address); self.apply = apply }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Иконка с сайта", systemImage: "globe").font(.title3).bold()
+            TextField("https://example.com", text: $address).textFieldStyle(.roundedBorder).accessibilityIdentifier("websiteIconURL").disabled(task != nil)
+            Text("Загрузится иконка страницы или favicon. Пароли и cookies браузера не используются. Изменение логотипа записи применяется после сохранения.").font(.caption).foregroundStyle(.secondary)
+            if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
+            HStack {
+                if task != nil { ProgressView().controlSize(.small); Text("Загрузка…").font(.caption) }
+                Spacer()
+                Button("Отмена", role: .cancel) { task?.cancel(); dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Получить иконку") { load() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(task != nil || (try? WebsiteIcon.address(address)) == nil)
+            }
+        }.padding(20).frame(width: 440).onDisappear { task?.cancel() }
+    }
+    private func load() {
+        error = nil
+        task = Task { @MainActor in
+            do { let data = try await WebsiteIcon.load(address); try Task.checkCancellation(); apply(data); task = nil; dismiss() }
+            catch { if !Task.isCancelled { self.error = error.localizedDescription }; task = nil }
+        }
     }
 }
