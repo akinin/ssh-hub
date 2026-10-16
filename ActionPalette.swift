@@ -18,7 +18,7 @@ struct ActionPalette: View {
         var values: [PaletteAction] = [
             PaletteAction(id: "profiles", title: "Профили", detail: "Наборы записей и рабочие области", icon: "person.crop.rectangle.stack", run: { store.showingProfiles = true }),
             PaletteAction(id: "topology", title: "Сетевая карта", detail: "LAN, WAN, VPN, Wi-Fi · UniFi, SSH и Nmap", icon: "point.3.connected.trianglepath.dotted", run: { store.openTopology() }),
-            PaletteAction(id: "new", title: "Новая запись", detail: "⌘N", icon: "plus", run: { store.creatingAlias = true }),
+            PaletteAction(id: "new", title: "Новая запись", detail: "⌘N", icon: "plus", run: { store.newRecord() }),
             PaletteAction(id: "templates", title: "Шаблоны записей", detail: "Proxmox, UniFi, Wiren Board и свои", icon: "square.stack", run: { store.showingTemplates = true }),
             PaletteAction(id: "commands", title: "Библиотека команд", detail: "Поиск, описания, свои команды и встроенные заготовки", icon: "books.vertical", run: { store.showingCommandLibrary = true }),
             PaletteAction(id: "backup", title: "Резервное копирование", detail: "Архив и восстановление", icon: "externaldrive", run: { store.showingBackup = true }),

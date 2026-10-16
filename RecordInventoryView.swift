@@ -72,7 +72,7 @@ import AppKit
                 let result: ToolkitResult
                 if isLocal { result = try await process.run("/bin/sh", ["-c", InventoryCollection.command(.macOS)], timeout: 25) }
                 else {
-                    let mayAutofill = entry.authentication == .password ? await SSHLoginPolicy.permitsSavedPassword(for: entry, config: config) : false
+                    let mayAutofill = entry.authentication.usesPassword ? await SSHLoginPolicy.permitsSavedPassword(for: entry, config: config) : false
                     try Task.checkCancellation()
                     let password = mayAutofill ? try SSHPasswordStore.password(for: entry, config: entry.credentialConfig(fallback: config)) : nil
                     let server = try SSHLoginServer(password: password, destination: "Инвентаризация · \(entry.user)@\(entry.host)")

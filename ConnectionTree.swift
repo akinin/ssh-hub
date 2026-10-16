@@ -6,6 +6,7 @@ struct ConnectionTreeNode: Identifiable {
     var entry: SSHAlias?
     var children: [Self] = []
     var isFolder: Bool { entry == nil }
+    var orderID: String { entry?.favoriteID ?? id }
 }
 
 enum ConnectionTree {
@@ -18,7 +19,7 @@ enum ConnectionTree {
         let normalized = normalized(path)
         return !normalized.isEmpty && AliasTransfer.validGroup(normalized) && !components(path).contains(where: { $0 == "." || $0 == ".." })
     }
-    static func build(entries: [SSHAlias], groups: [String: String], folders: [String], title: (SSHAlias) -> String) -> [ConnectionTreeNode] {
+    static func build(entries: [SSHAlias], groups: [String: String], folders: [String], order: [String: [String]] = [:], title: (SSHAlias) -> String) -> [ConnectionTreeNode] {
         var roots: [ConnectionTreeNode] = []
         func insert(_ parts: ArraySlice<String>, path: String, entry: SSHAlias?, into nodes: inout [ConnectionTreeNode]) {
             guard let first = parts.first else {
@@ -34,12 +35,29 @@ enum ConnectionTree {
         }
         for folder in folders { insert(components(folder)[...], path: "", entry: nil, into: &roots) }
         for entry in entries { insert(components(groups[entry.favoriteID] ?? "")[...], path: "", entry: entry, into: &roots) }
-        func sorted(_ nodes: [ConnectionTreeNode]) -> [ConnectionTreeNode] {
-            nodes.map { node in var node = node; node.children = sorted(node.children); return node }.sorted {
+        func sorted(_ nodes: [ConnectionTreeNode], parent: String) -> [ConnectionTreeNode] {
+            let ranks = Dictionary((order[parent] ?? []).enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
+            return nodes.map { node in var node = node; node.children = sorted(node.children, parent: String(node.id.dropFirst("folder:".count))); return node }.sorted {
+                let left = ranks[$0.orderID], right = ranks[$1.orderID]
+                if left != nil || right != nil { return (left ?? Int.max) < (right ?? Int.max) }
                 if $0.isFolder != $1.isFolder { return $0.isFolder }
                 return $0.title.localizedStandardCompare($1.title) == .orderedAscending
             }
         }
-        return sorted(roots)
+        return sorted(roots, parent: "")
+    }
+    static func siblings(in tree: [ConnectionTreeNode], parent: String) -> [ConnectionTreeNode] {
+        if parent.isEmpty { return tree }
+        for node in tree where node.isFolder {
+            if node.id == "folder:" + parent { return node.children }
+            let children = siblings(in: node.children, parent: parent)
+            if !children.isEmpty { return children }
+        }
+        return []
+    }
+    static func movedOrder(_ ids: [String], moving id: String, before anchor: String?) -> [String] {
+        var result = Array(NSOrderedSet(array: ids.filter { $0 != id })) as? [String] ?? []
+        result.insert(id, at: anchor.flatMap { result.firstIndex(of: $0) } ?? result.count)
+        return result
     }
 }

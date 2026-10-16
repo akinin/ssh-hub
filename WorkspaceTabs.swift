@@ -2,7 +2,7 @@ import SwiftUI
 
 extension AliasStore {
     var activePage: EntryPage? { pages.first { $0.id == selectedPage } }
-    func entry(for page: EntryPage) -> SSHAlias? { aliases.first { $0.favoriteID == page.key } }
+    func entry(for page: EntryPage) -> SSHAlias? { aliases.first { $0.favoriteID == page.key } ?? connectionSessions[page.id].flatMap { $0.entry.isQuickConnection ? $0.entry : nil } }
     func openPage(_ entry: SSHAlias?, section: EntryDetailSection) {
         if section == .topology { openTopology(entry); return }
         let key = entry?.favoriteID
@@ -89,7 +89,7 @@ struct WorkspacePageTab: View {
                 Button("Закрыть другие вкладки") { store.keepPage(page) }
                 Button("Закрыть все вкладки") { store.closeAllTabs() }
                 Divider()
-                if let entry = store.entry(for: page) {
+                if let entry = store.entry(for: page), !entry.isQuickConnection {
                     Button("Панель управления") { store.showDashboard(entry) }
                     Button("Документация") { store.showDocumentation(entry) }
                     if entry.canSSH { Button("SFTP") { store.openSFTP(entry) } }

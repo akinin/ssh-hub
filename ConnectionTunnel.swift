@@ -26,7 +26,7 @@ enum ConnectionTunnelPort {
         let profile = TunnelProfile(name: String(entry.name.prefix(60)), aliasID: gateway.favoriteID, aliasName: gateway.name, kind: entry.recordKind == .vnc ? .local : .socks, localPort: port, destinationHost: entry.host, destinationPort: Int(entry.port) ?? 5900)
         var environment: [String: String] = [:]
         // The same private askpass channel as the embedded SSH console handles passwords, MFA and host-key prompts.
-        let mayUseSavedPassword = gateway.authentication == .password ? await SSHLoginPolicy.permitsSavedPassword(for: gateway, config: config) : false
+        let mayUseSavedPassword = gateway.authentication.usesPassword ? await SSHLoginPolicy.permitsSavedPassword(for: gateway, config: config) : false
         guard !Task.isCancelled, generation == token else { throw CancellationError() }
         let password = mayUseSavedPassword ? try SSHPasswordStore.password(for: gateway, config: gateway.credentialConfig(fallback: config)) : nil
         let server = try SSHLoginServer(password: password, destination: "SSH-туннель · \(gateway.user)@\(gateway.host)")

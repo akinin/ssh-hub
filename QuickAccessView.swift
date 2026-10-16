@@ -1,6 +1,26 @@
 import SwiftUI
 import AppKit
 
+extension AliasStore {
+    func quickConnect(address: String, kind: RecordKind) {
+        do {
+            let target = try QuickConnectionTarget(address, kind: kind)
+            var user = target.user ?? (kind == .ftp || kind == .ftps ? "anonymous" : NSUserName())
+            if [.ssh, .rdp, .ftp, .ftps, .webdav].contains(kind) && target.user == nil {
+                let alert = NSAlert(); alert.messageText = "Быстрое подключение · " + kind.title
+                alert.informativeText = target.host + ":" + String(target.port) + "\nИмя пользователя для этого сеанса. Запись не будет добавлена в список."
+                let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 26)); field.stringValue = user; field.placeholderString = "Пользователь"
+                alert.accessoryView = field; alert.window.initialFirstResponder = field
+                alert.addButton(withTitle: "Подключиться"); alert.addButton(withTitle: "Отмена")
+                guard alert.runModal() == .alertFirstButtonReturn else { return }; user = field.stringValue
+            }
+            let entry = try target.entry(kind: kind, user: user, config: config.url)
+            if kind.isConsole { ConsoleStore.shared.connect(entry, title: target.host, config: config.url) }
+            else { openPage(entry, section: .connection) }
+        } catch { self.error = error.localizedDescription }
+    }
+}
+
 @MainActor final class QuickAccessController: NSObject, ObservableObject {
     static let shared = QuickAccessController()
     @Published private(set) var presentation = 0
@@ -46,6 +66,7 @@ struct QuickAccessView: View {
     @FocusState private var searchFocused: Bool
     @State private var query = ""
     @State private var scope = QuickAliasScope.all
+    @State private var quickKind: RecordKind = .ssh
     @State private var selected: String?
     @State private var launching = false
     @State private var error: String?
@@ -63,7 +84,7 @@ struct QuickAccessView: View {
                     .help("Обновить список").accessibilityLabel("Обновить список").disabled(launching)
                 Menu {
                     Button("Открыть главное окно") { controller.openMain() }
-                    Button("Новая запись…") { controller.openMain { store.creatingAlias = true } }
+                    Button("Новая запись…") { controller.openMain { store.newRecord() } }
                     Button("Создать SSH-ключ…") { controller.openMain { store.generatingKey = true } }
                     Button("SSH-ключи…") { controller.openMain { store.showingKeys = true } }
                     Button("История подключений…") { controller.openMain { store.showingHistory = true } }
@@ -77,7 +98,7 @@ struct QuickAccessView: View {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("Имя, адрес, пользователь или группа", text: $query)
                     .textFieldStyle(.plain).focused($searchFocused).accessibilityIdentifier("quickAliasSearch")
-                    .onSubmit { if let current { connect(current) } }
+                    .onSubmit { if let current { connect(current) } else if !query.isEmpty { connectQuick() } }
                     .onKeyPress(.downArrow) { move(1); return .handled }
                     .onKeyPress(.upArrow) { move(-1); return .handled }
                     .onKeyPress(.escape) {
@@ -95,12 +116,22 @@ struct QuickAccessView: View {
                     LazyVStack(spacing: 4) {
                         ForEach(entries) { entry in row(entry).id(entry.id) }
                         if entries.isEmpty {
-                            VStack(spacing: 9) {
-                                Image(systemName: "magnifyingglass").font(.title2)
-                                Text(emptyTitle).font(.headline)
-                                Text(query.isEmpty ? "Подключения можно добавить в главном окне." : "Попробуй другое имя, адрес или группу.")
-                                    .font(.caption).multilineTextAlignment(.center)
-                            }.foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 45)
+                            if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                VStack(alignment: .leading, spacing: 14) {
+                                    Label("Быстрое подключение", systemImage: "bolt.horizontal.circle").font(.headline)
+                                    Text("Запись не найдена. Подключись напрямую к введённому узлу без добавления в список.").font(.caption).foregroundStyle(.secondary)
+                                    Text(query).font(.system(.body, design: .monospaced)).textSelection(.enabled).lineLimit(3)
+                                    Picker("Тип подключения", selection: $quickKind) { ForEach(QuickConnectionTarget.kinds) { kind in Label(kind == .web ? "Веб" : kind.title, systemImage: kind.icon).tag(kind) } }
+                                    if let message = quickValidation { Text(message).font(.caption).foregroundStyle(.secondary) }
+                                    Button("Подключиться", systemImage: "play.circle") { connectQuick() }.buttonStyle(.borderedProminent).disabled(quickValidation != nil)
+                                }.frame(maxWidth: .infinity, alignment: .leading).padding(16)
+                            } else {
+                                VStack(spacing: 9) {
+                                    Image(systemName: "magnifyingglass").font(.title2)
+                                    Text(emptyTitle).font(.headline)
+                                    Text("Подключения можно добавить в главном окне.").font(.caption).multilineTextAlignment(.center)
+                                }.foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 45)
+                            }
                         }
                     }.padding(2)
                 }
@@ -140,6 +171,16 @@ struct QuickAccessView: View {
         .onChange(of: query) { _, _ in selected = entries.first?.id; copied = false; error = nil }
         .onChange(of: scope) { _, _ in selected = entries.first?.id; searchFocused = true }
         .onChange(of: entries.map(\.id)) { _, _ in reconcileSelection() }
+    }
+    private var quickValidation: String? {
+        do { _ = try QuickConnectionTarget(query, kind: quickKind); return nil }
+        catch { return error.localizedDescription }
+    }
+    private func connectQuick() {
+        guard !launching else { return }
+        if let message = quickValidation { error = message; return }
+        let address = query, kind = quickKind
+        controller.openMain { store.quickConnect(address: address, kind: kind) }
     }
     private var emptyTitle: String {
         !query.isEmpty ? "Ничего не найдено" : scope == .favorites ? "Избранного пока нет" : scope == .recent ? "История пока пуста" : "Алиасов пока нет"

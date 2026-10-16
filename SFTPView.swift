@@ -89,24 +89,34 @@ struct FailedSFTPTransfer: Identifiable {
     private let queue = DispatchQueue(label: "ssh-aliases.sftp", qos: .userInitiated)
     private var connection: SFTPConnection?
     private var login: SSHLoginServer?
+    private var preparing: Task<Void, Never>?
     private var generation = UUID()
     let entry: SSHAlias
     let config: URL
     init(entry: SSHAlias, config: URL) { self.entry = entry; self.config = config }
     func connect() {
         guard !busy, !connected else { return }
-        var loginEnvironment: [String: String] = [:]
-        if entry.authentication == .password {
-            do {
-                let password = try SSHPasswordStore.password(for: entry, config: entry.credentialConfig(fallback: config))
-                let server = try SSHLoginServer(password: password, destination: "\(entry.user)@\(entry.host)")
-                guard let helper = Bundle.main.url(forAuxiliaryExecutable: "SSHLoginAskpass") else { server.stop(); throw ConfigError.message("Не найден помощник ввода пароля.") }
-                login = server
-                loginEnvironment = ["SSH_ASKPASS_REQUIRE": "force", "SSH_ASKPASS": helper.path, "SSH_HUB_LOGIN_SOCKET": server.path]
-            } catch { self.error = error.localizedDescription; return }
-        }
+        if entry.authentication.usesPassword {
+            let token = generation
+            busy = true; error = nil; operation = "Проверка маршрута SSH…"
+            preparing = Task { [weak self] in
+                guard let self else { return }
+                defer { if self.generation == token { self.preparing = nil } }
+                let permitted = await SSHLoginPolicy.permitsSavedPassword(for: self.entry, config: self.config)
+                guard !Task.isCancelled, self.generation == token else { return }
+                do {
+                    let password = permitted ? try SSHPasswordStore.password(for: self.entry, config: self.entry.credentialConfig(fallback: self.config)) : nil
+                    let server = try SSHLoginServer(password: password, destination: "\(self.entry.user)@\(self.entry.host)")
+                    guard let helper = Bundle.main.url(forAuxiliaryExecutable: "SSHLoginAskpass") else { server.stop(); throw ConfigError.message("Не найден помощник ввода пароля.") }
+                    self.login = server; self.busy = false
+                    self.startConnection(loginEnvironment: ["SSH_ASKPASS_REQUIRE": "force", "SSH_ASKPASS": helper.path, "SSH_HUB_LOGIN_SOCKET": server.path])
+                } catch { self.error = error.localizedDescription; self.busy = false }
+            }
+        } else { startConnection(loginEnvironment: [:]) }
+    }
+    private func startConnection(loginEnvironment: [String: String]) {
         let environment = loginEnvironment
-        let client = SFTPConnection(timeout: entry.authentication == .password ? 120 : 30); connection = client; SFTPRegistry.shared.register(id, connection: client, queue: queue)
+        let client = SFTPConnection(timeout: entry.authentication.usesPassword ? 120 : 30); connection = client; SFTPRegistry.shared.register(id, connection: client, queue: queue)
         let config = entry.connectionConfig(fallback: config), alias = entry.sshTarget
         run("Подключение…") {
             do {
@@ -158,9 +168,9 @@ struct FailedSFTPTransfer: Identifiable {
             self.notice = "Передача завершена · Объектов: \(job.uploads.count + job.downloads.count)"
         }
     }
-    func cancel() { cancelled = true; pending = []; connection?.cancelTransfer() }
+    func cancel() { if preparing != nil { disconnect(); return }; cancelled = true; pending = []; connection?.cancelTransfer() }
     func disconnect() {
-        generation = UUID(); pending = []; transferActive = false; activeJob = nil
+        generation = UUID(); preparing?.cancel(); preparing = nil; pending = []; transferActive = false; activeJob = nil
         login?.stop(); login = nil
         if connection != nil { SFTPRegistry.shared.close(id) }
         connection = nil

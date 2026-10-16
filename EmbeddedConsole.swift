@@ -138,12 +138,29 @@ final class HubTerminalView: LocalProcessTerminalView {
             do { launch = try ConnectionLaunch.console(entry, config: config) }
             catch { status = error.localizedDescription; finished = true; terminal.feed(text: status + "\r\n"); finishEvent(); return terminal }
         }
+        if entry.canSSH, entry.authentication.usesPassword,
+           SSHPasswordStore.hasPassword(for: entry, config: entry.credentialConfig(fallback: config)) {
+            status = "Проверка маршрута SSH…"
+            preflight = Task { [weak self] in
+                guard let self else { return }
+                defer { self.preflight = nil }
+                let permitted = await SSHLoginPolicy.permitsSavedPassword(for: self.entry, config: self.config)
+                guard !Task.isCancelled, !self.finished else { return }
+                var password: String?
+                if permitted { password = try? SSHPasswordStore.password(for: self.entry, config: self.entry.credentialConfig(fallback: self.config)) }
+                self.launchProcess(launch, terminal: terminal, password: password, askpass: true)
+            }
+        } else { launchProcess(launch, terminal: terminal, password: nil, askpass: false) }
+        return terminal
+    }
+    private func launchProcess(_ launch: ConsoleLaunch, terminal: HubTerminalView, password: String?, askpass: Bool) {
+        guard !finished else { return }
         var environment = launch.environment
         do {
-            if entry.canSSH, entry.authentication == .password, let password = try SSHPasswordStore.password(for: entry, config: entry.credentialConfig(fallback: config)) {
+            if askpass {
+                guard let helper = Bundle.main.url(forAuxiliaryExecutable: "SSHLoginAskpass") else { throw ConfigError.message("Не найден помощник ввода пароля.") }
                 let server = try SSHLoginServer(password: password, destination: "\(entry.user)@\(entry.host)")
                 login = server
-                guard let helper = Bundle.main.url(forAuxiliaryExecutable: "SSHLoginAskpass") else { throw ConfigError.message("Не найден помощник ввода пароля.") }
                 environment["SSH_ASKPASS"] = helper.path; environment["SSH_ASKPASS_REQUIRE"] = "force"
                 environment["SSH_HUB_LOGIN_SOCKET"] = server.path
             }
@@ -153,7 +170,6 @@ final class HubTerminalView: LocalProcessTerminalView {
                               environment: environment.map { "\($0.key)=\($0.value)" }, currentDirectory: directory)
         if terminal.process.running { status = entry.canSSH ? "SSH · \(entry.user)@\(entry.host)" : (entry.recordKind?.title ?? "Консоль") + " · " + title }
         else { status = "Не удалось запустить подключение"; finished = true; login?.stop(); login = nil; finishEvent() }
-        return terminal
     }
     func disconnect() { preflight?.cancel(); preflight = nil; guard !finished else { return }; login?.stop(); login = nil; if let view { ConsoleProcess.stop(view.process) }; finished = true; status = "Отключено пользователем"; finishEvent() }
     nonisolated func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}

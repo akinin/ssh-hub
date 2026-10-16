@@ -71,6 +71,18 @@ import Foundation
         draft.authentication = .automatic; _ = try config.update(config.editSnapshot(keyEntry), draft: draft)
         let automaticEntry = try config.load().aliases.first { $0.name == "server" }!
         try require(automaticEntry.value("PreferredAuthentications") == nil, "automatic restores config defaults")
+        draft.authentication = .keyAndPassword
+        _ = try config.update(config.editSnapshot(automaticEntry), draft: draft)
+        let jointEntry = try config.load().aliases.first { $0.name == "server" }!
+        try require(jointEntry.authentication == .keyAndPassword && jointEntry.authentication.usesPassword, "joint mode survives config reload")
+        let jointProcess = Process(), jointOutput = Pipe()
+        jointProcess.executableURL = URL(fileURLWithPath: "/usr/bin/ssh"); jointProcess.arguments = ["-G", "-F", file.path, "server"]
+        jointProcess.standardOutput = jointOutput; jointProcess.standardError = FileHandle.nullDevice
+        try jointProcess.run(); let jointResolved = String(decoding: jointOutput.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self); jointProcess.waitUntilExit()
+        try require(jointProcess.terminationStatus == 0 && jointResolved.contains("preferredauthentications publickey,password,keyboard-interactive") && jointResolved.contains("passwordauthentication yes") && (jointResolved.contains("pubkeyauthentication true") || jointResolved.contains("pubkeyauthentication yes")), "OpenSSH enables key first and password fallback")
+        try require(jointEntry.value("IdentityFile") == entry.value("IdentityFile"), "joint mode retains key path")
+        let jointTransfer = try AliasTransfer.decode(AliasTransfer(aliases: [TransferAlias(jointEntry, group: "", favorite: false)]).encode())
+        try require(jointTransfer.aliases[0].authentication == .keyAndPassword, "joint mode export compatibility")
         let transferred = TransferAlias(passwordEntry, group: "Дом/Серверы", favorite: false)
         let restored = try AliasTransfer.decode(AliasTransfer(aliases: [transferred]).encode())
         try require(restored.aliases[0].draft.authentication == .password, "auth survives export/import")
@@ -78,6 +90,17 @@ import Foundation
         try require(tree.count == 2 && tree[0].title == "Дом" && tree[0].children[0].title == "Серверы", "nested folders are deterministic")
         try require(ConnectionTree.normalized("Дом\\Серверы/") == "Дом/Серверы", "path normalization")
         try require(!ConnectionTree.validPath("Дом/../сервер") && !ConnectionTree.validPath("\n"), "invalid folders rejected")
+        let first = SSHAlias(name: "alpha", source: file, line: 100), second = SSHAlias(name: "beta", source: file, line: 101), third = SSHAlias(name: "gamma", source: file, line: 102)
+        let ids = [first.favoriteID, second.favoriteID, third.favoriteID]
+        let reordered = ConnectionTree.movedOrder(ids, moving: third.favoriteID, before: first.favoriteID)
+        try require(reordered == [third.favoriteID, first.favoriteID, second.favoriteID], "record reorder before first")
+        try require(ConnectionTree.movedOrder(reordered, moving: third.favoriteID, before: nil) == ids, "record reorder to end")
+        var assignments = [first.favoriteID: "Дом", second.favoriteID: "Дом"]
+        assignments[third.favoriteID] = "Дом"
+        let orderedTree = ConnectionTree.build(entries: [first, second, third], groups: assignments, folders: ["Пустая"], order: ["Дом": reordered], title: { $0.name })
+        try require(ConnectionTree.siblings(in: orderedTree, parent: "Дом").map(\.orderID) == reordered, "manual sibling order independent of alphabetical titles")
+        let orderRoundTrip = try JSONDecoder().decode([String: [String]].self, from: JSONEncoder().encode(["Дом": reordered]))
+        try require(orderRoundTrip["Дом"] == reordered && ConnectionTree.siblings(in: orderedTree, parent: "Пустая").isEmpty, "manual order persistence and empty folder")
         let launch = ConsoleLaunch.ssh(SSHAlias(name: "-danger", source: file, line: 1), config: file)
         try require(Array(launch.arguments.suffix(2)) == ["--", "-danger"], "alias cannot inject SSH options")
         try require(!launch.arguments.contains(where: { $0.contains("StrictHostKeyChecking=no") || $0.contains("UserKnownHostsFile=/dev/null") }), "host-key checking preserved")

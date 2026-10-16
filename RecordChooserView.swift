@@ -42,7 +42,7 @@ struct RecordChooserView: View {
     @State private var kind: RecordKind?
     private var choices: [RecordTypeChoice] { RecordTypeChoice.all.filter { (category == .popular || $0.category == category) && (query.isEmpty || ($0.title + " " + $0.subtitle).localizedCaseInsensitiveContains(query)) } }
     var body: some View {
-        if let kind { RecordEditorView(kind: kind, back: { self.kind = nil }).environmentObject(store) }
+        if let kind { RecordEditorView(kind: kind, initialGroup: store.creatingRecordFolder, back: { self.kind = nil }).environmentObject(store) }
         else {
             VStack(spacing: 0) {
                 HStack {
@@ -97,7 +97,7 @@ struct RecordChooserView: View {
         else {
             dismiss()
             DispatchQueue.main.async {
-                if choice.id == "folder" { store.folderParent = ""; store.creatingFolder = true }
+                if choice.id == "folder" { store.folderParent = store.creatingRecordFolder; store.creatingFolder = true }
                 if choice.id == "tunnel" { store.showingTunnels = true }
             }
         }

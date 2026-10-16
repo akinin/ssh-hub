@@ -1,5 +1,57 @@
 import SwiftUI
 
+struct RecordFieldRow<Content: View>: View {
+    let title: String
+    let content: Content
+    init(_ title: String, @ViewBuilder content: () -> Content) { self.title = title; self.content = content() }
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(title).frame(width: 100, alignment: .leading)
+            content.labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+struct RecordSSHKeyFields: View {
+    @Binding var identity: String
+    var entry: SSHAlias?
+    @EnvironmentObject var store: AliasStore
+    @State private var generating = false
+    @State private var installation: String?
+    @State private var error: String?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            RecordFieldRow("SSH-ключ") {
+                HStack {
+                    TextField("Путь к приватному ключу", text: $identity).textFieldStyle(.roundedBorder).labelsHidden().accessibilityIdentifier("recordSSHKey")
+                    Button("Выбрать…") { choose() }
+                    Button { generating = true } label: { Image(systemName: "key.fill") }.help("Создать SSH-ключ").accessibilityLabel("Создать SSH-ключ")
+                }
+            }
+            HStack {
+                Button("Установить публичный ключ на сервер…", systemImage: "arrow.up.to.line") {
+                    do {
+                        guard let entry else { return }
+                        let url = PublicSSHKey.identityURL(identity.trimmingCharacters(in: .whitespaces)).appendingPathExtension("pub")
+                        installation = try TerminalCommands.installation(key: PublicSSHKey.read(url), entry: entry, config: store.config.url)
+                    } catch { self.error = error.localizedDescription }
+                }.disabled(entry == nil || identity.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            if entry == nil { Text("Для установки ключа сначала сохрани адрес, пользователя, порт и ProxyJump записи.").font(.caption).foregroundStyle(.secondary) }
+            if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
+        }
+        .sheet(isPresented: $generating) { GenerateKeyView(directory: store.config.sshDirectory) { identity = $0.path } }
+        .sheet(isPresented: Binding(get: { installation != nil }, set: { if !$0 { installation = nil } })) {
+            InstallationReviewView(command: installation ?? "", server: entry.map { $0.user + "@" + $0.host + ":" + $0.port } ?? "").environmentObject(store)
+        }
+    }
+    private func choose() {
+        let panel = NSOpenPanel(); panel.title = "Приватный SSH-ключ"; panel.showsHiddenFiles = true
+        panel.directoryURL = store.config.sshDirectory; panel.canChooseDirectories = false
+        if panel.runModal() == .OK, let url = panel.url { identity = (url.pathExtension == "pub" ? url.deletingPathExtension() : url).path }
+    }
+}
+
 struct KeyManagerView: View {
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) private var dismiss

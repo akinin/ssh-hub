@@ -1,6 +1,54 @@
 import SwiftUI
 import AppKit
 
+enum RecordEditorSection: String, Identifiable {
+    case general, connection, key, availability, commands, preview
+    var id: String { rawValue }
+    var title: String { switch self { case .general: return "Общие"; case .connection: return "Подключение"; case .key: return "SSH-ключ"; case .availability: return "Доступность"; case .commands: return "Команды"; case .preview: return "SSH-конфиг" } }
+    var icon: String { switch self { case .general: return "slider.horizontal.3"; case .connection: return "cable.connector"; case .key: return "key"; case .availability: return "waveform.path.ecg"; case .commands: return "terminal"; case .preview: return "doc.text" } }
+}
+struct RecordEditorShell<Content: View, Actions: View>: View {
+    let title: String
+    let subtitle: String
+    let icon: String
+    let sections: [RecordEditorSection]
+    @Binding var selection: RecordEditorSection
+    var back: (() -> Void)? = nil
+    @ViewBuilder let content: () -> Content
+    @ViewBuilder let actions: () -> Actions
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                if let back { Button(action: back) { Image(systemName: "chevron.left") }.buttonStyle(.plain).help("Типы записей") }
+                Image(systemName: icon).font(.title2).foregroundStyle(.blue)
+                VStack(alignment: .leading, spacing: 3) { Text(title).font(.title3).bold(); Text(subtitle).font(.caption).foregroundStyle(.secondary) }
+                Spacer(minLength: 0)
+            }.padding(20)
+            Divider()
+            HStack(spacing: 0) {
+                VStack(spacing: 5) {
+                    ForEach(sections) { section in
+                        Button { selection = section } label: {
+                            Label(section.title, systemImage: section.icon).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 9)
+                        }.buttonStyle(.plain).foregroundStyle(selection == section ? Color.white : .primary)
+                            .background(selection == section ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 7))
+                    }
+                    Spacer(minLength: 0)
+                }.padding(10).frame(width: 165).background(.bar)
+                Divider()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text(selection.title).font(.headline)
+                        content()
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
+                }
+            }.frame(maxHeight: .infinity)
+            Divider()
+            actions().padding(16)
+        }.frame(width: 760, height: 600)
+    }
+}
+
 struct RecordEditorTarget: Identifiable {
     var id = UUID()
     var record: LocalConnectionRecord?
@@ -75,6 +123,7 @@ struct RecordEditorView: View {
     var original: LocalConnectionRecord?
     var template: SSHAlias?
     var blueprint: RecordTemplate?
+    var initialGroup: String = ""
     var back: (() -> Void)?
     var seed: LocalConnectionRecord?
     var onSaved: ((SSHAlias) -> Void)?
@@ -88,12 +137,15 @@ struct RecordEditorView: View {
     @State private var aliasSnapshot: AliasEditSnapshot?
     @State private var createAlias = false
     @State private var aliasName = ""
+    @State private var editorSection: RecordEditorSection = .general
     @State private var advanced = false
     @State private var password = ""
     @State private var keepPassword = true
     @State private var removePassword = false
     @State private var storedPassword = false
     @State private var ready = false
+    @State private var monitorEnabled = false
+    @State private var monitorInterval = 60.0
     @State private var error: String?
     private var candidate: LocalConnectionRecord {
         var value = record; value.title = appearance.trimmedName; value.aliasName = createAlias ? aliasName.trimmingCharacters(in: .whitespaces) : nil
@@ -102,6 +154,11 @@ struct RecordEditorView: View {
         return value
     }
     private var target: SSHAlias { candidate.entry(config: store.config.url, privateConfig: store.localRepository.privateConfig(candidate.id)) }
+    private var savedEntry: SSHAlias? { original.flatMap { record in store.aliases.first { $0.localID == record.id } } }
+    private var installationEntry: SSHAlias? {
+        guard let entry = savedEntry, entry.host == candidate.host, entry.user == candidate.user, entry.port == candidate.port, (entry.value("ProxyJump") ?? "") == candidate.jump else { return nil }
+        return entry
+    }
     private var reusePassword: Bool {
         guard let original else { return false }
         return storedPassword && original.host.caseInsensitiveCompare(candidate.host) == .orderedSame && original.user == candidate.user && original.port == candidate.port && original.website == candidate.website && original.transport?.domain == candidate.transport?.domain
@@ -114,58 +171,57 @@ struct RecordEditorView: View {
         if createAlias { return candidate.draft.validation(existing: store.rawAliases.filter { $0.id != aliasSnapshot?.entry.id }) }
         return nil
     }
+    private var editorSections: [RecordEditorSection] {
+        var sections: [RecordEditorSection] = [.general, .connection]
+        if kind == .ssh { sections.append(.key) }
+        if [.ssh, .rdp, .vnc, .website, .web, .telnet, .ftp, .ftps, .webdav, .mosh, .adb].contains(kind) { sections.append(.availability) }
+        if kind.isConsole { sections.append(.commands) }
+        return sections
+    }
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                if let back { Button(action: back) { Image(systemName: "chevron.left") }.buttonStyle(.plain).help("Типы записей") }
-                Image(systemName: kind.icon).font(.title2).foregroundStyle(.blue)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(original == nil ? "Новая запись · " + kind.title : "Редактирование записи").font(.title3).bold()
-                    Text("Название, параметры и дополнительные материалы").font(.caption).foregroundStyle(.secondary)
+        RecordEditorShell(title: original == nil ? "Новая запись · " + kind.title : "Редактирование записи", subtitle: kind.title + " · параметры и материалы", icon: kind.icon, sections: editorSections, selection: $editorSection, back: back) {
+            switch editorSection {
+            case .general:
+                ConnectionAppearanceFields(appearance: $appearance, fallback: "Название записи")
+                RecordFieldRow("Папка") {
+                    HStack {
+                        TextField("Без папки", text: $group).textFieldStyle(.roundedBorder)
+                        Menu { Button("Без папки") { group = "" }; ForEach(store.groupNames, id: \.self) { name in Button(name) { group = name } } } label: { Image(systemName: "folder") }.menuStyle(.borderlessButton).frame(width: 28)
+                    }
                 }
-                Spacer()
-            }.padding(20)
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    ConnectionAppearanceFields(appearance: $appearance, fallback: "Название записи")
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Папка").font(.caption).foregroundStyle(.secondary)
-                        HStack {
-                            TextField("Например, Дом/Серверы", text: $group).textFieldStyle(.roundedBorder)
-                            Menu { Button("Без папки") { group = "" }; ForEach(store.groupNames, id: \.self) { name in Button(name) { group = name } } } label: { Image(systemName: "folder") }.menuStyle(.borderlessButton).frame(width: 28)
-                        }
-                    }
-                    if kind == .ssh {
-                        fields
-                        Toggle("Создать SSH-алиас", isOn: $createAlias).toggleStyle(.switch).disabled(original?.aliasName != nil)
-                        if createAlias {
-                            TextField("Имя SSH-алиаса", text: $aliasName, prompt: Text("my-server")).textFieldStyle(.roundedBorder).accessibilityIdentifier("recordAlias")
-                            Text("Алиас будет сохранён в SSH-конфиг. Подключение по команде ssh " + (aliasName.isEmpty ? "my-server" : aliasName))
-                                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        } else { Text("Запись хранится в SSH Hub. SSH-алиас можно создать позже при редактировании.").font(.caption).foregroundStyle(.secondary) }
-                    } else if kind == .serial {
-                        SerialSettingsFields(settings: Binding(get: { record.serial ?? SerialSettings() }, set: { record.serial = $0 }))
-                    } else if kind.isWeb {
-                        TextField("Адрес сайта", text: $record.website, prompt: Text("https://example.com")).textFieldStyle(.roundedBorder).accessibilityIdentifier("recordWebsite")
-                    } else if kind.isSession {
-                        transportFields
-                    } else {
-                        Text("После создания добавь инструкции в «Документации» и файлы во «Вложениях».").font(.callout).foregroundStyle(.secondary)
-                    }
-                    if [.rdp, .vnc, .web].contains(kind) { tunnelFields }
-                    if kind.isConsole, let original, let entry = store.aliases.first(where: { $0.localID == original.id }) { ConsoleCommandsSettingsLink(entry: entry) }
-                    if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
-                    else if ready && !appearance.name.isEmpty, let validation { Text(validation).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
-                }.padding(20)
+            case .connection:
+                if kind == .ssh {
+                    fields
+                    Divider()
+                    Toggle("Создать SSH-алиас", isOn: $createAlias).toggleStyle(.switch).disabled(original?.aliasName != nil)
+                    if createAlias {
+                        TextField("Имя SSH-алиаса", text: $aliasName, prompt: Text("my-server")).textFieldStyle(.roundedBorder).accessibilityIdentifier("recordAlias")
+                        Text("Алиас будет сохранён в SSH-конфиг.").font(.caption).foregroundStyle(.secondary)
+                    } else { Text("Запись хранится в SSH Hub. Алиас можно создать позже.").font(.caption).foregroundStyle(.secondary) }
+
+                } else if kind == .serial { SerialSettingsFields(settings: Binding(get: { record.serial ?? SerialSettings() }, set: { record.serial = $0 })) }
+                else if kind.isWeb { TextField("Адрес сайта", text: $record.website, prompt: Text("https://example.com")).textFieldStyle(.roundedBorder).accessibilityIdentifier("recordWebsite") }
+                else if kind.isSession { transportFields }
+                else { Text("Добавь инструкции в документации и файлы во вложениях после сохранения записи.").foregroundStyle(.secondary) }
+                if [.rdp, .vnc].contains(kind) || kind.isWeb { tunnelFields }
+            case .key: RecordSSHKeyFields(identity: $record.identity, entry: installationEntry).environmentObject(store)
+            case .availability: availabilityFields
+            case .commands:
+                if let entry = savedEntry { ConsoleCommandsSettingsLink(entry: entry) }
+                else { Text("Сначала сохрани запись, затем назначь команды из общей библиотеки.").foregroundStyle(.secondary) }
+            case .preview: EmptyView()
             }
-            Divider()
+        } actions: {
             HStack {
+                if let message = error ?? validation { Text(message).font(.caption).foregroundStyle(error != nil ? .red : .secondary).lineLimit(2) }
                 Spacer()
                 Button("Отмена", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
                 Button(original == nil ? "Создать запись" : "Сохранить") { save() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(validation != nil)
-            }.padding(16)
-        }.frame(width: 610, height: 650).dismissOnOutsideClick().onAppear { load() }
+            }
+        }.dismissOnOutsideClick().onAppear { load() }
+    }
+    private var availabilityFields: some View {
+        RecordAvailabilityFields(entry: savedEntry.flatMap { $0.availabilityEndpoint?.host == target.availabilityEndpoint?.host && $0.availabilityEndpoint?.port == target.availabilityEndpoint?.port ? $0 : nil }, enabled: $monitorEnabled, interval: $monitorInterval, monitor: store.availability)
     }
     private var settings: Binding<ConnectionSettings> { Binding(get: { record.transport ?? ConnectionSettings() }, set: { record.transport = $0 }) }
     @ViewBuilder private var transportFields: some View {
@@ -243,27 +299,20 @@ struct RecordEditorView: View {
             LabeledContent("Сервер") { TextField("IP или имя сервера", text: $record.host).textFieldStyle(.roundedBorder).accessibilityIdentifier("recordHost") }
             LabeledContent("Пользователь") { TextField("root", text: $record.user).textFieldStyle(.roundedBorder).accessibilityIdentifier("recordUser") }
             Picker("Способ входа", selection: $record.authentication) { ForEach(SSHAuthentication.allCases) { Text($0.title).tag($0) } }
-            if record.authentication == .password {
+            if record.authentication.usesPassword {
                 if keepPassword { SecureField("Пароль", text: $password, prompt: Text(reusePassword && !removePassword ? "Сохранён · оставь пустым" : "Ввести при подключении")).textFieldStyle(.roundedBorder) }
                 Toggle("Сохранить в Связке ключей macOS", isOn: $keepPassword).toggleStyle(.switch)
                 if reusePassword && !removePassword { Button("Удалить сохранённый пароль") { removePassword = true } }
             }
-            DisclosureGroup("Дополнительные параметры", isExpanded: $advanced) {
-                VStack(spacing: 12) {
-                    LabeledContent("Порт") { TextField("22", text: $record.port).textFieldStyle(.roundedBorder) }
-                    if record.authentication != .password {
-                        LabeledContent("SSH-ключ") {
-                            HStack { TextField("Путь к ключу", text: $record.identity).textFieldStyle(.roundedBorder); Button("Выбрать…") { chooseKey() } }
-                        }
-                    }
-                    LabeledContent("ProxyJump") { TextField("user@host:port или алиас", text: $record.jump).textFieldStyle(.roundedBorder) }
-                }.padding(.top, 10)
-            }
+            if record.authentication == .keyAndPassword { Text("Сначала используется ключ. Если сервер запросит пароль, он будет запрошен или взят из Связки ключей. Пароль ключа вводится отдельно.").font(.caption).foregroundStyle(.secondary) }
+            RecordFieldRow("Порт") { TextField("22", text: $record.port).textFieldStyle(.roundedBorder) }
+            RecordFieldRow("ProxyJump") { TextField("user@host:port или алиас", text: $record.jump).textFieldStyle(.roundedBorder) }
         }
     }
     private func load() {
         do {
-            record = original ?? LocalConnectionRecord(); record.kind = kind
+            record = original ?? LocalConnectionRecord(); record.kind = kind; group = initialGroup
+            monitorInterval = store.availability.interval
             if kind.hasPassword { record.authentication = .password }
             if original == nil { record.port = kind.defaultPort; if kind.hasPassword { record.authentication = .password; record.user = kind == .ftp || kind == .ftps ? "anonymous" : "" } }
             if kind.isSession && kind != .ssh && kind != .serial && record.transport == nil { record.transport = ConnectionSettings() }
@@ -281,6 +330,7 @@ struct RecordEditorView: View {
                 if appearance.name.isEmpty { appearance.name = original.title }
                 group = entry.map(store.group) ?? ""
                 storedPassword = SSHPasswordStore.hasPassword(for: target, config: store.config.url)
+                monitorEnabled = entry.map { store.availability.selected.contains($0.favoriteID) } ?? false
             } else if let blueprint {
                 appearance.name = blueprint.name; record.host = blueprint.host; record.user = blueprint.user
                 record.port = blueprint.port; record.identity = blueprint.identity; record.jump = blueprint.jump; group = blueprint.group
@@ -311,7 +361,7 @@ struct RecordEditorView: View {
         var recordCommitted = false
         var ssh: ConfigChange?, credentialChanged = false, previousPassword: String?
         do {
-            let changePassword = removePassword || (record.authentication == .password && ((!keepPassword && reusePassword) || (keepPassword && !password.isEmpty)))
+            let changePassword = removePassword || (record.authentication.usesPassword && ((!keepPassword && reusePassword) || (keepPassword && !password.isEmpty)))
             if changePassword {
                 previousPassword = try SSHPasswordStore.password(for: target, config: store.config.url)
                 try SSHPasswordStore.set(keepPassword && !removePassword && !password.isEmpty ? password : nil, for: target, config: store.config.url); credentialChanged = true
@@ -330,6 +380,7 @@ struct RecordEditorView: View {
             }
             try store.commitRecord(candidate, expected: expected, appearance: appearance, group: group, ssh: ssh, template: template)
             recordCommitted = true
+            if let saved = store.aliases.first(where: { $0.localID == candidate.id }), saved.availabilityEndpoint != nil { store.availability.apply(entry: saved, enabled: monitorEnabled, interval: monitorInterval, available: store.aliases) }
             onSaved?(target)
             dismiss()
         } catch {

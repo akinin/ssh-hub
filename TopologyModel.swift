@@ -360,7 +360,7 @@ struct TopologyTrafficPoint { let date: Date; let rx: Double; let tx: Double }
             let result: ToolkitResult
             if entry.recordKind == .localShell { result = try await worker.run("/bin/sh", ["-c", TopologyCollector.macOS.command], timeout: 30) }
             else {
-                let autofill = entry.authentication == .password ? await SSHLoginPolicy.permitsSavedPassword(for: entry, config: self.config) : false
+                let autofill = entry.authentication.usesPassword ? await SSHLoginPolicy.permitsSavedPassword(for: entry, config: self.config) : false
                 try Task.checkCancellation()
                 let password = autofill ? try SSHPasswordStore.password(for: entry, config: entry.credentialConfig(fallback: self.config)) : nil
                 let server = try SSHLoginServer(password: password, destination: "Сетевая карта · " + entry.name)

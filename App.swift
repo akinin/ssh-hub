@@ -50,6 +50,8 @@ import ConsoleSupport
     @Published var notice: String?
     @Published var generatingKey = false
     @Published var creatingAlias = false
+    @Published var creatingRecordFolder = ""
+    @Published var sidebarRevision = 0
     @Published var editingAlias: AliasEditSnapshot?
     @Published var duplicatingAlias: AliasEditSnapshot?
     @Published var deletingAlias: AliasEditSnapshot?
@@ -79,6 +81,7 @@ import ConsoleSupport
     private var undoNames: (before: SSHAlias, after: SSHAlias?)?
     private var undoImportedMetadata: [String: (group: String?, favorite: Bool, appearance: ConnectionAppearance?)] = [:]
     private var undoAppearanceEdit: (entry: SSHAlias, appearance: ConnectionAppearance)?
+    private var undoGroupEdit: (entry: SSHAlias, group: String)?
     var data = Data()
     let config: SSHConfig
     init() {
@@ -129,9 +132,10 @@ import ConsoleSupport
         openPage(entry, section: .overview)
     }
     func openWebsite(_ entry: SSHAlias) {
-        guard let value = entry.website, let url = URL(string: value), ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { return }
-        NSWorkspace.shared.open(url)
+        guard let value = entry.website, LocalConnectionRecord.validWebsite(value), entry.recordKind?.isWeb == true else { return }
+        openPage(entry, section: .connection)
     }
+    func newRecord(in folder: String = "") { creatingRecordFolder = ConnectionTree.normalized(folder); creatingAlias = true }
     func reveal(_ entry: SSHAlias) {
         query = ""; groupFilter = "all"
         let path = ConnectionTree.normalized(group(entry)).split(separator: "/").map(String.init)
@@ -141,7 +145,7 @@ import ConsoleSupport
         selected = entry.id; revealRequest += 1
     }
     func appearance(_ entry: SSHAlias) -> ConnectionAppearance { appearances[entry.favoriteID] ?? ConnectionAppearance() }
-    func title(_ entry: SSHAlias) -> String { appearance(entry).title(fallback: localRecords.first(where: { $0.id == entry.localID })?.title ?? entry.name) }
+    func title(_ entry: SSHAlias) -> String { if entry.isQuickConnection { return entry.host }; return appearance(entry).title(fallback: localRecords.first(where: { $0.id == entry.localID })?.title ?? entry.name) }
     func setAppearance(_ value: ConnectionAppearance, for entry: SSHAlias) {
         guard value.validation == nil else { return }
         appearances = ConnectionAppearance.setting(value, for: entry.favoriteID, in: appearances)
@@ -245,6 +249,8 @@ import ConsoleSupport
     }
     private func persistFavorites() { UserDefaults.standard.set(Array(favorites).sorted(), forKey: "favoriteAliases.v1") }
     private func moveFavorite(from: SSHAlias, to: SSHAlias) {
+        moveSidebarOrder(from: from.favoriteID, to: to.favoriteID)
+        availability.move(from: from.favoriteID, to: to.favoriteID, available: aliases)
         if let membership = profiles.membership.removeValue(forKey: from.favoriteID) { profiles.membership[to.favoriteID] = membership; persistProfiles() }
         if favorites.remove(from.favoriteID) != nil { favorites.insert(to.favoriteID); persistFavorites() }
         if let name = groups.removeValue(forKey: from.favoriteID) { setGroup(name, for: to) }
@@ -287,16 +293,18 @@ import ConsoleSupport
         if entry.localID != nil { deletingRecord = entry; return }
         do { deletingAlias = try config.editSnapshot(entry) } catch { self.error = error.localizedDescription }
     }
-    func savedEdit(_ change: ConfigChange, old: SSHAlias, name: String, appearance value: ConnectionAppearance) {
+    func savedEdit(_ change: ConfigChange, old: SSHAlias, name: String, appearance value: ConnectionAppearance, group: String? = nil) {
         let previousAppearance = appearance(old)
+        let previousGroup = self.group(old)
         clearUndo()
         query = ""; reload(select: name)
         let updated = aliases.first { $0.source == old.source && $0.name == name }
-        if let updated { moveFavorite(from: old, to: updated); setAppearance(value, for: updated) }
+        if let updated { moveFavorite(from: old, to: updated); setAppearance(value, for: updated); if let group { setGroup(group, for: updated) } }
         undoAppearanceEdit = (old, previousAppearance)
+        undoGroupEdit = (old, previousGroup)
         undoChange = change; undoNames = (old, updated)
         undoImportedMetadata = [:]
-        notice = "Алиас сохранён. Резервная копия: \(change.backup.lastPathComponent)"
+        notice = nil
     }
     func delete(_ snapshot: AliasEditSnapshot) {
         deletingAlias = nil
@@ -320,6 +328,7 @@ import ConsoleSupport
                 if metadata.favorite { favorites.insert(id) } else { favorites.remove(id) }
             }
             if let edit = undoAppearanceEdit { setAppearance(edit.appearance, for: edit.entry) }
+            if let edit = undoGroupEdit { setGroup(edit.group, for: edit.entry) }
             persistAppearances()
             UserDefaults.standard.set(groups, forKey: "aliasGroups.v1"); persistFavorites()
             reload(select: undoNames?.before.name)
@@ -338,7 +347,7 @@ import ConsoleSupport
         }
     }
     func cancelCheck() { probe?.cancel() }
-    func clearUndo() { undoRecordChange = nil; undoAppearanceEdit = nil; undoChange = nil; undoNames = nil; undoImportedMetadata = [:] }
+    func clearUndo() { undoRecordChange = nil; undoAppearanceEdit = nil; undoGroupEdit = nil; undoChange = nil; undoNames = nil; undoImportedMetadata = [:] }
     var current: SSHAlias? { aliases.first { $0.id == selected } }
     func reload(select name: String? = nil) {
         do {
@@ -474,7 +483,7 @@ import ConsoleSupport
             .windowResizability(.contentMinSize)
             .commands {
                 CommandGroup(replacing: .newItem) {
-                    Button("Новая запись…") { store.creatingAlias = true }
+                    Button("Новая запись…") { store.newRecord() }
                         .keyboardShortcut("n", modifiers: .command)
                 }
                 CommandGroup(after: .newItem) {
@@ -599,7 +608,7 @@ struct StatusMenu: View {
         Divider()
         Button("Новая запись…") {
             showWindow()
-            store.creatingAlias = true
+            store.newRecord()
         }
         Button("Создать SSH-ключ…") {
             showWindow()
@@ -625,9 +634,12 @@ struct MainView: View {
     @EnvironmentObject var store: AliasStore
     @Environment(\.openWindow) private var openWindow
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var quickAddress = ""
+    @State private var quickKind: RecordKind = .ssh
     @State private var handledLaunchAction = false
     @StateObject private var sidebarController = SidebarController()
     @ObservedObject private var consoles = ConsoleStore.shared
+    private func quickConnect() { store.quickConnect(address: quickAddress, kind: quickKind) }
     private func presentIntegration(_ action: IntegrationAction) {
         openWindow(id: "main")
         DispatchQueue.main.async {
@@ -719,25 +731,25 @@ struct MainView: View {
                 .frame(width: 40, height: 28).background(Color.primary.opacity(0.07), in: Capsule())
                         .help("Фильтр: " + filterTitle).accessibilityLabel("Фильтр подключений").accessibilityValue(filterTitle)
                 }.padding(.horizontal, 14).padding(.bottom, 10)
-                Button { store.openTopology() } label: {
-                    HStack(spacing:9) { Image(systemName:"point.3.connected.trianglepath.dotted"); Text("Сетевые карты"); Spacer() }
-                        .padding(.horizontal,12).frame(height:30)
-                        .background(store.pages.contains(where: { $0.section == .topology && store.workspace.active == .page($0.id) }) ? Color.accentColor.opacity(0.2) : .clear,in:RoundedRectangle(cornerRadius:7))
-                }.buttonStyle(.plain).padding(.horizontal,10).padding(.bottom,5)
-                    .contextMenu { ForEach(store.topologyMapIndex) { map in Button(map.name) { store.openTopology(mapID: map.id) } } }
-                    .onAppear { store.reloadTopologyMapIndex() }
-                    .onChange(of: store.profiles.active) { _, _ in store.reloadTopologyMapIndex() }
-                    .onChange(of: store.config.url) { _, _ in store.reloadTopologyMapIndex() }
                 ConnectionTreeView().environmentObject(store)
                 Divider()
-                HStack {
-                    Image(systemName: "doc.text").foregroundStyle(.secondary)
-                    Text(store.config.url.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                    Spacer()
-                    Button { store.openConfig() } label: { Image(systemName: "folder") }
-                        .buttonStyle(.plain).help("Показать конфиг в Finder")
-                }.padding(.horizontal, 14).frame(height: WorkspaceMetrics.footerHeight)
+                HStack(spacing: 7) {
+                    TextField("Узел или IP-адрес", text: $quickAddress).textFieldStyle(.plain)
+                        .accessibilityLabel("Быстрое подключение: узел или IP-адрес").onSubmit { quickConnect() }
+                    Menu {
+                        ForEach(QuickConnectionTarget.kinds) { kind in
+                            Button { quickKind = kind } label: { Label(kind == .web ? "Веб" : kind.title, systemImage: kind.icon) }
+                        }
+                    } label: { Image(systemName: quickKind.icon).frame(width: 22, height: 24) }
+                        .menuStyle(.borderlessButton).menuIndicator(.visible).fixedSize()
+                        .help("Тип быстрого подключения: " + quickKind.title).accessibilityLabel("Тип быстрого подключения: " + quickKind.title)
+                    Button { quickConnect() } label: { Image(systemName: "play.circle").font(.system(size: 17)).frame(width: 24, height: 26) }
+                        .buttonStyle(.plain).disabled(quickAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .help("Подключиться").accessibilityLabel("Быстро подключиться")
+                }.padding(.horizontal, 10).frame(height: 32)
+                    .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7))
+                    .padding(.horizontal, 10).frame(height: WorkspaceMetrics.footerHeight)
+
             }.navigationSplitViewColumnWidth(min: 245, ideal: 280, max: 400)
                 .toolbar(removing: .sidebarToggle)
         } detail: {
@@ -772,8 +784,13 @@ struct MainView: View {
                         Button("Экспорт записей…", systemImage: "square.and.arrow.up") { store.export(entries: store.ordered) }.disabled(store.aliases.isEmpty)
                     } label: { Image(systemName: "wrench.and.screwdriver").frame(width: 26, height: 26) }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).help("Инструменты").accessibilityLabel("Инструменты")
+                    toolbarButton("Сетевые карты", symbol: "point.3.connected.trianglepath.dotted", help: "Сетевые карты · ПКМ — выбрать карту") { store.openTopology() }
+                        .contextMenu { ForEach(store.topologyMapIndex) { map in Button(map.name) { store.openTopology(mapID: map.id) } } }
+                        .onAppear { store.reloadTopologyMapIndex() }
+                        .onChange(of: store.profiles.active) { _, _ in store.reloadTopologyMapIndex() }
+                        .onChange(of: store.config.url) { _, _ in store.reloadTopologyMapIndex() }
                     toolbarButton("Настройки", symbol: "gearshape", help: "Настройки · ⌘,") { store.showingSettings = true }
-                    toolbarButton("Новая запись", symbol: "plus", help: "Новая запись · ⌘N") { store.creatingAlias = true }
+                    toolbarButton("Новая запись", symbol: "plus", help: "Новая запись · ⌘N") { store.newRecord() }
                 }.padding(.horizontal, 10).fixedSize(horizontal: true, vertical: true)
             }
         }
@@ -865,26 +882,23 @@ struct AliasDetail: View {
                     }
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 165), spacing: 10)], spacing: 10) {
-                    if entry.canConnect {
+                    if entry.recordKind?.isWeb == true {
+                        tile("Открыть сайт", detail: "Во вкладке SSH Hub", icon: "globe") { store.openWebsite(entry) }
+                    } else if entry.canConnect {
                         tile("Подключиться", detail: entry.canSSH ? "Консоль SSH" : entry.recordKind?.title ?? "Сеанс", icon: entry.recordKind?.icon ?? "cable.connector") { store.connect(entry) }
                     }
                     if entry.canSSH {
                         tile("SFTP", detail: "Файлы сервера", icon: "folder") { store.openSFTP(entry) }
-                    } else if entry.recordKind == .website {
-                        tile("Открыть сайт", detail: "В браузере", icon: "globe") { store.openWebsite(entry) }
                     }
                     if entry.canSSH || entry.recordKind == .localShell {
                         tile("Логи", detail: "Захват, поиск и анализ", icon: "text.alignleft") { store.openPage(entry, section: .logs) }
                     }
                     tile("Инвентаризация", detail: "Оборудование и сведения", icon: "shippingbox") { store.openPage(entry, section: .inventory) }
-                    tile("Сетевая карта", detail: "LAN, WAN, VPN и порты", icon: "point.3.connected.trianglepath.dotted") { store.openTopology(entry) }
                     tile("Документация", detail: "Заметки и инструкции", icon: "doc.richtext") { store.showDocumentation(entry) }
                     tile("Вложения", detail: "Файлы записи", icon: "paperclip") { store.showAttachments(entry) }
                     tile("Инструменты", detail: "Nmap, DNS, порты, TLS и IP", icon: "network") { store.openScanner(entry) }
                     tile("Редактировать", detail: "Параметры записи", icon: "pencil") { store.edit(entry) }
-                    tile("Группа", detail: store.group(entry).isEmpty ? "Без группы" : store.group(entry), icon: "folder.badge.gearshape") { store.groupingAlias = entry }
                     if entry.canSSH {
-                        tile("WinBox", detail: "MikroTik · открыть отдельно", icon: "network") { store.openPage(entry, section: .winbox) }
                         tile("Проверить", detail: "Доступность SSH", icon: "network") { store.check(entry) }.disabled(store.checkingID != nil)
                         tile("Внешний терминал", detail: "Открыть отдельно", icon: "arrow.up.forward.square") { store.connectExternally(entry) }
                     }
@@ -951,6 +965,10 @@ struct CreateAliasView: View {
     @Environment(\.dismiss) var dismiss
     @State private var draft = AliasDraft()
     @State private var appearance = ConnectionAppearance()
+    @State private var group = ""
+    @State private var monitorEnabled = false
+    @State private var monitorInterval = 60.0
+    @State private var editorSection: RecordEditorSection = .general
     @State private var advanced = false
     @State private var error: String?
     @State private var expectedData = Data()
@@ -976,79 +994,46 @@ struct CreateAliasView: View {
         guard let original = editing?.entry else { return false }
         return storedPassword && original.host.caseInsensitiveCompare(credentialTarget.host) == .orderedSame && original.user == credentialTarget.user && original.port == credentialTarget.port
     }
-    private var validation: String? { (password.contains(where: { $0.isNewline || $0 == "\0" }) ? "Пароль должен занимать одну строку." : nil) ?? appearance.validation ?? draft.validation(existing: store.rawAliases.filter { $0.id != editing?.entry.id }) }
+    private var installationEntry: SSHAlias? {
+        guard let entry = editing?.entry, entry.host == draft.trimmedHost, entry.user == draft.user.trimmingCharacters(in: .whitespaces), entry.port == draft.port, (entry.value("ProxyJump") ?? "") == draft.jump else { return nil }
+        return entry
+    }
+    private var validation: String? { (password.contains(where: { $0.isNewline || $0 == "\0" }) ? "Пароль должен занимать одну строку." : nil) ?? (!AliasTransfer.validGroup(group) ? "Проверь путь папки." : nil) ?? appearance.validation ?? draft.validation(existing: store.rawAliases.filter { $0.id != editing?.entry.id }) }
     private var preview: String { (editing ?? duplicating).flatMap { try? SSHConfig.editedPreview($0, draft: draft) } ?? draft.block }
     var body: some View {
-        ScrollView {
-        VStack(alignment: .leading, spacing: 20) {
-            HStack(spacing: 12) {
-                Image(systemName: "plus.square.fill").font(.system(size: 30)).foregroundStyle(.blue)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(duplicating != nil ? "Дублирование записи" : editing == nil ? "Новая запись · SSH" : "Редактирование записи").font(.title2).bold()
-                    Text(duplicating.map { "Копия «\($0.entry.name)» с сохранением параметров и группы" } ?? (editing == nil ? "Короткое имя для подключения к серверу" : "Остальные параметры и комментарии сохраняются")).foregroundStyle(.secondary)
-                }
-            }
-            ConnectionAppearanceFields(appearance: $appearance, fallback: draft.name)
-            if let entry = editing?.entry { ConsoleCommandsSettingsLink(entry: entry) }
-            Form {
-                TextField("Алиас", text: $draft.name, prompt: Text("например, my-server")).focused($nameFocused)
-                    .accessibilityIdentifier("aliasName")
-                TextField("Сервер", text: $draft.host, prompt: Text("192.0.2.10 или server.example.com"))
-                    .accessibilityIdentifier("aliasHost")
-                TextField("Пользователь", text: $draft.user, prompt: Text("root"))
-                    .accessibilityIdentifier("aliasUser")
-                Picker("Способ входа", selection: $draft.authentication) {
-                    ForEach(SSHAuthentication.allCases) { Text($0.title).tag($0) }
-                }.accessibilityIdentifier("aliasAuthentication")
-                if draft.authentication == .password {
-                    if keepPassword { SecureField("Пароль", text: $password, prompt: Text(canReuseSavedPassword && !removePassword ? "Сохранён · оставь пустым, чтобы не менять" : "Запросить при подключении"))
-                        .accessibilityIdentifier("aliasPassword") }
-                    Toggle("Сохранить в Связке ключей macOS", isOn: $keepPassword)
-                    if canReuseSavedPassword && !removePassword {
-                        Button("Удалить сохранённый пароль") { removePassword = true; storedPassword = false }
+        RecordEditorShell(title: duplicating != nil ? "Дублирование записи" : editing == nil ? "Новая запись · SSH" : "Редактирование записи", subtitle: "SSH · остальные параметры и комментарии сохраняются", icon: editing == nil ? "plus.square" : "pencil", sections: [.general, .connection, .key, .availability, .commands, .preview], selection: $editorSection) {
+            switch editorSection {
+            case .general:
+                ConnectionAppearanceFields(appearance: $appearance, fallback: draft.name)
+                RecordFieldRow("Папка") {
+                    HStack {
+                        TextField("Без папки", text: $group).textFieldStyle(.roundedBorder)
+                        Menu { Button("Без папки") { group = "" }; ForEach(store.groupNames, id: \.self) { path in Button(path) { group = path } } } label: { Image(systemName: "folder") }.menuStyle(.borderlessButton).frame(width: 28)
                     }
-                    Text("Пароль хранится в Связке ключей. Пустое поле без сохранённого пароля — ввод при подключении.")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
-                DisclosureGroup("Дополнительные параметры", isExpanded: $advanced) {
-                    TextField("Порт", text: $draft.port).accessibilityIdentifier("aliasPort")
-                    if draft.authentication != .password { LabeledContent("SSH-ключ") {
-                        HStack {
-                            TextField("", text: $draft.identity, prompt: Text("Не задан")).labelsHidden().accessibilityIdentifier("aliasKey")
-                            Button("Выбрать…") { chooseKey() }
-                            Button { generatingKey = true } label: { Image(systemName: "key.fill") }
-                                .help("Создать новый SSH-ключ")
-                        }
-                    }
-                    }
-                    TextField("ProxyJump", text: $draft.jump, prompt: Text("например, gateway"))
-                        .accessibilityIdentifier("aliasJump")
-                }
-            }.formStyle(.grouped).frame(height: (advanced ? 320 : 220) + (draft.authentication == .password ? 160 : 0))
-            DisclosureGroup("Предпросмотр SSH-конфига", isExpanded: $previewExpanded) {
-                ScrollView { Text(preview).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(12) }
-                    .frame(height: 130).background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
+            case .connection:
+                connectionFields
+            case .key: RecordSSHKeyFields(identity: $draft.identity, entry: installationEntry).environmentObject(store)
+            case .availability: RecordAvailabilityFields(entry: installationEntry != nil ? editing?.entry : nil, enabled: $monitorEnabled, interval: $monitorInterval, monitor: store.availability)
+            case .commands:
+                if let entry = editing?.entry { ConsoleCommandsSettingsLink(entry: entry) }
+                else { Text("Сначала сохрани запись, затем назначь команды из общей библиотеки.").foregroundStyle(.secondary) }
+            case .preview: Text(preview).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
             }
-            if let error {
-                Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
-                    .font(.callout).fixedSize(horizontal: false, vertical: true)
-            } else if !draft.name.isEmpty && !draft.host.isEmpty, let validation {
-                Text(validation).foregroundStyle(.secondary).font(.caption).fixedSize(horizontal: false, vertical: true)
-            }
+        } actions: {
             HStack {
-                Label("Резервная копия перед сохранением", systemImage: "clock.arrow.circlepath")
-                    .font(.caption).foregroundStyle(.secondary)
+                if let message = error ?? validation { Text(message).font(.caption).foregroundStyle(error != nil ? .red : .secondary).lineLimit(2) }
                 Spacer()
                 Button("Отмена", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(editing == nil ? "Создать запись" : "Сохранить") { save() }.buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction).disabled(validation != nil)
+                Button(editing == nil ? "Создать запись" : "Сохранить") { save() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(validation != nil)
             }
-        }.padding(26)
-        }.frame(width: 620, height: 720).dismissOnOutsideClick()
+        }.dismissOnOutsideClick()
             .onAppear {
                 expectedData = store.data; nameFocused = true
                 if let entry = (editing ?? duplicating)?.entry { appearance = store.appearance(entry) }
+                group = (editing ?? duplicating).map { store.group($0.entry) } ?? store.creatingRecordFolder
+                monitorInterval = store.availability.interval
+                monitorEnabled = editing.map { store.availability.selected.contains($0.entry.favoriteID) } ?? false
                 if let entry = editing?.entry { storedPassword = SSHPasswordStore.hasPassword(for: entry, config: store.config.url) }
             }
             .sheet(isPresented: $generatingKey) {
@@ -1057,6 +1042,29 @@ struct CreateAliasView: View {
                     advanced = true
                 }
             }
+    }
+    private var connectionFields: some View {
+            VStack(alignment: .leading, spacing: 12) {
+                RecordFieldRow("Алиас") { TextField("например, my-server", text: $draft.name).focused($nameFocused).accessibilityIdentifier("aliasName") }
+
+                RecordFieldRow("Сервер") { TextField("IP или имя сервера", text: $draft.host).accessibilityIdentifier("aliasHost") }
+                RecordFieldRow("Пользователь") { TextField("root", text: $draft.user).accessibilityIdentifier("aliasUser") }
+                Picker("Способ входа", selection: $draft.authentication) {
+                    ForEach(SSHAuthentication.allCases) { Text($0.title).tag($0) }
+                }.accessibilityIdentifier("aliasAuthentication")
+                if draft.authentication.usesPassword {
+                    if keepPassword { RecordFieldRow("Пароль") { SecureField(canReuseSavedPassword && !removePassword ? "Сохранён · оставь пустым" : "Запросить при подключении", text: $password).accessibilityIdentifier("aliasPassword") } }
+                    Toggle("Сохранить в Связке ключей macOS", isOn: $keepPassword)
+                    if canReuseSavedPassword && !removePassword {
+                        Button("Удалить сохранённый пароль") { removePassword = true; storedPassword = false }
+                    }
+                    Text("Пароль хранится в Связке ключей. Пустое поле без сохранённого пароля — ввод при подключении.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if draft.authentication == .keyAndPassword { Text("Сначала ключ; пароль используется, если сервер его запросит. Пароль приватного ключа вводится отдельно.").font(.caption).foregroundStyle(.secondary) }
+                RecordFieldRow("Порт") { TextField("22", text: $draft.port).accessibilityIdentifier("aliasPort") }
+                RecordFieldRow("ProxyJump") { TextField("например, gateway", text: $draft.jump).accessibilityIdentifier("aliasJump") }
+            }.textFieldStyle(.roundedBorder)
     }
     func chooseKey() {
         let panel = NSOpenPanel()
@@ -1076,9 +1084,9 @@ struct CreateAliasView: View {
         var previousPassword: String?
         do {
             var replacement: String?
-            var changePassword = removePassword || (draft.authentication == .password && !keepPassword && canReuseSavedPassword)
-            if draft.authentication == .password && keepPassword && !password.isEmpty { replacement = password; changePassword = true }
-            else if draft.authentication == .password && keepPassword && canReuseSavedPassword && !removePassword,
+            var changePassword = removePassword || (draft.authentication.usesPassword && !keepPassword && canReuseSavedPassword)
+            if draft.authentication.usesPassword && keepPassword && !password.isEmpty { replacement = password; changePassword = true }
+            else if draft.authentication.usesPassword && keepPassword && canReuseSavedPassword && !removePassword,
                     let original = editing?.entry,
                     SSHPasswordStore.account(for: original, config: store.config.url) != SSHPasswordStore.account(for: target, config: store.config.url) {
                 replacement = try SSHPasswordStore.password(for: original, config: store.config.url); changePassword = replacement != nil
@@ -1090,13 +1098,15 @@ struct CreateAliasView: View {
             }
             if let editing {
                 let change = try store.config.update(editing, draft: draft)
-                store.savedEdit(change, old: editing.entry, name: draft.trimmedName, appearance: appearance)
+                store.savedEdit(change, old: editing.entry, name: draft.trimmedName, appearance: appearance, group: group)
+                applyPreferences()
                 dismiss(); return
             }
             if let duplicating {
                 let change = try store.config.duplicate(duplicating, draft: draft)
                 store.savedDuplicate(change, original: duplicating.entry, name: draft.trimmedName)
                 if let entry = store.current { store.setAppearance(appearance, for: entry) }
+                applyPreferences()
                 dismiss(); return
             }
             let backup = try store.config.create(draft, expectedData: expectedData)
@@ -1104,11 +1114,17 @@ struct CreateAliasView: View {
             store.query = ""
             store.reload(select: draft.trimmedName)
             if let entry = store.current { store.setAppearance(appearance, for: entry) }
+            applyPreferences()
             store.notice = backup == nil ? "Алиас создан. SSH-конфиг сохранён." : "Алиас создан. Резервная копия: \(backup!.lastPathComponent)"
             dismiss()
         } catch {
             if credentialChanged { try? SSHPasswordStore.set(previousPassword, for: target, config: store.config.url) }
             self.error = error.localizedDescription
         }
+    }
+    private func applyPreferences() {
+        guard let entry = store.aliases.first(where: { $0.name == draft.trimmedName && $0.source == ((editing ?? duplicating)?.entry.source ?? store.config.url) }) else { return }
+        store.setGroup(group, for: entry)
+        store.availability.apply(entry: entry, enabled: monitorEnabled, interval: monitorInterval, available: store.aliases)
     }
 }

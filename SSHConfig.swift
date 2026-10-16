@@ -19,6 +19,7 @@ struct SSHAlias: Identifiable {
     var recordAlias: String?
     var serial: SerialSettings?
     var transport: ConnectionSettings?
+    var isQuickConnection = false
     var id: String { localID.map { "record:" + $0.uuidString } ?? "\(source.path):\(line):\(name)" }
     var canSSH: Bool { recordKind == nil || recordKind == .ssh }
     var canConnect: Bool { canSSH || recordKind?.isSession == true }
@@ -64,7 +65,7 @@ enum RecordKind: String, Codable, CaseIterable, Identifiable {
     var isFiles: Bool { [.ftp, .ftps, .webdav].contains(self) }
     var isDesktop: Bool { self == .rdp || self == .vnc }
     var isConsole: Bool { [.ssh, .serial, .telnet, .mosh, .adb, .docker, .kubernetes, .localShell].contains(self) }
-    var isSession: Bool { isConsole || isDesktop || isFiles || self == .web }
+    var isSession: Bool { isConsole || isDesktop || isFiles || isWeb }
     var hasPassword: Bool { isDesktop || isFiles }
     var defaultPort: String { switch self { case .rdp: return "3389"; case .vnc: return "5900"; case .telnet: return "23"; case .ftp, .ftps: return "21"; case .webdav: return "443"; case .adb: return "5555"; default: return "22" } }
 }
@@ -113,14 +114,16 @@ struct SSHSnapshot {
 }
 
 enum SSHAuthentication: String, Codable, CaseIterable, Identifiable {
-    case automatic, key, password
+    case automatic, key, password, keyAndPassword
     var id: String { rawValue }
-    var title: String { switch self { case .automatic: return "Автоматически"; case .key: return "SSH-ключ"; case .password: return "Пароль" } }
+    var title: String { switch self { case .automatic: return "Автоматически"; case .key: return "SSH-ключ"; case .password: return "Пароль"; case .keyAndPassword: return "SSH-ключ и пароль" } }
+    var usesPassword: Bool { self == .password || self == .keyAndPassword }
     var options: [(String, String)] {
         switch self {
         case .automatic: return []
         case .key: return [("PubkeyAuthentication", "yes"), ("PreferredAuthentications", "publickey")]
         case .password: return [("PubkeyAuthentication", "no"), ("PreferredAuthentications", "password,keyboard-interactive"), ("PasswordAuthentication", "yes"), ("KbdInteractiveAuthentication", "yes")]
+        case .keyAndPassword: return [("PubkeyAuthentication", "yes"), ("PreferredAuthentications", "publickey,password,keyboard-interactive"), ("PasswordAuthentication", "yes"), ("KbdInteractiveAuthentication", "yes")]
         }
     }
 }
@@ -128,7 +131,19 @@ extension SSHAlias {
     var authentication: SSHAuthentication {
         if value("PubkeyAuthentication")?.lowercased() == "no" { return .password }
         if value("PreferredAuthentications")?.lowercased() == "publickey" { return .key }
+        if value("PreferredAuthentications")?.lowercased() == "publickey,password,keyboard-interactive" { return .keyAndPassword }
         return .automatic
+    }
+    var availabilityEndpoint: (host: String, port: UInt16)? {
+        if recordKind?.isWeb == true || recordKind == .webdav {
+            guard let text = website, let url = URL(string: text), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), let host = url.host, !host.isEmpty,
+                  url.user == nil, url.password == nil, !text.contains(where: { $0.isWhitespace || $0 == "\0" }),
+                  let port = UInt16(exactly: url.port ?? (url.scheme?.lowercased() == "https" ? 443 : 80)), port > 0 else { return nil }
+            return (host, port)
+        }
+        guard canSSH || recordKind.map({ [RecordKind.rdp, .vnc, .telnet, .ftp, .ftps, .mosh].contains($0) }) == true || (recordKind == .adb && transport?.adbNetwork == true),
+              !host.isEmpty, let port = UInt16(port), port > 0 else { return nil }
+        return (host, port)
     }
 }
 

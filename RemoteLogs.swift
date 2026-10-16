@@ -314,7 +314,7 @@ import Combine
             do {
                 let executable: String, arguments: [String]; var environment: [String: String] = [:]
                 if entry.canSSH {
-                    let mayUseSavedPassword = entry.authentication == .password ? await SSHLoginPolicy.permitsSavedPassword(for: entry, config: config) : false
+                    let mayUseSavedPassword = entry.authentication.usesPassword ? await SSHLoginPolicy.permitsSavedPassword(for: entry, config: config) : false
                     guard !Task.isCancelled, generation == token else { return }
                     let password = mayUseSavedPassword ? try SSHPasswordStore.password(for: entry, config: entry.credentialConfig(fallback: config)) : nil
                     let server = try SSHLoginServer(password: password, destination: "Логи · \(entry.user)@\(entry.host)"); login = server

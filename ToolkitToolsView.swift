@@ -21,8 +21,10 @@ import AppKit
     private var tls: TLSInspector?
     private var generation = UUID()
     func stop() { generation = UUID(); task?.cancel(); task = nil; process?.cancel(); process = nil; tls?.cancel(); tls = nil; bonjour?.cancel(); bonjour = nil; whois?.cancel(); whois = nil; checksum?.cancel(); checksum = nil; probe?.cancel(); probe = nil; login?.stop(); login = nil; busy = false; progress = "" }
-    private func loginEnvironment(_ entry: SSHAlias, config: URL) throws -> [String:String] {
-        let password = entry.authentication == .password ? try SSHPasswordStore.password(for: entry, config: entry.credentialConfig(fallback: config)) : nil
+    private func loginEnvironment(_ entry: SSHAlias, config: URL) async throws -> [String:String] {
+        let permitted = entry.authentication.usesPassword ? await SSHLoginPolicy.permitsSavedPassword(for: entry, config: config) : false
+        try Task.checkCancellation()
+        let password = permitted ? try SSHPasswordStore.password(for: entry, config: entry.credentialConfig(fallback: config)) : nil
         let server = try SSHLoginServer(password: password, destination: "Инструменты · \(entry.user)@\(entry.host)")
         guard let helper = Bundle.main.url(forAuxiliaryExecutable: "SSHLoginAskpass") else { server.stop(); throw ConfigError.message("Не найден помощник входа SSH.") }
         login = server
@@ -52,7 +54,8 @@ import AppKit
     func ports(host: String, ports: [Int], gateway: SSHAlias?, config: URL) {
         perform("Проверка TCP-портов") { owner in
             guard ToolkitText.hostValid(host), !ports.isEmpty, ports.count <= 20, ports.allSatisfy({ (1...65535).contains($0) }) else { throw ConfigError.message("Проверь адрес и порты.") }
-            let environment = try gateway.map { try owner.loginEnvironment($0, config: config) } ?? [:]
+            let environment: [String: String]
+            if let gateway { environment = try await owner.loginEnvironment(gateway, config: config) } else { environment = [:] }
             var rows = ["\(host) · \(gateway.map { "через SSH " + $0.name } ?? "с этого Mac")\n\(Date().formatted())"]
             for port in ports {
                 try Task.checkCancellation(); let start = Date(); owner.progress = "TCP \(port)"

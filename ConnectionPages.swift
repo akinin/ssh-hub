@@ -7,7 +7,7 @@ import Network
 
 @MainActor enum ConnectionPassword {
     static func read(_ entry: SSHAlias, config: URL) throws -> String {
-        if let saved = try SSHPasswordStore.password(for: entry, config: entry.credentialConfig(fallback: config)) { return saved }
+        if !entry.isQuickConnection, let saved = try SSHPasswordStore.password(for: entry, config: entry.credentialConfig(fallback: config)) { return saved }
         let alert = NSAlert(); alert.messageText = "Вход · " + (entry.recordKind?.title ?? "") + " · " + entry.name
         alert.informativeText = entry.user + " · " + (entry.recordKind == .webdav ? entry.website ?? "" : entry.host + ":" + entry.port) + ". Пароль используется только для этого сеанса."
         let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 340, height: 26)); alert.accessoryView = field; alert.window.initialFirstResponder = field
@@ -31,7 +31,7 @@ import Network
     }
     init(entry: SSHAlias, config: URL, restored: Bool) {
         self.entry = entry; self.config = config
-        web = entry.recordKind == .web ? WebPageModel(entry: entry) : nil
+        web = entry.recordKind?.isWeb == true ? WebPageModel(entry: entry) : nil
         files = entry.recordKind?.isFiles == true ? RemoteFilesModel(entry: entry, config: config) : nil
         desktop = entry.recordKind?.isDesktop == true ? DesktopSession(entry: entry, config: config) : nil
         desktop?.onRequestStart = { [weak self] in self?.start() }
@@ -97,6 +97,7 @@ struct ConnectionTunnelStatus: View {
     func stop() { view.stopLoading(); view.loadHTMLString("", baseURL: nil); started = false }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { if let url = webView.url, ["http", "https"].contains(url.scheme?.lowercased() ?? "") { address = url.absoluteString }; objectWillChange.send() }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { self.error = error.localizedDescription }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { self.error = error.localizedDescription }
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url, ["http", "https", "about"].contains(url.scheme?.lowercased() ?? "") else { decisionHandler(.cancel); return }
         if navigationAction.targetFrame == nil { webView.load(navigationAction.request); decisionHandler(.cancel) } else { decisionHandler(.allow) }
@@ -162,7 +163,7 @@ struct WebPageView: View {
             }.padding(8).controlSize(.small)
             Divider()
             if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).padding(8) }
-            if model.started { WebPageContainer(view: model.view) }
+            if model.started { WebPageContainer(view: model.view).frame(maxWidth: .infinity, maxHeight: .infinity) }
             else { VStack(spacing: 12) { Text("Встроенная веб-панель").font(.headline); Text(model.address).foregroundStyle(.secondary); Button("Открыть") { model.requestStart() } }.frame(maxWidth: .infinity, maxHeight: .infinity) }
         }
     }
