@@ -5,7 +5,7 @@ struct GlobalSearchView: View {
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) private var dismiss
     @State private var metadata = SearchMetadata()
-    @State private var query = ""
+    @Binding var query: String
     @State private var kind = "all"
     @State private var tag = ""
     @State private var folder: UUID?
@@ -69,7 +69,7 @@ struct GlobalSearchView: View {
     }
     private func buildIndex() {
         guard !indexing else { return }; indexing = true
-        let seeds = store.profileEntries.map { SearchRecordSeed(key: $0.favoriteID, title: store.title($0), detail: [$0.secondaryTitle, store.group($0), metadata.tags[$0.favoriteID, default: []].joined(separator: " ")].joined(separator: " · "), kind: $0.recordKind ?? .ssh) }
+        let seeds = store.profileEntries.map { SearchRecordSeed(key: $0.favoriteID, title: store.title($0), detail: [$0.name, $0.host, $0.user, $0.port, store.group($0), metadata.tags[$0.favoriteID, default: []].joined(separator: " ")].filter { !$0.isEmpty }.joined(separator: " · "), kind: $0.recordKind ?? .ssh) }
         let events = SessionJournal.shared.events, library = CommandLibrary.shared.all
         indexTask = Task {
             let worker = Task.detached(priority: .userInitiated) { try GlobalSearchIndex.build(seeds, events: events, libraryCommands: library) }

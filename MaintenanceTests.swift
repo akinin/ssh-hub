@@ -68,6 +68,8 @@ import Foundation
         model.run(plan, current: [stale], config: config)
         try require(!model.busy && executions == 0 && model.error != nil, "stale target never starts")
         model.run(plan, current: [entry], config: config)
+        let firstExecution = model.executionID
+        try require(firstExecution != nil, "accepted run has identity")
         try require(model.busy && MaintenanceModel.pending, "run pending starts before task")
         try await finished(model)
         try require(executions == 1 && model.results.count == 1 && !model.results[0].passed, "stop on failure")
@@ -75,6 +77,7 @@ import Foundation
         var continueWorkflow = workflow; continueWorkflow.stopOnFailure = false
         let continuing = try MaintenancePlan(workflow: continueWorkflow, entries: [(entry, "Fixture")])
         model.run(continuing, current: [entry], config: config); try await finished(model)
+        try require(model.executionID != firstExecution, "later run cannot inherit earlier report ownership")
         try require(model.results.count == 2, "continue after failure")
         try require(model.report.contains("synthetic failure") && model.report.contains("Fixture"), "reviewable report")
         // A runtime failure before the first SSH invocation produces a visible failed step.

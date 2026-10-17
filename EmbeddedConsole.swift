@@ -328,7 +328,13 @@ struct ConsolePane: View {
                 if session.finished {
                     Button("Подключиться снова", systemImage: "arrow.clockwise") { store.connect(store.aliases.first { $0.favoriteID == session.entry.favoriteID } ?? session.entry, newSession: true) }.labelStyle(.iconOnly).help("Подключиться снова")
                 }
+                Button { analyzeSelection() } label: { Image(systemName: "sparkles") }.help("Разобрать выделенный вывод с ИИ").accessibilityLabel("Разобрать выделенный вывод с ИИ")
             }.controlSize(.small)
+    }
+    private func analyzeSelection() {
+        guard let text = session.view?.getSelection(), !text.isEmpty else { store.error = "Выдели строки вывода в консоли для анализа."; return }
+        guard text.utf8.count <= 95_000 else { store.error = "Выдели фрагмент до 95 КБ для анализа с ИИ."; return }
+        store.presentAssistant("Выбранный вывод консоли «" + session.title + "»\n" + text, entry: session.entry)
     }
     private func find(next: Bool) {
         guard let terminal = session.view else { return }

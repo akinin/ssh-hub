@@ -13,10 +13,10 @@ import Darwin
 // Docker: https://docs.docker.com/reference/cli/docker/container/ls/
 // https://docs.docker.com/reference/cli/docker/inspect/
 enum InfrastructureProvider: String, Codable, CaseIterable, Identifiable {
-    case proxmox, docker, netbox
+    case proxmox, docker, netbox, unifi, mikrotik
     var id: String { rawValue }
-    var title: String { switch self { case .proxmox: return "Proxmox VE"; case .docker: return "Docker через SSH"; case .netbox: return "NetBox" } }
-    var icon: String { switch self { case .proxmox: return "server.rack"; case .docker: return "shippingbox"; case .netbox: return "square.stack.3d.up" } }
+    var title: String { switch self { case .proxmox: return "Proxmox VE"; case .docker: return "Docker через SSH"; case .netbox: return "NetBox"; case .unifi: return "UniFi Network"; case .mikrotik: return "MikroTik RouterOS" } }
+    var icon: String { switch self { case .proxmox: return "server.rack"; case .docker: return "shippingbox"; case .netbox: return "square.stack.3d.up"; case .unifi: return "wifi.router"; case .mikrotik: return "network" } }
 }
 
 struct InfrastructureConnection: Codable, Equatable, Identifiable {
@@ -27,6 +27,11 @@ struct InfrastructureConnection: Codable, Equatable, Identifiable {
     var tokenID = ""
     var dockerRecordKey: String?
     var guestAddresses = false
+    // Optional for older integration metadata; API paths/sites are public references.
+    var unifiAPIPath: String?
+    var unifiSiteID: String?
+    var username: String?
+    var effectiveUniFiAPIPath: String { unifiAPIPath ?? "/proxy/network/integration/v1" }
     var displayTitle: String { title.isEmpty ? provider.title : title }
     var validation: String? {
         guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, title.count <= 80,
@@ -38,6 +43,13 @@ struct InfrastructureConnection: Codable, Equatable, Identifiable {
         }
         guard (try? InfrastructureEndpoint(self)) != nil else { return InfrastructureError.configuration.localizedDescription }
         if provider == .proxmox, !Self.validTokenID(tokenID) { return "Укажи ID токена Proxmox в формате user@realm!token-name." }
+        if provider == .unifi {
+            guard ["/proxy/network/integration/v1", "/integration/v1"].contains(effectiveUniFiAPIPath) else { return "Выбери поддерживаемый путь UniFi Integration API." }
+            if let site = unifiSiteID, !site.isEmpty, UUID(uuidString: site) == nil { return "Идентификатор площадки UniFi должен быть UUID." }
+        }
+        if provider == .mikrotik {
+            guard let username, !username.isEmpty, username.utf8.count <= 160, !username.contains(":"), !username.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { return "Укажи пользователя MikroTik без двоеточия и управляющих символов." }
+        }
         return nil
     }
     static func validTokenID(_ value: String) -> Bool {
@@ -51,16 +63,16 @@ enum InfrastructureError: Error, LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .configuration: return "Укажи конечный HTTPS-адрес сервиса без логина, пароля, параметров и фрагмента. Для Proxmox обычно нужен порт 8006."
-        case .key: return "Введи API-токен без пробелов и управляющих символов."
+        case .key: return "Введи API-ключ или пароль. Ключ — без пробелов; управляющие символы запрещены."
         case .schema: return "Сервис вернул неподдерживаемый ответ. Проверь тип интеграции, версию и права чтения."
         case .limit: return "Достигнут лимит сбора: 500 объектов, 32 запроса, 2 МиБ на ответ, 12 МиБ суммарно или 90 секунд. Сузь область доступа токена."
-        case .redirect: return "Сервис перенаправляет запрос. Укажи конечный HTTPS-адрес; токен при перенаправлении не передаётся."
+        case .redirect: return "Сервис перенаправляет запрос. Укажи конечный HTTPS-адрес; учётные данные при перенаправлении не передаются."
         case .certificate: return "Сертификат сервиса не прошёл проверку macOS. Настрой доверенный сертификат; проверка TLS не отключается."
         case .transport: return "Не удалось связаться с сервисом. Проверь адрес, доступность и права чтения."
         case .timeout: return "Сервис не ответил за отведённое время."
         case .busy: return "Дождись завершения текущего сбора."
         case .invalidFile: return "Не удалось прочитать настройки интеграций. Изменения заблокированы до успешного чтения."
-        case .http(401), .http(403): return "API отклонил токен или права чтения (HTTP 401/403)."
+        case .http(401), .http(403): return "API отклонил учётные данные или права чтения (HTTP 401/403)."
         case .http(let code): return "API вернул HTTP \(code). Ответ сервера не сохраняется."
         }
     }
@@ -78,6 +90,8 @@ struct InfrastructureEndpoint {
               !parts.percentEncodedPath.contains("%"),
               parts.path.split(separator: "/").allSatisfy({ $0 != "." && $0 != ".." && $0.utf8.count < 100 && $0.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") } }),
               value.provider != .docker else { throw InfrastructureError.configuration }
+        if [.unifi, .mikrotik].contains(value.provider), parts.path != "" && parts.path != "/" { throw InfrastructureError.configuration }
+        if value.provider == .unifi, !["/proxy/network/integration/v1", "/integration/v1"].contains(value.effectiveUniFiAPIPath) { throw InfrastructureError.configuration }
         let scheme = parts.scheme?.lowercased() ?? ""
         #if INFRASTRUCTURE_TEST
         let testHTTP = allowLoopbackHTTP && scheme == "http" && ["127.0.0.1", "[::1]", "::1"].contains(host.lowercased())
@@ -185,7 +199,10 @@ enum InfrastructureKeyStore {
     private static let service = "com.olshaniki.ssh-aliases.infrastructure-token.v1"
     static func binding(_ connection: InfrastructureConnection) throws -> String {
         let endpoint = try InfrastructureEndpoint(connection)
-        return connection.id.uuidString + "\n" + connection.provider.rawValue + "\n" + endpoint.base.absoluteString + "\n" + connection.tokenID
+        let legacy = connection.id.uuidString + "\n" + connection.provider.rawValue + "\n" + endpoint.base.absoluteString + "\n" + connection.tokenID
+        if connection.provider == .unifi { return legacy + "\n" + connection.effectiveUniFiAPIPath }
+        if connection.provider == .mikrotik { return legacy + "\n" + (connection.username ?? "") }
+        return legacy
     }
     private static func query(configURL: URL, profileID: UUID, connection: InfrastructureConnection) throws -> [String: Any] {
         let identity = configURL.standardizedFileURL.path + "\n" + profileID.uuidString + "\n" + (try binding(connection))
@@ -198,14 +215,14 @@ enum InfrastructureKeyStore {
         var value: CFTypeRef?; let status = SecItemCopyMatching(item as CFDictionary, &value)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = value as? Data, let key = String(data: data, encoding: .utf8) else { throw keychainError() }
-        try InfrastructureAPIClient.validateKey(key); return key
+        try InfrastructureAPIClient.validateCredential(key, for: connection); return key
     }
     static func hasKey(configURL: URL, profileID: UUID, connection: InfrastructureConnection) -> Bool {
         guard var item = try? query(configURL: configURL, profileID: profileID, connection: connection) else { return false }
         item[kSecReturnAttributes as String] = true; return SecItemCopyMatching(item as CFDictionary, nil) == errSecSuccess
     }
     static func write(_ key: String, configURL: URL, profileID: UUID, connection: InfrastructureConnection) throws {
-        try InfrastructureAPIClient.validateKey(key)
+        try InfrastructureAPIClient.validateCredential(key, for: connection)
         let item = try query(configURL: configURL, profileID: profileID, connection: connection)
         let update = [kSecValueData as String: Data(key.utf8)]
         var status = SecItemUpdate(item as CFDictionary, update as CFDictionary)
@@ -271,7 +288,7 @@ final class InfrastructureHTTPResponse: NSObject, URLSessionDataDelegate, @unche
     }
     func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust { completionHandler(.performDefaultHandling, nil) }
-        else { completionHandler(.cancelAuthenticationChallenge, nil); finish(.failure(InfrastructureError.transport)) }
+        else { completionHandler(.cancelAuthenticationChallenge, nil); finish(.failure([NSURLAuthenticationMethodHTTPBasic, NSURLAuthenticationMethodHTTPDigest].contains(challenge.protectionSpace.authenticationMethod) ? InfrastructureError.http(401) : InfrastructureError.transport)) }
     }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         guard let http = response as? HTTPURLResponse else { completionHandler(.cancel); finish(.failure(InfrastructureError.schema)); return }
@@ -309,17 +326,23 @@ final class InfrastructureAPIClient: @unchecked Sendable {
     private var started = ContinuousClock.now
     init(connection: InfrastructureConnection, key: String) throws {
         self.connection = connection; endpoint = try InfrastructureEndpoint(connection)
-        try Self.validateKey(key); self.key = key
+        try Self.validateCredential(key, for: connection); self.key = key
         if connection.provider == .proxmox, !InfrastructureConnection.validTokenID(connection.tokenID) { throw InfrastructureError.key }
     }
     #if INFRASTRUCTURE_TEST
     init(connection: InfrastructureConnection, key: String, allowLoopbackHTTP: Bool) throws {
         self.connection = connection; endpoint = try InfrastructureEndpoint(connection, allowLoopbackHTTP: allowLoopbackHTTP)
-        try Self.validateKey(key); self.key = key
+        try Self.validateCredential(key, for: connection); self.key = key
     }
     #endif
     static func validateKey(_ key: String) throws {
         guard !key.isEmpty, key.utf8.count <= 4096, key.allSatisfy({ $0.isASCII && !$0.isWhitespace }), !key.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw InfrastructureError.key }
+    }
+    static func validateCredential(_ value: String, for connection: InfrastructureConnection) throws {
+        if connection.provider == .mikrotik {
+            guard !value.isEmpty, value.utf8.count <= 4096, !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+                  let user = connection.username, !user.isEmpty, user.utf8.count <= 160, !user.contains(":"), !user.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw InfrastructureError.key }
+        } else { try validateKey(value) }
     }
     func cancel() { lock.lock(); cancelled = true; let active = self.active; lock.unlock(); active?.cancel() }
     private func begin() throws {
@@ -340,7 +363,7 @@ final class InfrastructureAPIClient: @unchecked Sendable {
     }
     private func unregister(_ response: InfrastructureHTTPResponse) { lock.lock(); defer { lock.unlock() }; if active === response { active = nil } }
     private func receive(_ data: Data) throws { lock.lock(); defer { lock.unlock() }; bytes += data.count; guard bytes <= 12 * 1024 * 1024 else { throw InfrastructureError.limit } }
-    private func request(_ path: [String], query: [URLQueryItem] = [], slash: Bool = false) async throws -> [String: Any] {
+    private func requestJSON(_ path: [String], query: [URLQueryItem] = [], slash: Bool = false) async throws -> Any {
         try Task.checkCancellation()
         let remaining = try prepareRequest()
         let url = try endpoint.url(path, query: query, trailingSlash: slash)
@@ -350,18 +373,24 @@ final class InfrastructureAPIClient: @unchecked Sendable {
         switch connection.provider {
         case .proxmox: authorization = "PVEAPIToken=" + connection.tokenID + "=" + key
         case .netbox: authorization = (key.hasPrefix("nbt_") ? "Bearer " : "Token ") + key
+        case .mikrotik: authorization = "Basic " + Data(((connection.username ?? "") + ":" + key).utf8).base64EncodedString()
+        case .unifi: authorization = ""; request.setValue(key, forHTTPHeaderField: "X-API-Key")
         case .docker: throw InfrastructureError.configuration
         }
-        request.setValue(authorization, forHTTPHeaderField: "Authorization")
+        if !authorization.isEmpty { request.setValue(authorization, forHTTPHeaderField: "Authorization") }
         let response = InfrastructureHTTPResponse()
         try register(response)
         defer { unregister(response) }
         let data = try await response.run(request, timeout: remaining)
         try Task.checkCancellation()
         try receive(data)
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw InfrastructureError.schema }
+        guard let object = try? JSONSerialization.jsonObject(with: data) else { throw InfrastructureError.schema }
         // A compromised/misconfigured service must not echo its authentication into facts.
-        return try Self.redact(object, secrets: [key, authorization]) as? [String: Any] ?? [:]
+        let encoded = authorization.hasPrefix("Basic ") ? String(authorization.dropFirst(6)) : ""
+        return try Self.redact(object, secrets: [key, authorization, encoded].filter { !$0.isEmpty })
+    }
+    private func request(_ path: [String], query: [URLQueryItem] = [], slash: Bool = false) async throws -> [String: Any] {
+        guard let object = try await requestJSON(path, query: query, slash: slash) as? [String: Any] else { throw InfrastructureError.schema }; return object
     }
     private static func redact(_ value: Any, secrets: [String], depth: Int = 0) throws -> Any {
         guard depth <= 32 else { throw InfrastructureError.schema }
@@ -375,8 +404,86 @@ final class InfrastructureAPIClient: @unchecked Sendable {
         switch connection.provider {
         case .proxmox: return try await proxmox(date: date)
         case .netbox: return try await netbox(date: date)
+        case .unifi: return try await unifi(date: date)
+        case .mikrotik: return try await mikrotik(date: date)
         case .docker: throw InfrastructureError.configuration
         }
+    }
+    private var unifiPrefix: [String] { connection.effectiveUniFiAPIPath.split(separator: "/").map(String.init) }
+    private func unifiPage(_ path: [String], maximum: Int) async throws -> [[String: Any]] {
+        var offset = 0, rows: [[String: Any]] = [], seen = Set<String>()
+        for _ in 0..<10 {
+            let object = try await request(unifiPrefix + path, query: [URLQueryItem(name: "offset", value: String(offset)), URLQueryItem(name: "limit", value: "100")])
+            let page = try InfrastructureParser.unifiPage(object, offset: offset, maximum: maximum)
+            for row in page.rows { guard let id = row["id"] as? String, UUID(uuidString: id) != nil, seen.insert(id.lowercased()).inserted else { throw InfrastructureError.schema } }
+            rows += page.rows
+            guard rows.count <= maximum else { throw InfrastructureError.limit }
+            if rows.count >= page.total { return rows }
+            guard !page.rows.isEmpty else { throw InfrastructureError.schema }; offset += page.rows.count
+        }
+        throw InfrastructureError.limit
+    }
+    func sites() async throws -> [InfrastructureUniFiSite] {
+        try begin(); defer { end() }
+        guard connection.provider == .unifi else { throw InfrastructureError.configuration }
+        return try await unifiPage(["sites"], maximum: 100).map { row in
+            guard let id = row["id"] as? String, UUID(uuidString: id) != nil else { throw InfrastructureError.schema }
+            return InfrastructureUniFiSite(id: id.lowercased(), name: InfrastructureParser.clean(row["name"], maximum: 100))
+        }
+    }
+    private func unifi(date: Date) async throws -> InfrastructureSnapshot {
+        guard let site = connection.unifiSiteID.flatMap(UUID.init(uuidString:)) else { throw ConfigError.message("Сначала получи площадки UniFi, выбери площадку и сохрани настройки.") }
+        let siteID = site.uuidString.lowercased(), prefix = ["sites", siteID]
+        let sites = try await unifiPage(["sites"], maximum: 100)
+        guard let siteRow = sites.first(where: { ($0["id"] as? String)?.lowercased() == siteID }) else { throw ConfigError.message("Площадка UniFi больше не предоставляется этим контроллером или API-ключом.") }
+        let devices = try await unifiPage(prefix + ["devices"], maximum: 100)
+        var warnings = ["Статус UniFi сообщает контроллер; это не проверка доступности с Mac. Сети по IP определяются предположительно."]
+        func optional(_ suffix: [String], maximum: Int) async throws -> [[String: Any]] {
+            do { return try await unifiPage(prefix + suffix, maximum: maximum) }
+            catch InfrastructureError.http(let code) where [403, 404, 405, 501].contains(code) { warnings.append("UniFi: " + suffix.joined(separator: "/") + " недоступно (HTTP \(code)); соответствующие сведения неизвестны."); return [] }
+        }
+        let clients = try await optional(["clients"], maximum: 400)
+        var networks = try await optional(["networks"], maximum: 256)
+        var details: [String: [String: Any]] = [:]
+        for row in devices.prefix(12) {
+            guard let id = row["id"] as? String else { throw InfrastructureError.schema }
+            do {
+                let detail = try await request(unifiPrefix + prefix + ["devices", id])
+                guard (detail["id"] as? String)?.lowercased() == id.lowercased() else { throw InfrastructureError.schema }; details[id.lowercased()] = detail
+            } catch InfrastructureError.http(let code) where [403, 404, 405, 501].contains(code) { warnings.append("UniFi: подробности устройства недоступны (HTTP \(code)); используются сведения списка."); if code != 404 { break } }
+        }
+        if devices.count > 12 { warnings.append("Подробные порты получены для первых 12 устройств; остальные используют сведения списка.") }
+        for index in networks.indices.prefix(8) {
+            guard let id = networks[index]["id"] as? String else { throw InfrastructureError.schema }
+            do {
+                let detail = try await request(unifiPrefix + prefix + ["networks", id])
+                guard (detail["id"] as? String)?.lowercased() == id.lowercased() else { throw InfrastructureError.schema }; networks[index] = detail
+            } catch InfrastructureError.http(let code) where [403, 404, 405, 501].contains(code) { warnings.append("UniFi: подсети некоторых VLAN неизвестны (HTTP \(code)); список сетей сохранён."); if code != 404 { break } }
+        }
+        if networks.count > 8 { warnings.append("Подсети получены для первых 8 сетей; остальные VLAN сохранены из списка.") }
+        let records = try InfrastructureParser.unifi(devices: devices, details: details, clients: clients, networks: networks, siteID: siteID, siteName: InfrastructureParser.clean(siteRow["name"]), source: endpoint.base.absoluteString + connection.effectiveUniFiAPIPath, date: date)
+        return InfrastructureSnapshot(records: records, warnings: Array(Set(warnings)).sorted(), date: date)
+    }
+    private func mikrotik(date: Date) async throws -> InfrastructureSnapshot {
+        var warnings = ["RouterOS: GET только читает данные. Соседи и DHCP не подтверждают доступность клиента с Mac. Скорость портов не выводится из MTU или счётчиков трафика."]
+        func rows(_ menu: [String], _ properties: [String], optional: Bool = true) async throws -> [[String: Any]] {
+            do {
+                let object = try await requestJSON(["rest"] + menu, query: [URLQueryItem(name: ".proplist", value: properties.joined(separator: ","))])
+                if let rows = object as? [[String: Any]] { guard rows.count <= 500 else { throw InfrastructureError.limit }; return rows }
+                if let row = object as? [String: Any], row["error"] == nil { return [row] }
+                throw InfrastructureError.schema
+            } catch InfrastructureError.http(let code) where optional && [403, 404, 405, 501].contains(code) { warnings.append("MikroTik: " + menu.joined(separator: "/") + " недоступно (HTTP \(code)); сведения неизвестны."); return [] }
+        }
+        let resource = try await rows(["system", "resource"], ["version", "board-name", "architecture-name", "cpu", "cpu-count", "cpu-frequency", "cpu-load", "total-memory", "free-memory", "total-hdd-space", "uptime"], optional: false)
+        let identity = try await rows(["system", "identity"], ["name"])
+        let board = try await rows(["system", "routerboard"], ["model", "serial-number", "current-firmware"])
+        let interfaces = try await rows(["interface"], [".id", "name", "type", "mac-address", "running", "disabled", "actual-mtu"])
+        let addresses = try await rows(["ip", "address"], ["address", "interface", "actual-interface", "disabled", "invalid"])
+        let neighbors = try await rows(["ip", "neighbor"], ["identity", "address", "address6", "mac-address", "interface", "platform", "board"])
+        let leases = try await rows(["ip", "dhcp-server", "lease"], ["address", "active-address", "mac-address", "active-mac-address", "host-name", "status", "server"])
+        let vlans = try await rows(["interface", "vlan"], ["name", "vlan-id", "interface", "running", "disabled"])
+        let records = try InfrastructureParser.mikrotik(resource: resource, identity: identity, board: board, interfaces: interfaces, addresses: addresses, neighbors: neighbors, leases: leases, vlans: vlans, controllerHost: endpoint.base.host ?? "", source: endpoint.base.absoluteString, date: date)
+        return InfrastructureSnapshot(records: records, warnings: warnings, date: date)
     }
     private func proxmox(date: Date) async throws -> InfrastructureSnapshot {
         let object = try await request(["api2", "json", "cluster", "resources"])
@@ -445,6 +552,126 @@ enum InfrastructureParser {
     private static func stableID(_ provider: InfrastructureProvider, _ source: String, _ externalID: String) -> String {
         let digest = SHA256.hash(data: Data((source + "\n" + externalID).utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
         return provider.rawValue + ":" + digest
+    }
+    struct UniFiPage { let rows: [[String: Any]]; let total: Int }
+    static func unifiPage(_ object: [String: Any], offset: Int, maximum: Int) throws -> UniFiPage {
+        func integer(_ field: String) -> Int? { guard let value = number(object[field]), value.rounded() == value, value <= 1_000_000 else { return nil }; return Int(value) }
+        guard integer("offset") == offset, let count = integer("count"), let limit = integer("limit"), (1...200).contains(limit), count <= limit,
+              let total = integer("totalCount"), total >= offset + count, let rows = object["data"] as? [[String: Any]], rows.count == count else { throw InfrastructureError.schema }
+        guard total <= maximum else { throw InfrastructureError.limit }; return UniFiPage(rows: rows, total: total)
+    }
+    private static func boundedFacts(_ value: InventoryFields) -> InventoryFields {
+        var result = value
+        for field in result.populated where result[field].utf8.count > 16_000 {
+            var text = String(decoding: result[field].utf8.prefix(15_800), as: UTF8.self)
+            while text.utf8.count > 15_800 { text.removeLast() }; result[field] = text + "\n… (сводка ограничена)"
+        }
+        return result
+    }
+    static func unifi(devices: [[String: Any]], details: [String: [String: Any]], clients: [[String: Any]], networks: [[String: Any]], siteID: String, siteName: String, source: String, date: Date) throws -> [InfrastructureDiscoveredRecord] {
+        guard devices.count <= 100, clients.count <= 400, networks.count <= 256, UUID(uuidString: siteID) != nil else { throw InfrastructureError.limit }
+        var catalogue: [(name: String, vlan: Int?, subnets: [String])] = [], networkIDs = Set<String>()
+        for row in networks {
+            guard let id = row["id"] as? String, UUID(uuidString: id) != nil, networkIDs.insert(id.lowercased()).inserted else { throw InfrastructureError.schema }
+            var vlan: Int?
+            if let raw = row["vlanId"], !(raw is NSNull) { guard let number = number(raw), number.rounded() == number, (1...4094).contains(number) else { throw InfrastructureError.schema }; vlan = Int(number) }
+            let config = row["ipv4Configuration"] as? [String: Any] ?? [:]
+            var subnets = config["additionalHostIpSubnets"] as? [String] ?? []
+            guard subnets.count <= 64 else { throw InfrastructureError.limit }
+            if let host = usableAddress(clean(config["hostIpAddress"])), let prefix = number(config["prefixLength"]), prefix.rounded() == prefix, prefix <= 32 { subnets.insert(host + "/" + String(Int(prefix)), at: 0) }
+            if row["enabled"] as? Bool != false { catalogue.append((clean(row["name"]), vlan, subnets)) }
+        }
+        var result: [InfrastructureDiscoveredRecord] = [], seen = Set<String>()
+        for (rows, client) in [(devices, false), (clients, true)] {
+            for summary in rows {
+                guard let rawID = summary["id"] as? String, UUID(uuidString: rawID) != nil else { throw InfrastructureError.schema }
+                let id = rawID.lowercased(), externalID = "site/" + siteID.lowercased() + (client ? "/client/" : "/device/") + id
+                guard seen.insert(externalID).inserted else { throw InfrastructureError.schema }
+                let row = client ? summary : details[id] ?? summary
+                if !client, details[id] != nil { guard (row["id"] as? String)?.lowercased() == id else { throw InfrastructureError.schema } }
+                let address = usableAddress(clean(row["ipAddress"] ?? summary["ipAddress"])) ?? ""
+                let mac = TopologyIdentity.mac(clean(row["macAddress"] ?? summary["macAddress"])) ?? ""
+                let name = clean(row["name"] ?? summary["name"], maximum: 80)
+                let features = Set(summary["features"] as? [String] ?? [])
+                let featureMap = row["features"] as? [String: Any] ?? [:]
+                func feature(_ key: String) -> Bool { features.contains(key) || (featureMap[key] != nil && !(featureMap[key] is NSNull)) }
+                let category = client ? "Клиент" : feature("gateway") ? "Шлюз" : feature("switching") ? "Коммутатор" : feature("accessPoint") ? "Точка доступа" : "Устройство"
+                var facts = InventoryFields(); facts[.manufacturer] = client ? "" : "Ubiquiti"; facts[.model] = clean(row["model"] ?? summary["model"])
+                facts[.operatingSystem] = clean(row["firmwareVersion"] ?? summary["firmwareVersion"]); facts[.role] = category
+                facts[.location] = "UniFi · " + (siteName.isEmpty ? siteID : siteName)
+                var interfaces = [mac.isEmpty ? "" : "MAC: " + mac, address.isEmpty ? "" : "IP: " + address].filter { !$0.isEmpty }
+                let matches = catalogue.filter { network in !address.isEmpty && network.subnets.contains { TopologySubnet.contains(address, cidr: $0) } }
+                if matches.count == 1, let network = matches.first { interfaces.append("Сеть: " + network.name + (network.vlan.map { " · VLAN " + String($0) } ?? "") + " (предположительно по IP)") }
+                if !client, let physical = row["interfaces"] as? [String: Any] {
+                    let ports = physical["ports"] as? [[String: Any]] ?? []
+                    guard ports.count <= 256 else { throw InfrastructureError.limit }
+                    for port in ports {
+                        guard let index = number(port["idx"]), index > 0, index <= 4096, index.rounded() == index else { throw InfrastructureError.schema }
+                        let speed = number(port["speedMbps"]).flatMap { $0 <= 10_000_000 ? String(format: "%g Мбит/с", $0) : nil } ?? ""
+                        interfaces.append((["Порт " + String(Int(index)), clean(port["state"]), speed]).filter { !$0.isEmpty }.joined(separator: " · "))
+                    }
+                }
+                facts[.interfaces] = interfaces.joined(separator: "\n")
+                if !client {
+                    let names = catalogue.map { $0.name + ($0.vlan.map { " · VLAN " + String($0) } ?? "") }
+                    facts[.notes] = "Источник: " + source + "\nID: " + externalID + (names.isEmpty ? "" : "\nСети площадки:\n" + names.joined(separator: "\n"))
+                } else { facts[.notes] = "Источник: " + source + "\nID: " + externalID + "\nТип подключения: " + clean(row["type"]) + "\nВ списке клиентов UniFi; доступность с Mac не проверена." }
+                result.append(InfrastructureDiscoveredRecord(id: stableID(.unifi, source, externalID), provider: .unifi, externalID: externalID, title: name.isEmpty ? !mac.isEmpty ? mac : !address.isEmpty ? address : category + " " + String(id.prefix(8)) : name, category: category, address: address, addresses: address.isEmpty ? [] : [address], status: client ? "В списке клиентов UniFi" : clean(row["state"] ?? summary["state"]), source: source, date: date, facts: boundedFacts(facts)))
+            }
+        }
+        return result
+    }
+    static func mikrotik(resource: [[String: Any]], identity: [[String: Any]], board: [[String: Any]], interfaces: [[String: Any]], addresses: [[String: Any]], neighbors: [[String: Any]], leases: [[String: Any]], vlans: [[String: Any]], controllerHost: String, source: String, date: Date) throws -> [InfrastructureDiscoveredRecord] {
+        guard resource.count == 1, identity.count <= 1, board.count <= 1 else { throw InfrastructureError.schema }
+        guard interfaces.count <= 256, addresses.count <= 256, neighbors.count <= 400, leases.count <= 500, vlans.count <= 256 else { throw InfrastructureError.limit }
+        let system = resource[0], rb = board.first ?? [:]
+        func wireNumber(_ value: Any?) -> Double? { let parsed = number(value) ?? Double(clean(value)); guard let parsed, parsed.isFinite, parsed >= 0, parsed <= 1e18 else { return nil }; return parsed }
+        func truth(_ value: Any?) -> Bool { value as? Bool == true || clean(value).lowercased() == "true" }
+        var facts = InventoryFields(); facts[.manufacturer] = "MikroTik"; facts[.model] = clean(rb["model"]).isEmpty ? clean(system["board-name"]) : clean(rb["model"])
+        facts[.serial] = clean(rb["serial-number"]); facts[.operatingSystem] = "RouterOS " + clean(system["version"]); facts[.role] = "Маршрутизатор"
+        facts[.processor] = ([clean(system["cpu"]), clean(system["cpu-count"]).isEmpty ? "" : clean(system["cpu-count"]) + " ядер", clean(system["cpu-frequency"]).isEmpty ? "" : clean(system["cpu-frequency"]) + " МГц"]).filter { !$0.isEmpty }.joined(separator: " · ")
+        if let memory = wireNumber(system["total-memory"]) { facts[.memory] = String(format: "%.2f GiB", memory / 1_073_741_824) }
+        if let disk = wireNumber(system["total-hdd-space"]) { facts[.disks] = String(format: "%.2f GiB", disk / 1_073_741_824) }
+        let ips = addresses.filter { !truth($0["disabled"]) && !truth($0["invalid"]) }
+        var interfaceLines: [String] = []
+        for row in interfaces {
+            let name = clean(row["name"], maximum: 160), mac = TopologyIdentity.mac(clean(row["mac-address"])) ?? ""
+            let ips = ips.filter { clean($0["actual-interface"] ?? $0["interface"]) == name }.map { clean($0["address"], maximum: 100) }
+            interfaceLines.append(([name, clean(row["type"]), mac, truth(row["disabled"]) ? "отключён" : truth(row["running"]) ? "running" : "не running"] + ips).filter { !$0.isEmpty }.joined(separator: " · "))
+        }
+        for row in vlans { interfaceLines.append("VLAN " + clean(row["vlan-id"]) + " · " + clean(row["name"]) + " · " + clean(row["interface"])) }
+        facts[.interfaces] = interfaceLines.joined(separator: "\n")
+        facts[.notes] = "Источник: " + source + "\nUptime: " + clean(system["uptime"]) + "\nCPU load: " + clean(system["cpu-load"]) + "%\nСкорость портов не измерена; GET interface не сообщает согласованную скорость."
+        let controller = TopologyRecordSeed.normalizedHost(controllerHost) ?? ""
+        let name = clean(identity.first?["name"], maximum: 80)
+        var result = [InfrastructureDiscoveredRecord(id: stableID(.mikrotik, source, "router"), provider: .mikrotik, externalID: "router", title: name.isEmpty ? controller.isEmpty ? "MikroTik" : controller : name, category: "Маршрутизатор", address: controller, addresses: Array(Set(ips.compactMap { usableAddress(clean($0["address"])) })).sorted(), status: "REST ответил", source: source, date: date, facts: boundedFacts(facts))]
+        var identities: [String: Int] = [:]
+        for (rows, dhcp) in [(neighbors, false), (leases, true)] {
+            for row in rows {
+                let activeMac = clean(row["active-mac-address"]), activeAddress = clean(row["active-address"])
+                let mac = TopologyIdentity.mac(dhcp && !activeMac.isEmpty ? activeMac : clean(row["mac-address"])) ?? ""
+                let addresses = (dhcp ? [activeAddress.isEmpty ? row["address"] : activeAddress] : [row["address"], row["address6"]]).compactMap { usableAddress(clean($0)) }
+                guard !mac.isEmpty || !addresses.isEmpty else { continue }
+                let identity = !mac.isEmpty ? "mac/" + mac : "address/" + addresses[0]
+                let name = clean(dhcp ? row["host-name"] : row["identity"], maximum: 80)
+                let summary = dhcp ? "DHCP: " + clean(row["status"]) : "Сосед RouterOS"
+                if let index = identities[identity] {
+                    result[index].addresses = Array(Set(result[index].addresses + addresses)).sorted()
+                    result[index].facts[.interfaces] += "\n" + ([summary] + addresses).joined(separator: " · ")
+                    if dhcp { result[index].status += " · " + summary }; result[index].facts = boundedFacts(result[index].facts); continue
+                }
+                var facts = InventoryFields(); facts[.model] = clean(row["board"]); facts[.operatingSystem] = clean(row["platform"])
+                if facts[.operatingSystem].hasPrefix("MikroTik") { facts[.manufacturer] = "MikroTik" }
+                facts[.role] = dhcp ? "DHCP-клиент" : "Сосед RouterOS"
+                facts[.interfaces] = ([mac.isEmpty ? "" : "MAC: " + mac] + addresses + [clean(row["interface"])]).filter { !$0.isEmpty }.joined(separator: "\n")
+                facts[.notes] = "Источник: " + source + "\n" + summary + "\nЗапись в таблице не подтверждает доступность устройства с Mac."
+                let externalID = "client/" + identity
+                identities[identity] = result.count
+                result.append(InfrastructureDiscoveredRecord(id: stableID(.mikrotik, source, externalID), provider: .mikrotik, externalID: externalID, title: name.isEmpty ? !mac.isEmpty ? mac : addresses[0] : name, category: facts[.role], address: addresses.first ?? "", addresses: addresses, status: summary, source: source, date: date, facts: boundedFacts(facts)))
+                guard result.count <= 500 else { throw InfrastructureError.limit }
+            }
+        }
+        return result
     }
     static func proxmox(_ object: [String: Any], source: String, date: Date) throws -> [InfrastructureDiscoveredRecord] {
         guard let rows = object["data"] as? [[String: Any]], rows.count <= 1000 else { throw InfrastructureError.schema }
@@ -585,6 +812,8 @@ enum InfrastructureParser {
     }
 }
 
+struct InfrastructureUniFiSite: Identifiable, Equatable { let id: String; let name: String }
+
 @MainActor final class InfrastructureIntegrationModel: ObservableObject {
     private static let models = NSHashTable<InfrastructureIntegrationModel>.weakObjects()
     static var pending: Bool { models.allObjects.contains(where: \.busy) || InfrastructureHTTPResponse.pending }
@@ -593,6 +822,7 @@ enum InfrastructureParser {
     private let repository: InfrastructureRepository
     @Published private(set) var connections: [InfrastructureConnection] = []
     @Published private(set) var snapshot: InfrastructureSnapshot?
+    @Published private(set) var unifiSites: [InfrastructureUniFiSite] = []
     @Published private(set) var busy = false
     @Published private(set) var loadSucceeded = false
     @Published var error = ""
@@ -613,7 +843,7 @@ enum InfrastructureParser {
         catch { self.error = error.localizedDescription; loadSucceeded = false }
     }
     func hasKey(_ connection: InfrastructureConnection) -> Bool { InfrastructureKeyStore.hasKey(configURL: configURL, profileID: profileID, connection: connection) }
-    func clearSnapshot() { if !busy { snapshot = nil; notice = "" } }
+    func clearSnapshot() { if !busy { snapshot = nil; unifiSites = []; notice = "" } }
     @discardableResult func save(_ connection: InfrastructureConnection, key: String) -> Bool {
         guard loadSucceeded, !busy else { return false }
         do {
@@ -647,6 +877,19 @@ enum InfrastructureParser {
             if connection.provider != .docker { try InfrastructureKeyStore.remove(configURL: configURL, profileID: profileID, connection: connection) }
             error = ""; notice = "Интеграция удалена. Записи сохраняются."
         } catch { self.error = error.localizedDescription }
+    }
+    func loadUniFiSites(_ connection: InfrastructureConnection) {
+        guard connection.provider == .unifi, loadSucceeded, !busy, connections.contains(connection) else { return }
+        let token = UUID(); generation = token; busy = true; error = ""; notice = "Получение площадок UniFi…"; unifiSites = []
+        task = Task { [self] in
+            defer { client = nil; busy = false; task = nil }
+            do {
+                guard let key = try InfrastructureKeyStore.read(configURL: configURL, profileID: profileID, connection: connection) else { throw InfrastructureError.key }
+                let client = try InfrastructureAPIClient(connection: connection, key: key); self.client = client
+                let sites = try await client.sites(); try Task.checkCancellation(); guard generation == token else { return }
+                unifiSites = sites; notice = "Площадок: \(sites.count). Выбери площадку и сохрани настройки."
+            } catch { if generation == token { self.error = error is CancellationError ? "Сбор остановлен." : error.localizedDescription } }
+        }
     }
     func collect(_ connection: InfrastructureConnection) {
         guard loadSucceeded, !busy, connections.contains(connection) else { return }

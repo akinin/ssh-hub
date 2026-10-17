@@ -7,6 +7,8 @@ import Foundation
         require(try MonitoringEndpoint("HTTPS://example.com:443/").url.absoluteString == "https://example.com", "Endpoint normalization")
         _ = try MonitoringEndpoint("http://127.0.0.1:8787")
         _ = try MonitoringEndpoint("http://[::1]:8787")
+        let isolated = MonitoringHTTPTransport.configuration(for: URL(string: "http://127.0.0.1:8787")!)
+        for key in ["HTTPEnable", "HTTPSEnable", "SOCKSEnable", "ProxyAutoConfigEnable", "ProxyAutoDiscoveryEnable"] { require(isolated.connectionProxyDictionary?[key] as? Int == 0, "Loopback proxy inherited: " + key) }
         for bad in ["http://localhost:8787", "http://10.0.0.1", "https://user:pass@example.com", "https://example.com/path", "https://example.com?token=secret", "https://example.com#f", "https://example.com:0", "https://example.com:65536", " https://example.com"] { rejects("Invalid endpoint accepted: " + bad) { _ = try MonitoringEndpoint(bad) } }
         rejects("Short token accepted") { try MonitoringKeyStore.validate("short") }
         rejects("Newline token accepted") { try MonitoringKeyStore.validate(String(repeating: "x", count: 32) + "\n") }
@@ -53,6 +55,16 @@ import Foundation
     }
     static func network(base: String) async throws {
         let endpoint = try MonitoringEndpoint(base), token = String(repeating: "t", count: 40)
+        if CommandLine.arguments.count > 2, let proxy = URLComponents(string: CommandLine.arguments[2]), let port = proxy.port {
+            let inherited = URLSessionConfiguration.ephemeral
+            inherited.connectionProxyDictionary = ["HTTPEnable": 1, "HTTPProxy": "127.0.0.1", "HTTPPort": port, "HTTPSEnable": 1, "HTTPSProxy": "127.0.0.1", "HTTPSPort": port, "SOCKSEnable": 1, "SOCKSProxy": "127.0.0.1", "SOCKSPort": port, "ProxyAutoConfigEnable": 1, "ProxyAutoConfigURLString": CommandLine.arguments[2] + "/proxy.pac", "ProxyAutoDiscoveryEnable": 1]
+            let session = URLSession(configuration: MonitoringHTTPTransport.configuration(for: endpoint.url, base: inherited))
+            defer { session.invalidateAndCancel() }
+            var request = URLRequest(url: endpoint.route("snapshot")); request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+            let (data, response) = try await session.data(for: request)
+            let decoded = try MonitoringSnapshot.decode(data)
+            require((response as? HTTPURLResponse)?.statusCode == 200 && decoded.targets.first?.id == "fixture", "Inherited proxy intercepted private loopback request")
+        }
         let transport = MonitoringHTTPTransport()
         let snapshot = try MonitoringSnapshot.decode(try await transport.get(endpoint.route("snapshot"), token: token))
         require(snapshot.targets.count == 1 && snapshot.targets[0].id == "fixture", "HTTP snapshot")

@@ -33,6 +33,10 @@ import UniformTypeIdentifiers
         guard let record = records[from] else { return }
         commit(record, key: to)
     }
+    func applyAssistant(_ text: String, append: Bool, expected: ConnectionDocument, key: String) throws {
+        try AssistantDocumentationChange.apply(proposed: text, append: append, expected: expected, key: key, repository: repository)
+        records[key] = try repository.load(key); failed.remove(key)
+    }
     private func commit(_ record: ConnectionDocument, key: String) {
         do { try repository.write(record, for: key); records[key] = record }
         catch { self.error = error.localizedDescription }

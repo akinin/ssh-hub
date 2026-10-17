@@ -74,6 +74,40 @@ import Foundation
         let fresh = AssistantSettings()
         try check(fresh.selectedProvider == .ollama && !fresh.enabled && !fresh.needsKey && fresh.endpointString == "http://127.0.0.1:11434", "new installation defaults to disabled Ollama")
         try check(try JSONDecoder().decode(AssistantSettings.self, from: JSONEncoder().encode(fresh)) == fresh, "provider settings roundtrip")
+        var profiles = legacy
+        profiles.migrateModelProfiles(); try profiles.validate()
+        let originalID = profiles.selectedModelProfileID
+        try check(profiles.modelProfiles?.count == 1 && profiles.model == legacy.model && profiles.keychainAccount(scope: "scope") == "scope", "single legacy connection migrates without provider or key changes")
+        profiles.updateSelectedModelProfile(name: "Облако")
+        try profiles.addModelProfile(); profiles.selectedProvider = .compatible; profiles.endpoint = "http://127.0.0.1:18000/v1"; profiles.model = "fixture-small"; profiles.updateSelectedModelProfile(name: "Малая")
+        let localID = profiles.selectedModelProfileID, localAccount = profiles.keychainAccount(scope: "scope")
+        try profiles.addModelProfile(); profiles.selectedProvider = .compatible; profiles.endpoint = "http://127.0.0.1:18000/v1"; profiles.model = "fixture-large"; profiles.updateSelectedModelProfile(name: "Большая")
+        try check(profiles.keychainAccount(scope: "scope") == localAccount, "models on same provider and endpoint share endpoint key binding")
+        try profiles.selectModelProfile(originalID!); try check(profiles.model == "legacy-model" && profiles.selectedProvider == .openAI && profiles.keychainAccount(scope: "scope") == "scope", "named selection restores legacy connection")
+        try profiles.selectModelProfile(localID!); try profiles.validate()
+        try check(try JSONDecoder().decode(AssistantSettings.self, from: JSONEncoder().encode(profiles)) == profiles, "multiple named connections roundtrip")
+        let remapped = profiles.remappingModelProfileIDs(); try remapped.validate()
+        try check(Set(remapped.modelProfiles!.map(\.id)).isDisjoint(with: Set(profiles.modelProfiles!.map(\.id))) && remapped.selectedModelProfile?.name == "Малая" && remapped.keychainAccount(scope: "scope") == localAccount && remapped.model == profiles.model, "archive copy remaps all IDs and selected identity without moving endpoint key binding")
+        var malformed = profiles; malformed.modelProfiles![1].id = malformed.modelProfiles![0].id
+        try rejects({ try malformed.validate() }, "duplicate model connection IDs rejected")
+        malformed = profiles; malformed.modelProfiles![1].name = "облако"
+        try rejects({ try malformed.validate() }, "duplicate model names rejected case insensitively")
+        for name in ["", " bad", "bad\nname", "bad\u{2028}name", String(repeating: "x", count: 41), String(repeating: "👩‍💻", count: 40)] {
+            malformed = profiles; malformed.modelProfiles![0].name = name
+            try rejects({ try malformed.validate() }, "invalid short connection name rejected")
+        }
+        malformed = profiles; malformed.selectedModelProfileID = UUID()
+        try rejects({ try malformed.validate() }, "unknown selected connection rejected")
+        malformed = profiles; malformed.modelProfiles = []
+        try rejects({ try malformed.validate() }, "empty profile collection rejected")
+        malformed = profiles; malformed.modelProfiles![0].endpoint = "http://192.0.2.10/v1"; malformed.modelProfiles![0].provider = .compatible
+        try rejects({ try malformed.validate() }, "inactive profile endpoint validated")
+        var maximum = fresh; maximum.migrateModelProfiles()
+        for _ in 1..<20 { try maximum.addModelProfile() }
+        try maximum.validate(); try check(try JSONEncoder().encode(maximum).count < 65_536, "bounded model metadata fits archive limit")
+        try rejects({ try maximum.addModelProfile() }, "model connection count bounded")
+        try profiles.removeModelProfile(localID!); try profiles.validate()
+        try check(profiles.selectedModelProfileID != localID && profiles.selectedModelProfile != nil, "deleting selected connection chooses an existing connection")
         var ollama = AssistantSettings(model: "ollama-fixture", provider: .ollama)
         for bad in ["http://localhost:11434", "http://192.0.2.10:11434", "http://127.0.0.1:0", "https://user:password@example.test", "https://example.test?token=secret", "https://example.test#fragment", "http://127.0.0.1:11434/api"] {
             ollama.endpoint = bad; try rejects({ try ollama.validate() }, "unsafe Ollama endpoint rejected")

@@ -52,7 +52,11 @@ struct BackupOperations: Codable {
                 if value.provider == .docker { guard let key = value.dockerRecordKey.flatMap({ backupKey($0, exportIDs: exportIDs) }) else { return nil }; value.dockerRecordKey = key }
                 return value
             }
-            let monitoring = try MonitoringRepository(configURL: config, profileID: profile, root: base.appendingPathComponent("Monitoring")).read()
+            var monitoring = try MonitoringRepository(configURL: config, profileID: profile, root: base.appendingPathComponent("Monitoring")).read()
+            if let key = monitoring.sshRecordKey {
+                if let exported = backupKey(key, exportIDs: exportIDs) { monitoring.sshRecordKey = exported }
+                else { monitoring.endpoint = ""; monitoring.sshRecordKey = nil; monitoring.remotePort = nil; monitoring.instanceID = nil }
+            }
             var assistant = try HubFeatureFile(feature: "Assistant", config: config, profile: profile, root: base).load(AssistantSettings.self, fallback: .init()); try assistant.validate(); assistant.enabled = false
             var chats = try HubFeatureFile(feature: "AssistantChats", config: config, profile: profile, root: base).load([AssistantChatDocument].self, fallback: [])
             try AssistantChatDocument.validate(chats)
@@ -60,7 +64,7 @@ struct BackupOperations: Codable {
             let value = Self(profileID: profile, search: search.tags.isEmpty && search.folders.isEmpty ? nil : search, workflows: workflows.isEmpty ? nil : workflows,
                 credentials: credentials.presets.isEmpty && credentials.bindings.isEmpty && credentials.requiresAuthentication ? nil : credentials,
                 integrations: integrations.isEmpty ? nil : integrations, monitoring: monitoring.endpoint.isEmpty ? nil : monitoring,
-                assistant: assistant.model.isEmpty ? nil : assistant, chats: chats.isEmpty ? nil : chats)
+                assistant: assistant.model.isEmpty && !(assistant.modelProfiles?.contains { !$0.model.isEmpty } ?? false) ? nil : assistant, chats: chats.isEmpty ? nil : chats)
             if value.hasContent { values.append(value) }
         }
         try validate(values, recordIDs: Set(exportIDs.values), profileIDs: Set(profileIDs))
@@ -87,8 +91,12 @@ struct BackupOperations: Codable {
                 guard integrations.filter({ $0.provider == .docker }).allSatisfy({ $0.dockerRecordKey.flatMap(recordID).map(recordIDs.contains) == true }) else { throw ConfigError.message("Неизвестная запись Docker в архиве.") }
                 try bounded(integrations, limit: 262_144)
             }
-            if let monitoring = value.monitoring { try MonitoringRepository(configURL: URL(fileURLWithPath: "/archive-validation"), profileID: value.profileID).validate(monitoring); try bounded(monitoring, limit: 16_384) }
-            if let assistant = value.assistant { try assistant.validate(); try bounded(assistant, limit: 16_384) }
+            if let monitoring = value.monitoring {
+                try MonitoringRepository(configURL: URL(fileURLWithPath: "/archive-validation"), profileID: value.profileID).validate(monitoring)
+                guard monitoring.sshRecordKey == nil || monitoring.sshRecordKey.flatMap(recordID).map(recordIDs.contains) == true else { throw ConfigError.message("Неизвестная SSH-запись коллектора в архиве.") }
+                try bounded(monitoring, limit: 16_384)
+            }
+            if let assistant = value.assistant { try assistant.validate(); try bounded(assistant, limit: 65_536) }
             if let chats = value.chats {
                 try AssistantChatDocument.validate(chats)
                 guard chats.allSatisfy({ $0.recordKey == nil || $0.recordKey.flatMap(recordID).map(recordIDs.contains) == true }) else { throw ConfigError.message("Неизвестная запись сохранённого чата в архиве.") }
@@ -137,11 +145,15 @@ struct BackupOperations: Codable {
             }
             if var monitoring = value.monitoring {
                 monitoring.notifyChanges = false
+                if let key = monitoring.sshRecordKey {
+                    if let restored = recordKeys[key] { monitoring.sshRecordKey = restored }
+                    else { monitoring.endpoint = ""; monitoring.sshRecordKey = nil; monitoring.remotePort = nil; monitoring.instanceID = nil }
+                }
                 let repository = MonitoringRepository(configURL: config, profileID: target, root: base.appendingPathComponent("Monitoring")); try repository.validate(monitoring)
                 files.append(try BackupOperationFile(value: monitoring, url: repository.file))
             }
             if var assistant = value.assistant {
-                assistant.enabled = false; try assistant.validate()
+                assistant = assistant.remappingModelProfileIDs(); assistant.enabled = false; try assistant.validate()
                 files.append(try BackupOperationFile(value: assistant, url: HubFeatureFile(feature: "Assistant", config: config, profile: target, root: base).url))
             }
             if var chats = value.chats {

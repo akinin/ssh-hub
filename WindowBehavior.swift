@@ -12,6 +12,7 @@ final class TitleBarMonitor: NSView {
         super.viewDidMoveToWindow()
         if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
         guard let window else { return }
+        window.titleVisibility = .hidden
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self, weak window] event in
             guard let window, event.window === window, event.clickCount == 2,
                   event.locationInWindow.y > window.contentLayoutRect.maxY else { return event }

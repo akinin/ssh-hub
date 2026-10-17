@@ -128,7 +128,7 @@ struct WorkspaceView: View {
             else {
                 let columns = store.workspace.split == .columns
                 let length = columns ? geometry.size.width : geometry.size.height
-                let first = max(100, (length - 7) * store.splitFraction)
+                let first = WorkspaceDividerGeometry.firstExtent(length: length, fraction: store.splitFraction)
                 if columns {
                     HStack(spacing: 0) {
                         WorkspacePaneView(pane: .primary).frame(width: first)
@@ -145,17 +145,11 @@ struct WorkspaceView: View {
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-    @State private var dragStart: Double?
     private func divider(length: CGFloat, columns: Bool) -> some View {
-        Rectangle().fill(Color.secondary.opacity(0.18))
-            .frame(width: columns ? 7 : nil, height: columns ? nil : 7)
-            .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 0).onChanged { value in
-                if dragStart == nil { dragStart = store.splitFraction }
-                let delta = columns ? value.translation.width : value.translation.height
-                store.splitFraction = min(0.85, max(0.15, (dragStart ?? 0.5) + delta / max(1, length - 7)))
-            }.onEnded { _ in dragStart = nil })
-            .accessibilityLabel("Размер панелей")
+        WorkspaceDivider(columns: columns, length: length, fraction: $store.splitFraction)
+            .frame(width: columns ? WorkspaceDividerGeometry.thickness : nil,
+                   height: columns ? nil : WorkspaceDividerGeometry.thickness)
+            .help("Перетащи для изменения размера панелей. Двойной щелчок — поровну.")
     }
 }
 struct WorkspacePaneView: View {
@@ -188,7 +182,7 @@ struct WorkspacePaneView: View {
                 } label: { Image(systemName: "rectangle.split.2x1").frame(width: 28, height: 28) }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).help("Расположение панелей").accessibilityLabel("Расположение панелей")
                     .padding(.trailing, 4)
-            }.frame(height: 36).background(.bar)
+            }.frame(height: WorkspaceMetrics.tabHeaderHeight).background(.bar)
                 .overlay(alignment: .bottom) { if store.workspace.split != .none && store.workspace.focused == pane { Color.accentColor.frame(height: 2) } }
             Divider()
             paneContent.frame(maxWidth: .infinity, maxHeight: .infinity)

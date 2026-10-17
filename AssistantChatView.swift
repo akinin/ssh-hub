@@ -23,6 +23,8 @@ struct AssistantChatPanelView: View {
     let onExpand: () -> Void
     let onClose: () -> Void
     let onAction: (AssistantChatAction) -> Void
+    var beforePrepare: () -> Void = {}
+    var proposalContent: (String) -> AnyView = { _ in AnyView(EmptyView()) }
     @State private var showingSettings = false
     @State private var showingChats = false
     @State private var showingMaterial = false
@@ -43,7 +45,12 @@ struct AssistantChatPanelView: View {
                         VStack(alignment: .leading, spacing: 14) {
                             if model.chat.turns.isEmpty { welcome }
                             else {
-                                ForEach(model.chat.turns) { turn in AssistantChatBubble(user: turn.role == "user", content: turn.content).id(turn.id) }
+                                ForEach(model.chat.turns) { turn in
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        AssistantChatBubble(user: turn.role == "user", content: turn.allowsProposals == true ? AssistantProposal.visibleText(turn.content) : turn.content)
+                                        if turn.role == "assistant", turn.allowsProposals == true { proposalContent(turn.content) }
+                                    }.id(turn.id)
+                                }
                             }
                             if model.busy {
                                 HStack(spacing: 8) { ProgressView().controlSize(.small); Text(model.status.isEmpty ? "Помощник готовит ответ…" : model.status).font(.caption).foregroundStyle(.secondary); Spacer() }.padding(.vertical, 8)
@@ -84,7 +91,7 @@ struct AssistantChatPanelView: View {
             headerButton(expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", help: expanded ? "Вернуть в боковую панель" : "Расширить чат", action: onExpand)
             headerButton("gearshape", help: "Настройки помощника") { showingSettings = true }.disabled(model.busy)
             headerButton("xmark", help: "Закрыть помощника") { model.stop(); onClose() }
-        }.padding(.horizontal, 12).padding(.vertical, 11)
+        }.padding(.horizontal, 12).frame(height: WorkspaceMetrics.tabHeaderHeight).background(.bar)
     }
     private func headerButton(_ icon: String, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) { Image(systemName: icon).font(.system(size: 12)).frame(width: 25, height: 26).contentShape(Rectangle()) }.buttonStyle(.plain).foregroundStyle(.secondary).help(help).accessibilityLabel(help)
@@ -102,7 +109,7 @@ struct AssistantChatPanelView: View {
             if !model.settings.enabled {
                 Button { showingSettings = true } label: { Label("Выбрать провайдера и модель", systemImage: "slider.horizontal.3").font(.caption) }.buttonStyle(.borderless)
             }
-            Text("Сообщения остаются в памяти, пока ты явно не сохранишь чат. Отправка материалов и запуск команд требуют твоего действия.").font(.system(size: 10)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+            Text("Список записей можно включить в запрос. Отправка материалов, изменение документации и запуск команд требуют твоего действия.").font(.system(size: 10)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
         }.frame(maxWidth: expanded ? 560 : .infinity, alignment: .leading).frame(maxWidth: .infinity, alignment: expanded ? .center : .leading)
     }
     private var composer: some View {
@@ -123,12 +130,20 @@ struct AssistantChatPanelView: View {
                     if model.busy {
                         Button { model.stop() } label: { Image(systemName: "stop.fill").font(.system(size: 11)).frame(width: 28, height: 28) }.buttonStyle(.bordered).help("Остановить ответ").accessibilityLabel("Остановить ответ")
                     } else {
-                        Button { prepare() } label: { Image(systemName: "arrow.up").font(.system(size: 13, weight: .semibold)).frame(width: 27, height: 27) }.buttonStyle(.borderedProminent).clipShape(RoundedRectangle(cornerRadius: 8)).help("Просмотреть запрос перед отправкой").accessibilityLabel("Просмотреть запрос перед отправкой").disabled(!model.canReview)
+                        Button { prepare() } label: { Image(systemName: "arrow.up").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).frame(width: 30, height: 28).background(Color.accentColor, in: RoundedRectangle(cornerRadius: 7)).opacity(model.canReview ? 1 : 0.4) }.buttonStyle(.plain).help("Просмотреть запрос перед отправкой").accessibilityLabel("Просмотреть запрос перед отправкой").disabled(!model.canReview)
                     }
                 }.padding(.horizontal, 8).padding(.bottom, 7)
             }.background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 12)).overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(.primary.opacity(0.1), lineWidth: 1) }
             HStack {
                 Toggle("Скрыть IPv4", isOn: $hideAddresses).toggleStyle(.checkbox).font(.system(size: 10)).help("Дополнительно замаскировать IPv4-адреса в предпросмотре")
+                Menu {
+                    Toggle("Добавлять список записей", isOn: $model.includeRecordCatalog)
+                    Divider()
+                    Button { model.allProfiles = false; model.includeRecordCatalog = true } label: { if !model.allProfiles { Label("Текущий профиль", systemImage: "checkmark") } else { Text("Текущий профиль") } }
+                    Button { model.allProfiles = true; model.includeRecordCatalog = true } label: { if model.allProfiles { Label("Все профили", systemImage: "checkmark") } else { Text("Все профили") } }
+                } label: {
+                    HStack(spacing: 3) { Image(systemName: "list.bullet.rectangle"); Text(model.includeRecordCatalog ? (model.allProfiles ? "Все записи" : "Записи") : "Без списка"); Image(systemName: "chevron.down").font(.system(size: 7)) }.font(.system(size: 10))
+                }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().disabled(model.busy).help("В запрос добавляются только имена, адреса и параметры подключения. Точный список виден перед отправкой.")
                 Spacer()
                 Text(model.isSaved ? "Чат сохранён" : "Чат не сохранён").font(.system(size: 10)).foregroundStyle(.tertiary)
             }
@@ -136,16 +151,23 @@ struct AssistantChatPanelView: View {
     }
     private var modelPicker: some View {
         Menu {
-            if !model.models.isEmpty {
-                ForEach(model.models, id: \.self) { name in Button { model.settings.model = name } label: { if name == model.settings.model { Label(name, systemImage: "checkmark") } else { Text(name) } } }
+            if let profiles = model.settings.modelProfiles, !profiles.isEmpty {
+                ForEach(profiles) { profile in
+                    Button { model.selectModelProfile(profile.id) } label: {
+                        if profile.id == model.settings.selectedModelProfileID { Label(profile.name, systemImage: "checkmark") }
+                        else { Text(profile.name) }
+                    }
+                }
                 Divider()
             }
-            Button("Настроить модель…") { showingSettings = true }
+            Button("Настроить подключения…") { showingSettings = true }.disabled(model.busy)
         } label: {
-            HStack(spacing: 4) { Text(model.settings.model.isEmpty ? "Выбрать модель" : model.settings.model).font(.system(size: 10)).lineLimit(1).truncationMode(.middle); Image(systemName: "chevron.down").font(.system(size: 8)) }.foregroundStyle(.secondary).frame(maxWidth: 185, alignment: .leading)
-        }.menuStyle(.borderlessButton).fixedSize(horizontal: false, vertical: true).disabled(model.busy)
+            HStack(spacing: 4) { Text(model.settings.selectedModelName).font(.system(size: 10)).lineLimit(1).truncationMode(.middle); Image(systemName: "chevron.down").font(.system(size: 8)) }.foregroundStyle(.secondary).frame(maxWidth: 185, alignment: .leading)
+        }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize(horizontal: false, vertical: true)
+        .help(model.settings.selectedProvider.title + " · " + model.settings.model + " · " + model.settings.endpointString)
     }
     private func prepare() {
+        beforePrepare()
         model.prepare(hideAddresses: hideAddresses)
     }
 }
@@ -320,14 +342,67 @@ private struct AssistantChatSettingsSheet: View {
     @State private var draft = AssistantSettings()
     @State private var key = ""
     @State private var removingKey = false
+    @State private var localError: String?
     private var matchesSavedEndpoint: Bool { draft.selectedProvider == model.settings.selectedProvider && draft.endpointString == model.settings.endpointString }
     private var selectableModels: [String] { Array(Set((matchesSavedEndpoint ? model.models : []) + (draft.model.isEmpty ? [] : [draft.model]))).sorted() }
+    private var profileName: Binding<String> {
+        Binding(get: { draft.selectedModelProfile?.name ?? "" }, set: { draft.updateSelectedModelProfile(name: $0) })
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("Настройки помощника", systemImage: "slider.horizontal.3").font(.title2).bold()
+            Label("Подключения ИИ-помощника", systemImage: "slider.horizontal.3").font(.title2).bold()
             Toggle("Включить ИИ-помощника", isOn: $draft.enabled)
+            HStack(alignment: .top, spacing: 18) {
+                connections
+                Divider()
+                connectionFields.frame(maxWidth: .infinity, alignment: .leading)
+            }.frame(minHeight: 365)
+            if let error = localError ?? model.error { Text(error).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
+            HStack {
+                Button("Удалить сохранённый ключ") { removingKey = true }.disabled(!model.hasKey || !matchesSavedEndpoint || model.busy || model.readOnly)
+                Spacer()
+                Button("Отмена") { key = ""; dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Сохранить") { if save(fetch: false) { dismiss() } }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent).disabled(model.busy || model.readOnly)
+            }
+        }.padding(20).frame(width: 800)
+        .onAppear { draft = model.settings; draft.migrateModelProfiles() }
+        .onChange(of: model.models) { _, values in if matchesSavedEndpoint, draft.model.isEmpty, let first = values.first { draft.model = first; draft.updateSelectedModelProfile() } }
+        .onChange(of: draft.endpointString) { _, _ in key = "" }
+        .onDisappear { key = "" }
+        .alert("Удалить сохранённый API-ключ?", isPresented: $removingKey) {
+            Button("Отмена", role: .cancel) {}
+            Button("Удалить", role: .destructive) {
+                if model.applySettings(draft, key: "", removeKey: true) { draft = model.settings }; key = ""
+            }
+        } message: { Text("Ключ общий для подключений этого провайдера с тем же адресом API. Для следующего запроса сервер может потребовать ввести его снова.") }
+    }
+    private var connections: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Модели").font(.headline)
+            List(selection: Binding(get: { draft.selectedModelProfileID }, set: { id in if let id { select(id) } })) {
+                ForEach(draft.modelProfiles ?? []) { profile in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(profile.name).lineLimit(1)
+                        Text(profile.provider.title).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    }.padding(.vertical, 3).tag(profile.id)
+                }
+            }.listStyle(.sidebar).clipShape(RoundedRectangle(cornerRadius: 8))
+            HStack {
+                Button { edit { try draft.addModelProfile() } } label: { Image(systemName: "plus") }.help("Добавить подключение модели").accessibilityLabel("Добавить подключение модели").disabled((draft.modelProfiles?.count ?? 0) >= 20)
+                Button { if let id = draft.selectedModelProfileID { edit { try draft.removeModelProfile(id) } } } label: { Image(systemName: "minus") }.help("Удалить подключение модели").accessibilityLabel("Удалить подключение модели").disabled((draft.modelProfiles?.count ?? 0) <= 1)
+                Spacer()
+                Text("\(draft.modelProfiles?.count ?? 0) / 20").font(.caption2).foregroundStyle(.secondary)
+            }.buttonStyle(.borderless)
+            Text("Удаление подключения сохраняет ключ в Связке ключей.").font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }.frame(width: 185)
+    }
+    private var connectionFields: some View {
+        VStack(alignment: .leading, spacing: 14) {
             Form {
-                Picker("Провайдер", selection: Binding(get: { draft.selectedProvider }, set: { provider in if draft.selectedProvider != provider { draft.selectedProvider = provider; draft.endpoint = nil; draft.model = ""; key = "" } })) { ForEach(AssistantProvider.allCases) { Text($0.title).tag($0) } }
+                TextField("Короткое имя", text: profileName, prompt: Text("Например, Домашняя модель"))
+                Picker("Провайдер", selection: Binding(get: { draft.selectedProvider }, set: { provider in
+                    if draft.selectedProvider != provider { draft.selectedProvider = provider; draft.endpoint = nil; draft.model = ""; draft.updateSelectedModelProfile(); key = "" }
+                })) { ForEach(AssistantProvider.allCases) { Text($0.title).tag($0) } }
                 if draft.selectedProvider != .openAI {
                     TextField("Адрес API", text: $draft.endpointString)
                     Text(draft.selectedProvider == .ollama ? "Ollama: локально http://127.0.0.1:11434 или сервер с доверенным HTTPS." : "Укажи базовый адрес совместимого API, включая /v1, если он нужен серверу.").font(.caption).foregroundStyle(.secondary)
@@ -335,10 +410,11 @@ private struct AssistantChatSettingsSheet: View {
                 HStack {
                     TextField("Модель", text: $draft.model, prompt: Text(draft.selectedProvider == .openAI ? "Название модели API" : "Получи список или введи название"))
                     if !selectableModels.isEmpty {
-                        Menu { ForEach(selectableModels, id: \.self) { name in Button(name) { draft.model = name } } } label: { Image(systemName: "chevron.down") }.menuStyle(.borderlessButton).fixedSize().help("Доступные модели")
+                        Menu { ForEach(selectableModels, id: \.self) { name in Button(name) { draft.model = name } } } label: { Image(systemName: "chevron.down") }
+                            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("Доступные модели").accessibilityLabel("Доступные модели")
                     }
                 }
-                SecureField(draft.needsKey ? "Ключ API" : "Ключ API, если нужен", text: $key, prompt: Text(model.hasKey && draft.selectedProvider == model.settings.selectedProvider && draft.endpointString == model.settings.endpointString ? "Сохранён · оставь пустым" : "Не сохраняется в настройках или чате"))
+                SecureField(draft.needsKey ? "Ключ API" : "Ключ API, если нужен", text: $key, prompt: Text(model.hasKey && matchesSavedEndpoint ? "Сохранён · оставь пустым" : "Пустое поле сохраняет прежний ключ"))
             }.textFieldStyle(.roundedBorder)
             if draft.selectedProvider != .openAI {
                 HStack {
@@ -346,28 +422,23 @@ private struct AssistantChatSettingsSheet: View {
                     if model.loadingModels { ProgressView().controlSize(.small); Text("Получение списка…").font(.caption).foregroundStyle(.secondary) }
                 }
             }
-            Text(draft.selectedProvider == .openAI ? "Запросы отправляются в OpenAI API и оплачиваются в твоём API-проекте. Ключ хранится в Связке ключей; серверное хранение ответа выключено." : "Запросы отправляются выбранному серверу. Для локальной модели интернет не требуется. Ключ, если он нужен серверу, хранится в Связке ключей с привязкой к провайдеру и адресу.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Text("Модель получает только показанный в предпросмотре запрос. Доступ к терминалу и материалам записи не предоставляется автоматически.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            if let error = model.error { Text(error).font(.caption).foregroundStyle(.orange) }
-            HStack {
-                Button("Удалить сохранённый ключ") { removingKey = true }.disabled(!model.hasKey || !matchesSavedEndpoint || model.busy || model.readOnly)
-                Spacer()
-                Button("Отмена") { key = ""; dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Сохранить") { if save(fetch: false) { dismiss() } }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent).disabled(model.busy || model.readOnly)
-            }
-        }.padding(20).frame(width: 590)
-        .onAppear { draft = model.settings }
-        .onChange(of: model.models) { _, values in if draft.model.isEmpty, let first = values.first { draft.model = first } }
-        .onDisappear { key = "" }
-        .alert("Удалить сохранённый API-ключ?", isPresented: $removingKey) {
-            Button("Отмена", role: .cancel) {}
-            Button("Удалить", role: .destructive) { model.settings = draft; model.saveSettings(key: "", removeKey: true); key = "" }
-        } message: { Text("Для следующего запроса сервер может потребовать ввести ключ снова.") }
+            Text(draft.selectedProvider == .openAI ? "Запросы отправляются в OpenAI API и оплачиваются в твоём API-проекте. Ключ хранится в Связке ключей; серверное хранение ответа выключено." : "Запросы отправляются выбранному серверу. Для локальной модели интернет не требуется. Ключ, если он нужен серверу, хранится в Связке ключей с привязкой к провайдеру и адресу.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text("Короткое имя используется в чате. Модель получает только показанный в предпросмотре запрос; доступ к терминалу и материалам записи автоматически не предоставляется.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+    private func select(_ id: UUID) {
+        guard id != draft.selectedModelProfileID else { return }
+        edit { draft.updateSelectedModelProfile(); try draft.selectModelProfile(id) }
+    }
+    private func edit(_ change: () throws -> Void) {
+        do { try change(); key = ""; localError = nil } catch { localError = error.localizedDescription }
     }
     @discardableResult private func save(fetch: Bool) -> Bool {
-        model.settings = draft; model.saveSettings(key: key)
-        guard model.error == nil else { return false }
-        key = ""
+        draft.updateSelectedModelProfile(name: draft.selectedModelProfile?.name.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard model.applySettings(draft, key: key) else { return false }
+        draft = model.settings; key = ""; localError = nil
         if fetch { model.fetchModels() }
         return true
     }
@@ -385,6 +456,7 @@ private struct AssistantChatPreparedReview: View {
             Label("Проверь запрос", systemImage: "eye").font(.title2).bold()
             Text(value.settings.selectedProvider.title + " · " + value.settings.model).font(.caption).foregroundStyle(.secondary)
             Text(value.settings.endpointString).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            if value.includesRecordCatalog { Label(value.allProfiles ? "Включён список записей всех профилей" : "Включён список записей текущего профиля", systemImage: "list.bullet.rectangle").font(.caption).foregroundStyle(.secondary) }
             Text("Вопрос, материал и история ниже будут отправлены выбранной модели. Проверь маскирование и при необходимости измени текст.").font(.caption).foregroundStyle(.secondary)
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {

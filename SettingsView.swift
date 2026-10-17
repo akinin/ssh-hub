@@ -2,6 +2,13 @@ import SwiftUI
 import AppKit
 import ServiceManagement
 
+private enum AppSettingsSection: String, CaseIterable, Identifiable {
+    case connections, workspace, startup, updates, transfer
+    var id: String { rawValue }
+    var title: String { switch self { case .connections: return "Подключения"; case .workspace: return "Рабочая область"; case .startup: return "Запуск"; case .updates: return "Обновления"; case .transfer: return "Перенос данных" } }
+    var icon: String { switch self { case .connections: return "network"; case .workspace: return "rectangle.split.2x1"; case .startup: return "power"; case .updates: return "arrow.triangle.2.circlepath"; case .transfer: return "externaldrive" } }
+}
+
 struct AppSettingsView: View {
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) private var dismiss
@@ -14,58 +21,90 @@ struct AppSettingsView: View {
     @State private var loginEnabled = false
     @State private var requiresApproval = false
     @State private var error: String?
+    @State private var selectedSection = AppSettingsSection.connections
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Label("Настройки", systemImage: "gearshape").font(.title2).bold()
-            Form {
-                Section("Подключения") {
-                    Picker("Открывать SSH", selection: $consoleDestination) {
-                        Text("Внутри SSH Hub").tag("embedded")
-                        Text("Во внешнем терминале").tag("external")
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Image(systemName: "gearshape").font(.system(size: 24)).foregroundStyle(.tint)
+                Text("Настройки").font(.title2).bold()
+                Spacer()
+            }.padding(22)
+            Divider()
+            HStack(spacing: 0) {
+                VStack(spacing: 5) {
+                    ForEach(AppSettingsSection.allCases) { section in
+                        Button { selectedSection = section; error = nil } label: {
+                            HStack(spacing: 10) { Image(systemName: section.icon).frame(width: 22); Text(section.title); Spacer(minLength: 0) }
+                                .font(.system(size: 13, weight: selectedSection == section ? .semibold : .regular))
+                                .padding(.horizontal, 12).padding(.vertical, 11)
+                                .foregroundStyle(selectedSection == section ? Color.white : Color.primary)
+                                .background(selectedSection == section ? Color.accentColor : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+                                .contentShape(RoundedRectangle(cornerRadius: 8))
+                        }.buttonStyle(.plain).accessibilityAddTraits(selectedSection == section ? .isSelected : [])
                     }
-                    Picker("Внешний терминал", selection: $terminalID) {
-                        ForEach(TerminalChoice.installed) { Text($0.name).tag($0.id) }
-                    }
-                    Text("iTerm2 появится в списке, если он установлен.").font(.caption).foregroundStyle(.secondary)
-                }
-                Section("Рабочая область") {
-                    Toggle("Восстанавливать вкладки, панели и окна", isOn: $restoreWorkspace)
-                    Text("Сохранённые SSH, Serial и SFTP-вкладки подключаются по кнопке.").font(.caption).foregroundStyle(.secondary)
-                }
-                Section("Запуск") {
-                    Toggle("Запускать при входе в macOS", isOn: Binding(get: { loginEnabled }, set: setLoginEnabled))
-                    Toggle("При запуске оставлять только иконку в строке меню", isOn: $startInMenuBar)
-                    if requiresApproval {
-                        Button("Разрешить автозапуск в настройках macOS") { SMAppService.openSystemSettingsLoginItems() }
-                    }
-                    Text("Для автозапуска сначала перенеси приложение в «Программы».").font(.caption).foregroundStyle(.secondary)
-                }
-                Section("Обновления") {
-                    Toggle("Проверять при запуске", isOn: $checkUpdates)
-                    HStack {
-                        Text("Версия " + updater.installed).foregroundStyle(.secondary)
-                        Spacer()
-                        Button(updater.available == nil ? "Проверить обновления…" : "Доступна " + updater.available!.version.string) { dismiss(); DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { updater.check() } }
-                    }
-                    Text("GitHub Releases · проверка не чаще раза в сутки, установка по нажатию.").font(.caption).foregroundStyle(.secondary)
-                }
-                Section("Работа") {
-                    ForEach(OperationsPanel.allCases) { panel in Button { dismiss(); DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { store.operationsPanel = panel } } label: { Label(panel.title + "…", systemImage: panel.icon) } }
-                    Button("ИИ-помощник…", systemImage: "sparkles") { dismiss(); store.presentAssistant() }
-                }
-                Section("Перенос подключений") {
-                    Button("Резервное копирование с паролем…") { dismiss(); DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { store.showingBackup = true } }
-                    HStack {
-                        Button("Импорт…", systemImage: "square.and.arrow.down") { dismiss(); DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { store.chooseImport() } }
-                        Button("Экспорт всех…", systemImage: "square.and.arrow.up") { store.export(entries: store.ordered) }.disabled(store.aliases.isEmpty)
-                    }
-                    Text("JSON: адреса, пользователи, порты, пути к ключам, ProxyJump, группы и избранное. Нестандартные параметры SSH переносятся отдельно.")
-                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-            }.formStyle(.grouped)
-            if let error { Text(error).font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
-            HStack { Spacer(); Button("Готово") { dismiss() }.keyboardShortcut(.defaultAction) }
-        }.padding(24).frame(width: 570, height: 760).dismissOnOutsideClick()
+                    Spacer(minLength: 0)
+                }.padding(10).frame(width: 200).background(Color.primary.opacity(0.025))
+                Divider()
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(selectedSection.title).font(.headline).padding(.horizontal, 22).padding(.top, 20)
+                    Form {
+                        switch selectedSection {
+                        case .connections:
+                            Section {
+                                Picker("Открывать SSH", selection: $consoleDestination) {
+                                    Text("Внутри SSH Hub").tag("embedded")
+                                    Text("Во внешнем терминале").tag("external")
+                                }
+                                Picker("Внешний терминал", selection: $terminalID) {
+                                    ForEach(TerminalChoice.installed) { Text($0.name).tag($0.id) }
+                                }
+                                Text("iTerm2 появится в списке, если он установлен.").font(.caption).foregroundStyle(.secondary)
+                            }
+                        case .workspace:
+                            Section {
+                                Toggle("Восстанавливать вкладки, панели и окна", isOn: $restoreWorkspace)
+                                Text("Сохранённые SSH, Serial и SFTP-вкладки подключаются по кнопке.").font(.caption).foregroundStyle(.secondary)
+                            }
+                        case .startup:
+                            Section {
+                                Toggle("Запускать при входе в macOS", isOn: Binding(get: { loginEnabled }, set: setLoginEnabled))
+                                Toggle("При запуске оставлять только иконку в строке меню", isOn: $startInMenuBar)
+                                if requiresApproval {
+                                    Button("Разрешить автозапуск в настройках macOS") { SMAppService.openSystemSettingsLoginItems() }
+                                }
+                                Text("Для автозапуска сначала перенеси приложение в «Программы».").font(.caption).foregroundStyle(.secondary)
+                            }
+                        case .updates:
+                            Section {
+                                Toggle("Проверять при запуске", isOn: $checkUpdates)
+                                HStack {
+                                    Text("Версия " + updater.installed).foregroundStyle(.secondary)
+                                    Spacer()
+                                    Button(updater.available == nil ? "Проверить обновления…" : "Доступна " + updater.available!.version.string) { dismiss(); DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { updater.check() } }
+                                }
+                                Text("GitHub Releases · проверка не чаще раза в сутки, установка по нажатию.").font(.caption).foregroundStyle(.secondary)
+                            }
+                        case .transfer:
+                            Section {
+                                Button("Резервное копирование с паролем…") { dismiss(); DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { store.showingBackup = true } }
+                                HStack {
+                                    Button("Импорт…", systemImage: "square.and.arrow.down") { dismiss(); DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { store.chooseImport() } }
+                                    Button("Экспорт всех…", systemImage: "square.and.arrow.up") { store.export(entries: store.ordered) }.disabled(store.aliases.isEmpty)
+                                }
+                                Text("JSON: адреса, пользователи, порты, пути к ключам, ProxyJump, группы и избранное. Нестандартные параметры SSH переносятся отдельно.")
+                                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }.formStyle(.grouped)
+                }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+            Divider()
+            HStack {
+                if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
+                Spacer()
+                Button("Готово") { dismiss() }.keyboardShortcut(.defaultAction)
+            }.padding(14)
+        }.frame(width: 820, height: 580).dismissOnOutsideClick()
             .onAppear { refreshLoginStatus() }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refreshLoginStatus() }
     }

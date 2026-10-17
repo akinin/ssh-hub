@@ -29,6 +29,9 @@ extension AliasStore {
                 let original = try integrations.load(); var updated = original
                 for index in updated.indices where updated[index].dockerRecordKey == old { updated[index].dockerRecordKey = new }
                 if updated != original { try integrations.write(updated, expected: original) }
+                let monitorRepository = MonitoringRepository(configURL: config.url, profileID: profile.id)
+                var monitorSettings = try monitorRepository.read()
+                if monitorSettings.sshRecordKey == old { monitorSettings.sshRecordKey = new; try monitorRepository.write(monitorSettings) }
                 let chatFile = HubFeatureFile(feature: "AssistantChats", config: config.url, profile: profile.id)
                 var chats = try chatFile.load([AssistantChatDocument].self, fallback: []); try AssistantChatDocument.validate(chats)
                 let previousChats = chats
@@ -38,7 +41,7 @@ extension AliasStore {
                 var metadata = try file.load(SearchMetadata.self, fallback: SearchMetadata()); try metadata.validate()
                 if let tags = metadata.tags.removeValue(forKey: old) { metadata.tags[new] = tags; try file.write(metadata) }
             }
-            assistant?.remapRecord(from: old, to: new); infrastructure?.reload(); reloadSearchMetadata()
+            assistant?.remapRecord(from: old, to: new); infrastructure?.reload(); monitoring?.recordBindingChanged(); reloadSearchMetadata()
         } catch { self.error = "Не удалось обновить теги или общие учётные данные: " + error.localizedDescription }
     }
     func credentialVault() -> SharedCredentialVault {
@@ -50,8 +53,14 @@ extension AliasStore {
         let value = InfrastructureIntegrationModel(configURL: config.url, profileID: profiles.active, entries: profileEntries); infrastructure = value; return value
     }
     func monitoringModel() -> MonitoringModel {
-        if let monitoring { return monitoring }
-        let value = MonitoringModel(configURL: config.url, profileID: profiles.active); monitoring = value; return value
+        let value = monitoring ?? MonitoringModel(configURL: config.url, profileID: profiles.active)
+        let profile = profiles.active, configuration = config.url
+        value.entries = profileEntries
+        value.resolveEntry = { [weak self] key in
+            guard let self, self.profiles.active == profile, self.config.url == configuration else { return nil }
+            return self.profileEntries.first { $0.favoriteID == key }
+        }
+        monitoring = value; return value
     }
     func maintenanceModel() -> MaintenanceModel {
         if let maintenance { return maintenance }
@@ -68,10 +77,11 @@ extension AliasStore {
         }
     }
     func stopOperations(clear: Bool = false) {
-        AssistantAPI.stopAll(); assistant?.stop()
+        AssistantAPI.stopAll(); assistant?.stop(); assistantCommandTask?.cancel(); assistantCommandTask = nil; assistantCommandRunID = nil
+        MonitoringInstallationModel.stopAll()
         infrastructure?.stop(); monitoring?.stop(); maintenance?.stop(); sharedCredentials?.lock()
         if clear {
-            operationsPanel = nil; assistantVisible = false; assistantExpanded = false; assistantCommandReview = nil; assistant = nil; infrastructureImport = nil
+            operationsPanel = nil; assistantVisible = false; assistantExpanded = false; assistantCommandReview = nil; assistantProposalReview = nil; assistantRecordDraft = nil; assistantAppliedActions = []; assistant = nil; infrastructureImport = nil
             sharedCredentials?.deactivate(); sharedCredentials = nil
             infrastructure = nil; monitoring = nil; maintenance = nil
         }
@@ -87,10 +97,14 @@ struct OperationsPanelView: View {
     @EnvironmentObject var store: AliasStore
     var body: some View {
         switch panel {
-        case .search: GlobalSearchView().environmentObject(store)
+        case .search: GlobalSearchView(query: $store.globalSearchQuery).environmentObject(store)
         case .credentials: SharedCredentialsView(vault: store.credentialVault(), entries: store.profileEntries)
         case .integrations: InfrastructureIntegrationsView(model: store.integrationModel(), onImport: store.importInfrastructure)
-        case .monitoring: MonitoringDashboardView(model: store.monitoringModel())
+        case .monitoring:
+            let profile = store.profiles.active, configuration = store.config.url
+            MonitoringDashboardView(model: store.monitoringModel(), entries: store.profileEntries, currentEntries: {
+                guard store.profiles.active == profile, store.config.url == configuration else { return [] }; return store.profileEntries
+            })
         case .maintenance: MaintenanceView(model: store.maintenanceModel()).environmentObject(store)
         }
     }

@@ -10,6 +10,9 @@ struct MonitoringSettings: Codable, Equatable {
     var endpoint = ""
     var pollSeconds = 60
     var notifyChanges = false
+    var sshRecordKey: String?
+    var remotePort: Int?
+    var instanceID: UUID?
 }
 
 enum MonitoringError: LocalizedError {
@@ -133,7 +136,13 @@ struct MonitoringRepository {
         let value = try JSONDecoder().decode(MonitoringSettings.self, from: data)
         try validate(value); return value
     }
-    func validate(_ settings: MonitoringSettings) throws { if !settings.endpoint.isEmpty { _ = try MonitoringEndpoint(settings.endpoint) }; guard (10...3600).contains(settings.pollSeconds) else { throw MonitoringError.storage } }
+    func validate(_ settings: MonitoringSettings) throws {
+        if !settings.endpoint.isEmpty { _ = try MonitoringEndpoint(settings.endpoint) }
+        guard (10...3600).contains(settings.pollSeconds) else { throw MonitoringError.storage }
+        if let key = settings.sshRecordKey {
+            guard !key.isEmpty, key.utf8.count <= 8192, !key.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains), let port = settings.remotePort, (1024...65535).contains(port), settings.instanceID != nil, settings.endpoint == "http://127.0.0.1:" + String(port) else { throw MonitoringError.storage }
+        } else if settings.remotePort != nil || settings.instanceID != nil { throw MonitoringError.storage }
+    }
     func write(_ settings: MonitoringSettings) throws {
         try validate(settings)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -154,23 +163,26 @@ struct MonitoringRepository {
 
 enum MonitoringKeyStore {
     static let service = "com.olshaniki.ssh-aliases.monitoring.v1"
-    private static func query(scope: String, endpoint: MonitoringEndpoint) -> [String: Any] {
-        let digest = SHA256.hash(data: Data(endpoint.url.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined()
+    static func account(scope: String, endpoint: MonitoringEndpoint, instanceID: UUID? = nil) -> String {
+        let digest = instanceID.map { "installation:" + $0.uuidString.lowercased() } ?? SHA256.hash(data: Data(endpoint.url.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined()
+        return scope + ":" + digest
+    }
+    private static func query(scope: String, endpoint: MonitoringEndpoint, instanceID: UUID? = nil) -> [String: Any] {
         let context = LAContext(); context.interactionNotAllowed = true
-        return [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: scope + ":" + digest, kSecUseAuthenticationContext as String: context]
+        return [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account(scope: scope, endpoint: endpoint, instanceID: instanceID), kSecUseAuthenticationContext as String: context]
     }
     static func validate(_ token: String) throws { guard (32...4096).contains(token.utf8.count), token.unicodeScalars.allSatisfy({ (33...126).contains($0.value) }) else { throw MonitoringError.token } }
-    static func has(scope: String, endpoint: MonitoringEndpoint) -> Bool { var query = query(scope: scope, endpoint: endpoint); query[kSecReturnAttributes as String] = true; return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess }
-    static func read(scope: String, endpoint: MonitoringEndpoint) throws -> String? {
-        var query = query(scope: scope, endpoint: endpoint); query[kSecReturnData as String] = true
+    static func has(scope: String, endpoint: MonitoringEndpoint, instanceID: UUID? = nil) -> Bool { var query = query(scope: scope, endpoint: endpoint, instanceID: instanceID); query[kSecReturnAttributes as String] = true; return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess }
+    static func read(scope: String, endpoint: MonitoringEndpoint, instanceID: UUID? = nil) throws -> String? {
+        var query = query(scope: scope, endpoint: endpoint, instanceID: instanceID); query[kSecReturnData as String] = true
         var result: CFTypeRef?; let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = result as? Data, let token = String(data: data, encoding: .utf8) else { throw MonitoringError.keychain }
         try validate(token); return token
     }
-    static func write(_ token: String, scope: String, endpoint: MonitoringEndpoint) throws {
+    static func write(_ token: String, scope: String, endpoint: MonitoringEndpoint, instanceID: UUID? = nil) throws {
         try validate(token)
-        let item = query(scope: scope, endpoint: endpoint); let update = [kSecValueData as String: Data(token.utf8)]
+        let item = query(scope: scope, endpoint: endpoint, instanceID: instanceID); let update = [kSecValueData as String: Data(token.utf8)]
         var status = SecItemUpdate(item as CFDictionary, update as CFDictionary)
         if status == errSecItemNotFound {
             var added = item; added.removeValue(forKey: kSecUseAuthenticationContext as String); added[kSecValueData as String] = Data(token.utf8); added[kSecAttrLabel as String] = "SSH Hub · Мониторинг"; added[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
@@ -178,7 +190,7 @@ enum MonitoringKeyStore {
         }
         guard status == errSecSuccess else { throw MonitoringError.keychain }
     }
-    static func remove(scope: String, endpoint: MonitoringEndpoint) throws { let status = SecItemDelete(query(scope: scope, endpoint: endpoint) as CFDictionary); guard status == errSecSuccess || status == errSecItemNotFound else { throw MonitoringError.keychain } }
+    static func remove(scope: String, endpoint: MonitoringEndpoint, instanceID: UUID? = nil) throws { let status = SecItemDelete(query(scope: scope, endpoint: endpoint, instanceID: instanceID) as CFDictionary); guard status == errSecSuccess || status == errSecItemNotFound else { throw MonitoringError.keychain } }
 }
 
 // Each request retains its drain registration until URLSession invalidates.
@@ -192,6 +204,15 @@ final class MonitoringHTTPTransport: NSObject, URLSessionDataDelegate, @unchecke
     private var result: Result<Data, Error>?
     private var bytes = Data()
     private var registered = false
+    static func configuration(for url: URL, base: URLSessionConfiguration = .ephemeral) -> URLSessionConfiguration {
+        base.urlCache = nil; base.httpCookieStorage = nil; base.urlCredentialStorage = nil; base.httpShouldSetCookies = false; base.timeoutIntervalForRequest = 12; base.timeoutIntervalForResource = 15
+        // HTTP endpoints are literal loopback, including private SSH forwards.
+        // Never send their bearer token to an inherited system/PAC/SOCKS proxy.
+        if url.scheme?.lowercased() == "http" {
+            base.connectionProxyDictionary = ["HTTPEnable": 0, "HTTPSEnable": 0, "SOCKSEnable": 0, "ProxyAutoConfigEnable": 0, "ProxyAutoDiscoveryEnable": 0]
+        }
+        return base
+    }
     func get(_ url: URL, token: String) async throws -> Data {
         try MonitoringKeyStore.validate(token)
         return try await withTaskCancellationHandler(operation: {
@@ -199,7 +220,7 @@ final class MonitoringHTTPTransport: NSObject, URLSessionDataDelegate, @unchecke
                 lock.lock()
                 if let result { lock.unlock(); continuation.resume(with: result); return }
                 self.continuation = continuation
-                let config = URLSessionConfiguration.ephemeral; config.urlCache = nil; config.httpCookieStorage = nil; config.urlCredentialStorage = nil; config.httpShouldSetCookies = false; config.timeoutIntervalForRequest = 12; config.timeoutIntervalForResource = 15
+                let config = Self.configuration(for: url)
                 let queue = OperationQueue(); queue.maxConcurrentOperationCount = 1
                 let session = URLSession(configuration: config, delegate: self, delegateQueue: queue); self.session = session
                 var request = URLRequest(url: url); request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization"); request.setValue("application/json", forHTTPHeaderField: "Accept"); request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -237,22 +258,28 @@ final class MonitoringHTTPTransport: NSObject, URLSessionDataDelegate, @unchecke
     @Published private(set) var loadSucceeded = true
     @Published var selectedTarget: String? { didSet { history = [] } }
     let repository: MonitoringRepository
+    let configURL: URL
+    let installation = MonitoringInstallationModel()
+    var entries: [SSHAlias] = []
+    var resolveEntry: ((String) -> SSHAlias?)?
+    private let tunnel = MonitoringSSHTunnel()
     private var worker: Task<Void, Never>?
     private var timer: Task<Void, Never>?
     private var generation = UUID()
     private var response: MonitoringHTTPTransport?
     private var deferredHistory: String?
-    init(configURL: URL, profileID: UUID, root: URL? = nil) { repository = MonitoringRepository(configURL: configURL, profileID: profileID, root: root); reload() }
-    var hasToken: Bool { guard let endpoint = try? MonitoringEndpoint(settings.endpoint) else { return false }; return MonitoringKeyStore.has(scope: repository.scope, endpoint: endpoint) }
-    var pending: Bool { busy || worker != nil || MonitoringHTTPTransport.pending }
+    init(configURL: URL, profileID: UUID, root: URL? = nil) { self.configURL = configURL; repository = MonitoringRepository(configURL: configURL, profileID: profileID, root: root); reload() }
+    var hasToken: Bool { guard let endpoint = try? MonitoringEndpoint(settings.endpoint) else { return false }; return MonitoringKeyStore.has(scope: repository.scope, endpoint: endpoint, instanceID: settings.instanceID) }
+    var pending: Bool { busy || worker != nil || MonitoringHTTPTransport.pending || installation.busy || TunnelSession.pending }
     func reload() { guard !busy else { return }; do { settings = try repository.read(); loadSucceeded = true; error = nil } catch { loadSucceeded = false; self.error = MonitoringError.storage.localizedDescription } }
     @discardableResult func configure(endpoint input: String, token: String?, pollSeconds: Int, notifyChanges: Bool) -> Bool {
         guard !busy, loadSucceeded else { return false }
         do {
             let endpoint = try MonitoringEndpoint(input.trimmingCharacters(in: .whitespacesAndNewlines))
-            let settings = MonitoringSettings(endpoint: endpoint.url.absoluteString, pollSeconds: pollSeconds, notifyChanges: notifyChanges); try repository.validate(settings)
-            if let token, !token.isEmpty { try MonitoringKeyStore.write(token, scope: repository.scope, endpoint: endpoint) }
-            guard MonitoringKeyStore.has(scope: repository.scope, endpoint: endpoint) else { throw MonitoringError.token }
+            let preserveTunnel = endpoint.url.absoluteString == self.settings.endpoint
+            let settings = MonitoringSettings(endpoint: endpoint.url.absoluteString, pollSeconds: pollSeconds, notifyChanges: notifyChanges, sshRecordKey: preserveTunnel ? self.settings.sshRecordKey : nil, remotePort: preserveTunnel ? self.settings.remotePort : nil, instanceID: preserveTunnel ? self.settings.instanceID : nil); try repository.validate(settings)
+            if let token, !token.isEmpty { try MonitoringKeyStore.write(token, scope: repository.scope, endpoint: endpoint, instanceID: settings.instanceID) }
+            guard MonitoringKeyStore.has(scope: repository.scope, endpoint: endpoint, instanceID: settings.instanceID) else { throw MonitoringError.token }
             stop()
             try repository.write(settings)
             if self.settings.endpoint != settings.endpoint { snapshot = nil; history = []; selectedTarget = nil }
@@ -261,7 +288,17 @@ final class MonitoringHTTPTransport: NSObject, URLSessionDataDelegate, @unchecke
             return true
         } catch { self.error = error.localizedDescription; return false }
     }
-    func forgetToken() { guard !busy, let endpoint = try? MonitoringEndpoint(settings.endpoint) else { return }; stop(); do { try MonitoringKeyStore.remove(scope: repository.scope, endpoint: endpoint); error = nil } catch { self.error = error.localizedDescription } }
+    @discardableResult func configureTunnel(recordKey: String, remotePort: Int, instanceID: UUID, token: String) -> Bool {
+        guard !busy, loadSucceeded else { return false }
+        do {
+            let settings = MonitoringSettings(endpoint: "http://127.0.0.1:" + String(remotePort), pollSeconds: 60, notifyChanges: false, sshRecordKey: recordKey, remotePort: remotePort, instanceID: instanceID)
+            try repository.validate(settings)
+            try MonitoringKeyStore.write(token, scope: repository.scope, endpoint: MonitoringEndpoint(settings.endpoint), instanceID: instanceID)
+            stop(stopInstallation: false); try repository.write(settings); self.settings = settings; snapshot = nil; history = []; selectedTarget = nil; error = nil; return true
+        } catch { self.error = error.localizedDescription; return false }
+    }
+    func recordBindingChanged() { stop(); let old = worker; Task { await old?.value; reload() } }
+    func forgetToken() { guard !busy, let endpoint = try? MonitoringEndpoint(settings.endpoint) else { return }; stop(); do { try MonitoringKeyStore.remove(scope: repository.scope, endpoint: endpoint, instanceID: settings.instanceID); error = nil } catch { self.error = error.localizedDescription } }
     func startPolling() {
         guard loadSucceeded, !polling, hasToken else { return }
         polling = true; refresh()
@@ -273,14 +310,14 @@ final class MonitoringHTTPTransport: NSObject, URLSessionDataDelegate, @unchecke
             }
         }
     }
-    func stop() { polling = false; timer?.cancel(); timer = nil; deferredHistory = nil; generation = UUID(); worker?.cancel(); response?.cancel() }
-    func stopAndWait() async { stop(); let task = worker; await task?.value; while MonitoringHTTPTransport.pending { try? await Task.sleep(nanoseconds: 20_000_000) } }
+    func stop(stopInstallation: Bool = true) { polling = false; timer?.cancel(); timer = nil; deferredHistory = nil; generation = UUID(); worker?.cancel(); response?.cancel(); tunnel.stop(); if stopInstallation { installation.stop() } }
+    func stopAndWait() async { stop(); let task = worker; await task?.value; while MonitoringHTTPTransport.pending || TunnelSession.pending || installation.busy { try? await Task.sleep(nanoseconds: 20_000_000) } }
     func refresh() { fetch(historyTarget: selectedTarget) }
     func loadHistory(_ target: String) { selectedTarget = target; if busy { deferredHistory = target } else { fetch(historyTarget: target) } }
     private func fetch(historyTarget: String?) {
         guard loadSucceeded, !busy, worker == nil else { return }
         let endpoint: MonitoringEndpoint, token: String
-        do { endpoint = try MonitoringEndpoint(settings.endpoint); guard let saved = try MonitoringKeyStore.read(scope: repository.scope, endpoint: endpoint) else { throw MonitoringError.token }; token = saved } catch { self.error = error.localizedDescription; return }
+        do { endpoint = try MonitoringEndpoint(settings.endpoint); guard let saved = try MonitoringKeyStore.read(scope: repository.scope, endpoint: endpoint, instanceID: settings.instanceID) else { throw MonitoringError.token }; token = saved } catch { self.error = error.localizedDescription; return }
         busy = true; error = nil; let generation = self.generation
         worker = Task { [weak self] in
             guard let self else { return }
@@ -289,6 +326,15 @@ final class MonitoringHTTPTransport: NSObject, URLSessionDataDelegate, @unchecke
                 if self.generation == generation, let target = self.deferredHistory { self.deferredHistory = nil; self.fetch(historyTarget: target) }
             }
             do {
+                var endpoint = endpoint
+                if let key = self.settings.sshRecordKey, let port = self.settings.remotePort {
+                    let resolved: SSHAlias?
+                    if let resolve = self.resolveEntry { resolved = resolve(key) } else { resolved = self.entries.first(where: { $0.favoriteID == key }) }
+                    guard let entry = resolved, entry.canSSH else { throw ConfigError.message("SSH-запись коллектора недоступна в текущем профиле. Восстанови привязку или установи коллектор заново.") }
+                    let localPort = try await self.tunnel.start(entry: entry, config: self.configURL, remotePort: port)
+                    try Task.checkCancellation(); guard self.generation == generation else { return }
+                    endpoint = try MonitoringEndpoint("http://127.0.0.1:" + String(localPort))
+                }
                 let response = MonitoringHTTPTransport(); self.response = response
                 let snapshot = try MonitoringSnapshot.decode(try await response.get(endpoint.route("snapshot"), token: token))
                 try Task.checkCancellation(); guard self.generation == generation else { return }

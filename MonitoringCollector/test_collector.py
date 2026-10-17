@@ -63,6 +63,18 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             self.wfile.write(data)
 
 
+class ProxyTrap(http.server.BaseHTTPRequestHandler):
+    requests = 0
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        type(self).requests += 1
+        self.send_response(502)
+        self.end_headers()
+
+
 def sample():
     return {"id": 1, "target_id": "fixture", "checked_at": time.time(), "reachable": True, "latency_ms": 5, "detail": "tcp_open", "status_code": None}
 
@@ -196,8 +208,16 @@ class Tests(unittest.TestCase):
     def test_native_client(self):
         if len(sys.argv) < 2:
             self.skipTest("Pass compiled MonitoringTests executable to exercise native client")
-        result = subprocess.run([sys.argv[1], f"http://127.0.0.1:{self.port}"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
-        self.assertEqual(result.returncode, 0, result.stdout.decode() + result.stderr.decode())
+        proxy = http.server.ThreadingHTTPServer(("127.0.0.1", 0), ProxyTrap)
+        proxy.daemon_threads = True
+        thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+        thread.start()
+        try:
+            result = subprocess.run([sys.argv[1], f"http://127.0.0.1:{self.port}", f"http://127.0.0.1:{proxy.server_port}"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stdout.decode() + result.stderr.decode())
+            self.assertEqual(ProxyTrap.requests, 0, "Loopback credentials reached inherited HTTP/SOCKS/PAC proxy")
+        finally:
+            proxy.shutdown(); proxy.server_close(); thread.join()
 
 
 if __name__ == "__main__":

@@ -3,6 +3,8 @@ import SwiftUI
 struct AssistantCommandReview: Identifiable {
     var id = UUID()
     var plan: MaintenancePlan
+    var chatID: UUID?
+    var profileID: UUID?
 }
 extension AliasStore {
     func assistantModel() -> AssistantChatModel {
@@ -30,7 +32,7 @@ extension AliasStore {
             do {
                 let prepared = try SSHPasswordStore.preparedEntry(for: entry, config: config.url)
                 let workflow = MaintenanceWorkflow(name: "Время работы", steps: [MaintenanceStep(title: "Время работы сервера", command: "uptime")])
-                assistantCommandReview = AssistantCommandReview(plan: try MaintenancePlan(workflow: workflow, entries: [(prepared, title(entry))], config: config.url))
+                assistantCommandReview = AssistantCommandReview(plan: try MaintenancePlan(workflow: workflow, entries: [(prepared, title(entry))], config: config.url), chatID: model.chat.id, profileID: profiles.active)
             } catch { model.error = error.localizedDescription }
         case .scan: openScanner(entry, tool: .nmap)
         case .ssh:
@@ -53,13 +55,30 @@ extension AliasStore {
     }
     func closeAssistant() {
         assistantVisible = false; assistantExpanded = false; assistant?.stop()
+        assistantProposalReview = nil; assistantRecordDraft = nil; assistantCommandReview = nil
+        if assistantCommandTask != nil {
+            if maintenance?.executionID == assistantCommandRunID { maintenance?.stop() }
+            assistantCommandTask?.cancel(); assistantCommandTask = nil; assistantCommandRunID = nil
+        }
     }
 }
 struct AssistantHostView: View {
     let expanded: Bool
     @EnvironmentObject var store: AliasStore
     var body: some View {
-        AssistantChatPanelView(model: store.assistantModel(), expanded: expanded, onExpand: store.expandAssistant, onClose: store.closeAssistant, onAction: store.assistantAction)
+        AssistantChatPanelView(model: store.assistantModel(), expanded: expanded, onExpand: store.expandAssistant, onClose: store.closeAssistant, onAction: store.assistantAction,
+            beforePrepare: store.refreshAssistantCatalog,
+            proposalContent: { text in AnyView(AssistantProposedActionsView(text: text, applied: store.assistantAppliedActions, chatID: store.assistantModel().chat.id, onChoose: store.reviewAssistantProposal)) })
+            .safeAreaInset(edge: .bottom, spacing: 0) { AssistantCommandStatusView(model: store.maintenanceModel()) }
+            .sheet(item: $store.assistantProposalReview) { AssistantProposalReviewView(review: $0).environmentObject(store) }
+            .sheet(item: $store.assistantRecordDraft) { target in
+                RecordEditorView(kind: target.seed.kind, seed: target.seed, onSaved: { entry in store.assistantRecordCreated(entry, draft: target) }, beforeSave: {
+                    guard store.profiles.active == target.profileID, store.assistant?.chat.id == target.chatID else { throw ConfigError.message("Профиль или чат изменились. Открой предложение заново.") }
+                }).environmentObject(store)
+            }
+            .sheet(item: $store.assistantCommandReview) { target in
+                MaintenanceReviewView(plan: target.plan) { store.runAssistantCommand(target); store.assistantCommandReview = nil }
+            }
     }
 }
 struct InfrastructureRecordCreation: View {
@@ -87,5 +106,19 @@ struct InfrastructureRecordCreation: View {
             inventory.snapshots = Array(inventory.snapshots.suffix(20))
             try repository.write(inventory, for: entry.favoriteID)
         } catch { store.error = error.localizedDescription }
+    }
+}
+
+private struct AssistantCommandStatusView: View {
+    @ObservedObject var model: MaintenanceModel
+    var body: some View {
+        if model.busy {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(model.status).font(.caption).lineLimit(1)
+                Spacer(minLength: 4)
+                Button("Остановить", systemImage: "stop.fill") { model.stop() }.controlSize(.small)
+            }.padding(9).background(.bar)
+        }
     }
 }

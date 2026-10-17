@@ -25,9 +25,15 @@ import ConsoleSupport
     @Published var detachedTabs: Set<WorkspaceTab> = []
     @Published var showingPalette = false
     @Published var operationsPanel: OperationsPanel?
+    @Published var globalSearchQuery = ""
     @Published var assistantVisible = false
     @Published var assistantExpanded = false
     @Published var assistantCommandReview: AssistantCommandReview?
+    @Published var assistantProposalReview: AssistantProposalReview?
+    @Published var assistantRecordDraft: AssistantRecordDraft?
+    @Published var assistantAppliedActions = Set<String>()
+    var assistantCommandTask: Task<Void, Never>?
+    var assistantCommandRunID: UUID?
     var assistant: AssistantChatModel?
     @Published var infrastructureImport: InfrastructureImportTarget?
     var sharedCredentials: SharedCredentialVault?
@@ -548,11 +554,11 @@ import ConsoleSupport
                     Button("Настройки…") { store.showingSettings = true }.keyboardShortcut(",", modifiers: .command)
                 }
                 CommandGroup(after: .undoRedo) {
-                    Button("Отменить изменение алиаса") { store.undo() }
-                        .keyboardShortcut("z", modifiers: [.command, .option]).disabled(store.undoChange == nil)
+                    Button("Отменить изменение записи") { store.undo() }
+                        .keyboardShortcut("z", modifiers: [.command, .option]).disabled(store.undoChange == nil && store.undoRecordChange == nil)
                 }
-                CommandMenu("Работа") {
-                    ForEach(OperationsPanel.allCases) { panel in Button { store.operationsPanel = panel } label: { Label(panel.title + "…", systemImage: panel.icon) } }
+                CommandMenu("Инструменты") {
+                    ForEach(OperationsPanel.allCases.filter { $0 != .search }) { panel in Button { store.operationsPanel = panel } label: { Label(panel.title + "…", systemImage: panel.icon) } }
                     Divider()
                     Button("ИИ-помощник…", systemImage: "sparkles") { store.presentAssistant() }
                 }
@@ -575,10 +581,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         InventoryModel.stopAll()
         TopologyModel.stopAll()
         let tunnels = TunnelManager.shared
-        guard tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MaintenanceModel.pending || AssistantAPI.pending else { return .terminateNow }
+        guard tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || MaintenanceModel.pending || AssistantAPI.pending else { return .terminateNow }
         tunnels.stopAll()
         UpdateTermination.finishAfterCleanup(sender) {
-            tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MaintenanceModel.pending || AssistantAPI.pending
+            tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || MaintenanceModel.pending || AssistantAPI.pending
         }
         return .terminateLater
     }
@@ -710,16 +716,43 @@ struct MainView: View {
     }
     @ToolbarContentBuilder private var sidebarToolbar: some ToolbarContent {
         if #available(macOS 26.0, *) {
-            ToolbarItem(id: "sidebarVisibility", placement: .navigation) { sidebarButton }
+            ToolbarItem(id: "sidebarAndSearch", placement: .navigation) { HStack(spacing: 12) { sidebarButton; globalSearchField } }
                 .sharedBackgroundVisibility(.hidden)
         } else {
-            ToolbarItem(id: "sidebarVisibility", placement: .navigation) { sidebarButton }
+            ToolbarItem(id: "sidebarAndSearch", placement: .navigation) { HStack(spacing: 12) { sidebarButton; globalSearchField } }
         }
     }
+    private var globalSearchField: some View { ToolbarSearchField().environmentObject(store) }
     private func toolbarButton(_ title: String, symbol: String, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 17)).frame(width: 28, height: 28).contentShape(Rectangle())
         }.buttonStyle(.plain).help(help).accessibilityLabel(title)
+    }
+    private var toolsMenuActions: [ToolbarMenuAction] {
+        var items: [ToolbarMenuAction] = [
+            .init(title: "Профили…", symbol: "person.crop.rectangle.stack", action: { store.showingProfiles = true }),
+            .init(title: "Библиотека команд…", symbol: "books.vertical", action: { store.showingCommandLibrary = true }),
+            .init(title: "Резервное копирование…", symbol: "externaldrive", action: { store.showingBackup = true }),
+            .init(title: "Шаблоны записей…", symbol: "square.stack", action: { store.showingTemplates = true }),
+            .init(title: "Статус доступности…", symbol: "waveform.path.ecg", action: { store.showingAvailability = true }),
+            .divider,
+            .init(title: "Сетевые инструменты…", symbol: "wrench.and.screwdriver", action: { store.openScanner() }),
+            .init(title: "Сетевые карты…", symbol: "point.3.connected.trianglepath.dotted", action: { store.openTopology() })
+        ]
+        items.append(.divider)
+        items += OperationsPanel.allCases.filter { $0 != .search }.map { panel in ToolbarMenuAction(title: panel.title + "…", symbol: panel.icon, action: { store.operationsPanel = panel }) }
+        items.append(.init(title: "ИИ-помощник…", symbol: "sparkles", action: { store.presentAssistant() }))
+        items += [
+            .divider,
+            .init(title: "Создать SSH-ключ…", symbol: "key.fill", action: { store.generatingKey = true }),
+            .init(title: "SSH-ключи…", symbol: "key.horizontal", action: { store.showingKeys = true }),
+            .init(title: "История подключений…", symbol: "clock.arrow.circlepath", action: { store.showingHistory = true }),
+            .init(title: "SSH-туннели…", symbol: "arrow.left.arrow.right", action: { store.showingTunnels = true }),
+            .divider,
+            .init(title: "Импорт записей…", symbol: "square.and.arrow.down", action: { store.chooseImport() }),
+            .init(title: "Экспорт записей…", symbol: "square.and.arrow.up", enabled: !store.aliases.isEmpty, action: { store.export(entries: store.ordered) })
+        ]
+        return items
     }
     private var filterTitle: String {
         switch store.groupFilter {
@@ -796,6 +829,12 @@ struct MainView: View {
             WorkspaceView()
                 .inspector(isPresented: $store.assistantVisible) {
                     AssistantHostView(expanded: false).environmentObject(store).inspectorColumnWidth(min: 360, ideal: 420, max: 560)
+                        .overlay(alignment: .leading) {
+                            ZStack {
+                                Rectangle().fill(Color.secondary.opacity(0.22)).frame(width: 1)
+                                Capsule().fill(Color.secondary.opacity(0.5)).frame(width: 2, height: 28)
+                            }.frame(width: 4).allowsHitTesting(false).accessibilityHidden(true)
+                        }
                 }
                 .onChange(of: store.selected) { _, _ in store.refreshAssistantContext() }
                 .onChange(of: store.assistantVisible) { _, visible in if !visible && !store.assistantExpanded { store.assistant?.stop() } }
@@ -805,30 +844,13 @@ struct MainView: View {
         .background(SidebarProbe(controller: sidebarController).frame(width: 0, height: 0))
         .toolbar {
             sidebarToolbar
+            if #available(macOS 26.0, *) { ToolbarSpacer(.flexible, placement: .primaryAction) }
             // A single fixed-size item avoids AppKit regrouping buttons during split-view transitions.
-            ToolbarItem(id: "mainActions", placement: .primaryAction) {
+            ToolbarItem(id: "trailingActions", placement: .primaryAction) {
                 HStack(spacing: 8) {
                     toolbarButton("Обновить", symbol: "arrow.clockwise", help: "Обновить · ⌘R") { store.reload() }
                     toolbarButton("Палитра действий", symbol: "command", help: "Палитра действий · ⌘P") { store.showingPalette = true }
-                    Menu {
-                        Button("Профили…", systemImage: "person.crop.rectangle.stack") { store.showingProfiles = true }
-                        Button("Библиотека команд…", systemImage: "books.vertical") { store.showingCommandLibrary = true }
-                        Button("Резервное копирование…", systemImage: "externaldrive") { store.showingBackup = true }
-                        Button("Шаблоны записей…", systemImage: "square.stack") { store.showingTemplates = true }
-                        Button("Статус доступности…", systemImage: "waveform.path.ecg") { store.showingAvailability = true }
-                        Divider()
-                        Button("Инструменты…", systemImage: "wrench.and.screwdriver") { store.openScanner() }
-                        Button("Сетевая карта…", systemImage: "point.3.connected.trianglepath.dotted") { store.openTopology() }
-                        Divider()
-                        Button("Создать SSH-ключ…", systemImage: "key.fill") { store.generatingKey = true }
-                        Button("SSH-ключи…", systemImage: "key.horizontal") { store.showingKeys = true }
-                        Button("История подключений…", systemImage: "clock.arrow.circlepath") { store.showingHistory = true }
-                        Button("SSH-туннели…", systemImage: "arrow.left.arrow.right") { store.showingTunnels = true }
-                        Divider()
-                        Button("Импорт записей…", systemImage: "square.and.arrow.down") { store.chooseImport() }
-                        Button("Экспорт записей…", systemImage: "square.and.arrow.up") { store.export(entries: store.ordered) }.disabled(store.aliases.isEmpty)
-                    } label: { Image(systemName: "wrench.and.screwdriver").frame(width: 26, height: 26) }
-                    .menuStyle(.borderlessButton).menuIndicator(.hidden).help("Инструменты").accessibilityLabel("Инструменты")
+                    ToolbarActionsMenu(actions: toolsMenuActions).frame(width: 28, height: 28)
                     toolbarButton("Сетевые карты", symbol: "point.3.connected.trianglepath.dotted", help: "Сетевые карты · ПКМ — выбрать карту") { store.openTopology() }
                         .contextMenu { ForEach(store.topologyMapIndex) { map in Button(map.name) { store.openTopology(mapID: map.id) } } }
                         .onAppear { store.reloadTopologyMapIndex() }
@@ -838,17 +860,6 @@ struct MainView: View {
                     toolbarButton("Настройки", symbol: "gearshape", help: "Настройки · ⌘,") { store.showingSettings = true }
                     toolbarButton("Новая запись", symbol: "plus", help: "Новая запись · ⌘N") { store.newRecord() }
                 }.padding(.horizontal, 10).fixedSize(horizontal: true, vertical: true)
-            }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let notice = store.notice {
-                HStack {
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                    Text(notice).font(.callout).lineLimit(2)
-                    Spacer()
-                    if store.undoChange != nil || store.undoRecordChange != nil { Button("Отменить изменение") { store.undo() } }
-                    Button { store.notice = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
-                }.padding(12).background(.regularMaterial)
             }
         }
         .sheet(item: $store.stylingFolder) { FolderAppearanceView(path: $0.path).environmentObject(store) }
@@ -868,13 +879,6 @@ struct MainView: View {
         .sheet(isPresented: $store.showingAvailability) { AvailabilityView(monitor: store.availability).environmentObject(store) }
         .sheet(item: $store.operationsPanel) { OperationsPanelView(panel: $0).environmentObject(store) }
         .sheet(isPresented: $store.assistantExpanded, onDismiss: { if !store.assistantVisible { store.assistant?.stop() } }) { AssistantHostView(expanded: true).environmentObject(store).frame(width: 900, height: 720) }
-        .sheet(item: $store.assistantCommandReview) { target in
-            MaintenanceReviewView(plan: target.plan) {
-                store.maintenanceModel().run(target.plan, current: store.profileEntries, config: store.config.url)
-                store.assistantCommandReview = nil
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { store.operationsPanel = .maintenance }
-            }
-        }
         .sheet(item: $store.infrastructureImport) { InfrastructureRecordCreation(value: $0.value).environmentObject(store) }
         .sheet(isPresented: $store.showingSettings) { AppSettingsView().environmentObject(store) }
         .sheet(isPresented: $store.showingKeys) { KeyManagerView().environmentObject(store) }
@@ -905,6 +909,7 @@ struct MainView: View {
         .onChange(of: store.groupFilter) { _, _ in
             if !store.filtered.contains(where: { $0.id == store.selected }) { store.selected = store.filtered.first?.id }
         }
+        .onChange(of: store.profiles.active) { _, _ in store.globalSearchQuery = "" }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             if !store.creatingAlias && store.editingAlias == nil && store.duplicatingAlias == nil && store.recordEditor == nil { store.reload() }
         }

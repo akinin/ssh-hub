@@ -179,6 +179,7 @@ struct RecordEditorView: View {
     var back: (() -> Void)?
     var seed: LocalConnectionRecord?
     var onSaved: ((SSHAlias) -> Void)?
+    var beforeSave: (() throws -> Void)?
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) private var dismiss
     @State private var record = LocalConnectionRecord()
@@ -383,7 +384,7 @@ struct RecordEditorView: View {
                 appearance = store.appearance(template); appearance.name = store.title(template) + " · копия"; group = store.group(template)
             }
             if original == nil, let seed {
-                appearance.name = seed.title; record.host = seed.host; record.port = seed.port; record.website = seed.website
+                appearance.name = seed.title; record.host = seed.host; record.user = seed.user; record.port = seed.port; record.website = seed.website
             }
             ready = true
         } catch { self.error = error.localizedDescription }
@@ -399,6 +400,7 @@ struct RecordEditorView: View {
         var recordCommitted = false
         var ssh: ConfigChange?, credentialChanged = false, previousPassword: String?
         do {
+            try beforeSave?()
             let changePassword = removePassword || (record.authentication.usesPassword && ((!keepPassword && reusePassword) || (keepPassword && !password.isEmpty)))
             if changePassword {
                 previousPassword = try SSHPasswordStore.storedPassword(for: target, config: store.config.url)

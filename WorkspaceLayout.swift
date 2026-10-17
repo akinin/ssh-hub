@@ -1,6 +1,6 @@
 import Foundation
 
-enum WorkspaceMetrics { static let footerHeight: CGFloat = 44 }
+enum WorkspaceMetrics { static let footerHeight: CGFloat = 44; static let tabHeaderHeight: CGFloat = 36 }
 
 enum EntryDetailSection: String, Codable { case overview, documentation, attachments, scanner, sftp, connection, logs, inventory, winbox, topology
     var title: String { switch self { case .overview: return "Панель"; case .documentation: return "Документация"; case .attachments: return "Вложения"; case .sftp: return "SFTP"; case .scanner: return "Инструменты"; case .connection: return "Подключение"; case .logs: return "Логи"; case .inventory: return "Инвентаризация"; case .winbox: return "WinBox"; case .topology: return "Сетевая карта" } }

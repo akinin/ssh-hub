@@ -168,6 +168,7 @@ typealias MaintenanceStepRunner = (String, SSHAlias, URL, [String: String], Time
     @Published var status = ""
     @Published var error: String?
     @Published var readOnly = false
+    private(set) var executionID: UUID?
     private let file: HubFeatureFile
     private let runStep: MaintenanceStepRunner?
     private var task: Task<Void, Never>?
@@ -197,6 +198,7 @@ typealias MaintenanceStepRunner = (String, SSHAlias, URL, [String: String], Time
                 guard let latest = current.first(where: { $0.favoriteID == target.id }), MaintenancePlan.fingerprint(try SSHPasswordStore.preparedEntry(for: latest, config: config)) == target.fingerprint else { throw ConfigError.message("Параметры записи или общих учётных данных изменились. Просмотри план заново.") }
             }
         } catch { self.error = error.localizedDescription; status = "План требует проверки"; return }
+        executionID = UUID()
         busy = true; results = []; error = nil; Self.running.insert(instanceID)
         task = Task {
             var completionStatus = "Завершено"

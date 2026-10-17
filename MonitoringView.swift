@@ -4,10 +4,13 @@ import Darwin
 
 struct MonitoringDashboardView: View {
     @ObservedObject var model: MonitoringModel
+    var entries: [SSHAlias] = []
+    var currentEntries: (() -> [SSHAlias])? = nil
     @State private var configuring = false
     @State private var query = ""
     @State private var fileError: String?
     @State private var savedCollector: URL?
+    @State private var installing = false
     @Environment(\.dismiss) private var dismiss
     private var targets: [MonitoringTarget] { (model.snapshot?.targets ?? []).filter { query.isEmpty || ($0.name + " " + $0.id + " " + $0.kind.title).localizedCaseInsensitiveContains(query) } }
     var body: some View {
@@ -42,6 +45,8 @@ struct MonitoringDashboardView: View {
                 Text(model.polling ? "Обновление с сервера каждые \(model.settings.pollSeconds) с. Закрытие окна останавливает обновление на Mac." : "Обновление на Mac остановлено. Серверный сбор работает независимо от приложения.")
             }.font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(10)
         }.sheet(isPresented: $configuring) { MonitoringConfigurationView(model: model) }
+        .sheet(isPresented: $installing) { MonitoringInstallationView(monitoring: model, entries: entries, currentEntries: currentEntries ?? { entries }) }
+        .onAppear { model.entries = entries }
         .onDisappear { model.stop() }
         .frame(width: 920, height: 680, alignment: .top)
     }
@@ -53,6 +58,7 @@ struct MonitoringDashboardView: View {
             else { Button("Подключиться", systemImage: "play.fill") { model.startPolling() }.disabled(model.busy || !model.hasToken || !model.loadSucceeded) }
             Button { configuring = true } label: { Image(systemName: "gearshape") }.help("Настройки коллектора").accessibilityLabel("Настройки коллектора").disabled(model.busy || !model.loadSucceeded)
             Button("Сохранить коллектор…", systemImage: "square.and.arrow.down") { saveCollector() }
+            Button("Установить на сервер…", systemImage: "arrow.up.doc") { installing = true }.disabled(model.busy || model.installation.busy || !model.loadSucceeded)
             Button("Готово") { model.stop(); dismiss() }.keyboardShortcut(.cancelAction)
         }.controlSize(.small)
     }
@@ -60,7 +66,7 @@ struct MonitoringDashboardView: View {
         let panel = NSOpenPanel(); panel.title = "Папка для серверного коллектора"; panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false; panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let parent = panel.url else { return }
         let destination = parent.appendingPathComponent("SSH-Hub-Monitor-" + String(UUID().uuidString.prefix(8)), isDirectory: true)
-        let names = ["collector.py", "config.example.json", "ssh-hub-monitor.service", "Caddyfile.example", "README.md"]
+        let names = ["collector.py", "config.example.json", "ssh-hub-monitor.service", "Caddyfile.example", "README.md", "install.py"]
         var created = false
         do {
             guard let resources = Bundle.main.resourceURL?.appendingPathComponent("MonitoringCollector", isDirectory: true), names.allSatisfy({ FileManager.default.fileExists(atPath: resources.appendingPathComponent($0).path) }) else { throw MonitoringError.collectorMissing }

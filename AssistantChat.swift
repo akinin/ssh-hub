@@ -6,6 +6,7 @@ struct AssistantChatTurn: Codable, Identifiable, Equatable {
     var date = Date()
     var role: String
     var content: String
+    var allowsProposals: Bool? = nil
 }
 struct AssistantChatDocument: Codable, Identifiable, Equatable {
     var id = UUID()
@@ -23,7 +24,7 @@ struct AssistantChatDocument: Codable, Identifiable, Equatable {
                   chat.recordKey.map({ $0.utf8.count <= 8192 && singleLine($0) }) ?? true,
                   chat.recordTitle.map({ $0.utf8.count <= 200 && singleLine($0) }) ?? true,
                   chat.turns.count <= 32, Set(chat.turns.map(\.id)).count == chat.turns.count,
-                  chat.turns.allSatisfy({ ["user", "assistant"].contains($0.role) && $0.content.utf8.count <= 100_000 && !$0.content.contains("\0") && $0.date.timeIntervalSince1970.isFinite }) else { throw ConfigError.message("Некорректный сохранённый чат.") }
+                  chat.turns.allSatisfy({ ["user", "assistant"].contains($0.role) && ($0.allowsProposals != true || $0.role == "assistant") && $0.content.utf8.count <= 100_000 && !$0.content.contains("\0") && $0.date.timeIntervalSince1970.isFinite }) else { throw ConfigError.message("Некорректный сохранённый чат.") }
             let count = chat.turns.reduce(0, { $0 + $1.content.utf8.count })
             guard count <= 100_000 else { throw ConfigError.message("Один сохранённый чат — до 100 КБ. Начни новый чат.") }; total += count
         }
@@ -36,13 +37,22 @@ struct AssistantChatPreview: Identifiable {
     var material: String
     let history: [AssistantMessage]
     let settings: AssistantSettings
+    var includesRecordCatalog = false
+    var allProfiles = false
 }
 @MainActor final class AssistantChatModel: ObservableObject {
     @Published var chat = AssistantChatDocument()
     @Published var chats: [AssistantChatDocument] = []
     @Published var draft = ""
     @Published var material = ""
-    @Published var settings = AssistantSettings()
+    @Published var settings = AssistantSettings() {
+        didSet {
+            guard settings != oldValue else { return }
+            // A reviewed request belongs to one immutable connection snapshot.
+            stop()
+            if settings.selectedProvider != oldValue.selectedProvider || settings.endpointString != oldValue.endpointString { models = [] }
+        }
+    }
     @Published var models: [String] = []
     @Published var status = ""
     @Published var busy = false
@@ -51,8 +61,13 @@ struct AssistantChatPreview: Identifiable {
     @Published var readOnly = false
     @Published var error: String?
     @Published var preview: AssistantChatPreview?
+    var recordCatalog = "" { didSet { if recordCatalog != oldValue { preview = nil } } }
+    @Published var includeRecordCatalog = true { didSet { if includeRecordCatalog != oldValue { stop() } } }
+    @Published var allProfiles = false { didSet { if allProfiles != oldValue { stop() } } }
     private let settingsFile: HubFeatureFile
     private let chatsFile: HubFeatureFile
+    private let readKey: (String) throws -> String?
+    private let writeKey: (String?, String) throws -> Void
     private var task: Task<Void, Never>?
     private var modelsTask: Task<Void, Never>?
     private var contextKey: String?
@@ -63,11 +78,15 @@ struct AssistantChatPreview: Identifiable {
     var contextTitle: String? { chat.recordTitle }
     var isSaved: Bool { savedChats.contains { $0 == chat } }
     var canReview: Bool { !busy && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.utf8.count <= 4096 && material.utf8.count <= 100_000 }
-    init(config: URL, profile: UUID, root: URL? = nil) {
+    init(config: URL, profile: UUID, root: URL? = nil,
+         keyReader: @escaping (String) throws -> String? = AssistantKeychain.read,
+         keyWriter: @escaping (String?, String) throws -> Void = { try AssistantKeychain.set($0, account: $1) }) {
         settingsFile = HubFeatureFile(feature: "Assistant", config: config, profile: profile, root: root)
         chatsFile = HubFeatureFile(feature: "AssistantChats", config: config, profile: profile, root: root)
+        readKey = keyReader; writeKey = keyWriter
         do {
-            settings = try settingsFile.load(AssistantSettings.self, fallback: .init()); try settings.validate()
+            var loadedSettings = try settingsFile.load(AssistantSettings.self, fallback: .init()); try loadedSettings.validate()
+            loadedSettings.migrateModelProfiles(); settings = loadedSettings
             let loaded = try chatsFile.load([AssistantChatDocument].self, fallback: [])
             try AssistantChatDocument.validate(loaded); savedChats = loaded; chats = loaded
             refreshKeyStatus()
@@ -115,36 +134,52 @@ struct AssistantChatPreview: Identifiable {
         catch { self.error = error.localizedDescription }
     }
     func refreshKeyStatus() {
-        do { hasKey = try AssistantKeychain.read(settings.keychainAccount(scope: settingsFile.url.lastPathComponent)) != nil }
+        do { hasKey = try readKey(settings.keychainAccount(scope: settingsFile.url.lastPathComponent)) != nil }
         catch { hasKey = false; self.error = error.localizedDescription }
     }
     func saveSettings(key: String, removeKey: Bool = false) {
-        guard !readOnly, !busy else { return }
+        _ = applySettings(settings, key: key, removeKey: removeKey)
+    }
+    @discardableResult func applySettings(_ proposed: AssistantSettings, key: String, removeKey: Bool = false) -> Bool {
+        guard !readOnly, !busy else { return false }
         do {
-            try settings.validate()
-            let account = settings.keychainAccount(scope: settingsFile.url.lastPathComponent)
-            if removeKey { try AssistantKeychain.set(nil, account: account) } else if !key.isEmpty { try AssistantKeychain.set(key, account: account) }
-            try settingsFile.write(settings); refreshKeyStatus(); models = []; error = nil
+            var value = proposed; value.migrateModelProfiles(); value.updateSelectedModelProfile(); try value.validate()
+            let account = value.keychainAccount(scope: settingsFile.url.lastPathComponent)
+            if removeKey { try writeKey(nil, account) } else if !key.isEmpty { try writeKey(key, account) }
+            try settingsFile.write(value); settings = value; stop(); models = []; error = nil; refreshKeyStatus()
+            return error == nil
+        } catch { self.error = error.localizedDescription; return false }
+    }
+    func selectModelProfile(_ id: UUID) {
+        guard !readOnly, settings.selectedModelProfileID != id else { return }
+        do {
+            var value = settings; value.updateSelectedModelProfile(); try value.selectModelProfile(id); try value.validate()
+            try settingsFile.write(value); settings = value; models = []; error = nil; refreshKeyStatus()
         } catch { self.error = error.localizedDescription }
     }
     func fetchModels() {
         guard !busy, !loadingModels else { return }
         do {
             try settings.validate(); loadingModels = true; error = nil
-            let selected = settings, key = try AssistantKeychain.read(settings.keychainAccount(scope: settingsFile.url.lastPathComponent))
+            let selected = settings, key = try readKey(settings.keychainAccount(scope: settingsFile.url.lastPathComponent))
             modelsTask = Task {
                 defer { loadingModels = false; modelsTask = nil }
                 do {
                     let values = try await AssistantAPI.models(settings: selected, key: key)
                     guard !Task.isCancelled, signature(selected) == signature(settings) else { return }; models = values
-                    if settings.model.isEmpty, let first = values.first { settings.model = first }
-                } catch is CancellationError {} catch { self.error = error.localizedDescription }
+                    if settings.model.isEmpty, let first = values.first { var value = settings; value.model = first; value.updateSelectedModelProfile(); settings = value }
+                } catch is CancellationError {} catch { if !Task.isCancelled, signature(selected) == signature(settings) { self.error = error.localizedDescription } }
             }
         } catch { loadingModels = false; self.error = error.localizedDescription }
     }
     func prepare(hideAddresses: Bool = false) {
         guard canReview else { return }
-        let question = AssistantRedaction.apply(draft, addresses: hideAddresses), material = AssistantRedaction.apply(material, addresses: hideAddresses)
+        let includesCatalog = includeRecordCatalog && !recordCatalog.isEmpty
+        guard !includesCatalog || recordCatalog.utf8.count <= 40_000 else { preview = nil; error = "Список записей превышает 40 КБ. Выбери текущий профиль или отключи список записей."; return }
+        let combined = material + (includesCatalog ? (material.isEmpty ? "" : "\n\n") + "Список записей SSH Hub (только метаданные, " + (allProfiles ? "все профили" : "текущий профиль") + "):\n" + recordCatalog : "")
+        // Account for the entire reviewed material before redaction's defensive cap.
+        guard combined.utf8.count <= 100_000 else { preview = nil; error = "Материал и список записей вместе — до 100 КБ."; return }
+        let question = AssistantRedaction.apply(draft, addresses: hideAddresses), material = AssistantRedaction.apply(combined, addresses: hideAddresses)
         let currentBytes = question.utf8.count + material.utf8.count + (material.isEmpty ? 0 : "\n\nМатериал для анализа:\n".utf8.count)
         guard currentBytes <= 100_000 else { error = "Вопрос и материал вместе — до 100 КБ."; return }
         var history: [AssistantMessage] = [], budget = 100_000 - currentBytes
@@ -153,7 +188,7 @@ struct AssistantChatPreview: Identifiable {
             guard content.utf8.count <= budget else { break }
             history.insert(AssistantMessage(role: turn.role, content: content), at: 0); budget -= content.utf8.count
         }
-        preview = AssistantChatPreview(question: question, material: material, history: history, settings: settings)
+        preview = AssistantChatPreview(question: question, material: material, history: history, settings: settings, includesRecordCatalog: includesCatalog, allProfiles: allProfiles)
         error = nil
     }
     func sendReviewed(_ value: AssistantChatPreview) {
@@ -161,7 +196,7 @@ struct AssistantChatPreview: Identifiable {
         do {
             guard settings.enabled, !readOnly, signature(value.settings) == signature(settings) else { throw ConfigError.message("Включи помощника и просмотри запрос после изменения настроек.") }
             let body = try AssistantAPI.request(settings: value.settings, question: value.question, text: value.material, history: value.history)
-            let key = try AssistantKeychain.read(value.settings.keychainAccount(scope: settingsFile.url.lastPathComponent))
+            let key = try readKey(value.settings.keychainAccount(scope: settingsFile.url.lastPathComponent))
             guard !value.settings.needsKey || key?.isEmpty == false else { throw ConfigError.message("Введи ключ API выбранного провайдера.") }
             let token = chat.id
             preview = nil; busy = true; status = "Помощник готовит ответ…"; error = nil
@@ -173,9 +208,9 @@ struct AssistantChatPreview: Identifiable {
                 do {
                     let response = try await AssistantAPI.send(body, key: key, settings: value.settings)
                     guard !Task.isCancelled, chat.id == token else { return }
-                    chat.turns.append(AssistantChatTurn(role: "assistant", content: AssistantRedaction.apply(response)))
+                    chat.turns.append(AssistantChatTurn(role: "assistant", content: AssistantRedaction.apply(response), allowsProposals: true))
                     chat.turns = Array(chat.turns.suffix(32))
-                } catch is CancellationError {} catch { if chat.id == token { self.error = error.localizedDescription } }
+                } catch is CancellationError {} catch { if !Task.isCancelled, chat.id == token, signature(value.settings) == signature(settings) { self.error = error.localizedDescription } }
             }
         } catch { self.error = error.localizedDescription }
     }
@@ -213,5 +248,5 @@ struct AssistantChatPreview: Identifiable {
         return title.isEmpty ? "Новый чат" : title
     }
     func stop() { preview = nil; task?.cancel(); modelsTask?.cancel() }
-    private func signature(_ value: AssistantSettings) -> String { [value.enabled ? "on" : "off", value.selectedProvider.rawValue, value.endpointString, value.model].joined(separator: "\0") }
+    private func signature(_ value: AssistantSettings) -> String { [value.enabled ? "on" : "off", value.selectedModelProfileID?.uuidString ?? "", value.selectedProvider.rawValue, value.endpointString, value.model].joined(separator: "\0") }
 }

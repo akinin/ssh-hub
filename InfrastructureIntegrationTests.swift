@@ -36,7 +36,45 @@ import Darwin
         try check(try InfrastructureKeyStore.binding(canonical) != InfrastructureKeyStore.binding(canonical2), "token identity changes binding")
         for invalid in ["", "token\nheader", "token with spaces", "ключ", String(repeating: "a", count: 4097)] { try rejected({ try InfrastructureAPIClient.validateKey(invalid) }, "token format bounded") }
 
+        let legacyData = try JSONEncoder().encode(settings)
+        let legacy = try JSONDecoder().decode(InfrastructureConnection.self, from: legacyData)
+        try check(legacy.unifiAPIPath == nil && legacy.unifiSiteID == nil && legacy.username == nil, "old integration metadata remains readable")
+        try check(try InfrastructureKeyStore.binding(settings) == settings.id.uuidString + "\nproxmox\nhttps://pve.example.test:8006\nreader@pve!hub", "existing token binding unchanged")
+        var unifi = InfrastructureConnection(); unifi.provider = .unifi; unifi.title = "UniFi"; unifi.baseURL = "https://unifi.example.test"
+        try check(unifi.validation == nil && unifi.effectiveUniFiAPIPath == "/proxy/network/integration/v1", "UniFi starts without a chosen site")
+        var otherSite = unifi; otherSite.unifiSiteID = "11111111-1111-4111-8111-111111111111"
+        try check(try InfrastructureKeyStore.binding(unifi) == InfrastructureKeyStore.binding(otherSite), "site selection preserves same controller credential")
+        otherSite.unifiAPIPath = "/integration/v1"
+        try check(try InfrastructureKeyStore.binding(unifi) != InfrastructureKeyStore.binding(otherSite), "UniFi API path isolates key")
+        otherSite.unifiAPIPath = "/unsafe/private"; try rejected({ _ = try InfrastructureEndpoint(otherSite) }, "UniFi unsupported credential path rejected")
+        var router = InfrastructureConnection(); router.provider = .mikrotik; router.title = "Router"; router.baseURL = "https://router.example.test"; router.username = "reader"
+        try check(router.validation == nil, "MikroTik metadata valid")
+        try InfrastructureAPIClient.validateCredential("пароль с пробелами", for: router)
+        try rejected({ try InfrastructureAPIClient.validateCredential("bad\npassword", for: router) }, "MikroTik password newline rejected")
+        var otherUser = router; otherUser.username = "other"
+        try check(try InfrastructureKeyStore.binding(router) != InfrastructureKeyStore.binding(otherUser), "MikroTik user changes secret binding")
+        otherUser.username = "bad:user"; try check(otherUser.validation != nil, "Basic username colon rejected")
+        router.baseURL += "/rest"; try rejected({ _ = try InfrastructureEndpoint(router) }, "Router base path cannot duplicate REST or capture credentials")
+
         let date = Date(timeIntervalSince1970: 100)
+        let siteID = "11111111-1111-4111-8111-111111111111", deviceID = "22222222-2222-4222-8222-222222222222", clientID = "33333333-3333-4333-8333-333333333333", networkID = "44444444-4444-4444-8444-444444444444"
+        let devices: [[String: Any]] = [["id": deviceID, "name": "USW Flex", "features": ["switching"], "ipAddress": "192.0.2.10", "macAddress": "aa:bb:cc:dd:ee:01", "state": "ONLINE", "model": "USW Flex", "firmwareVersion": "7.2.1"]]
+        var detail = devices[0]; detail["features"] = ["gateway": NSNull(), "switching": [:]]; detail["interfaces"] = ["ports": [["idx": 1, "state": "UP", "speedMbps": 1000]]]; detail["password"] = "never-copy-unifi-secret"
+        let clients: [[String: Any]] = [["id": clientID, "name": "Workstation", "ipAddress": "192.0.2.20", "type": "WIRED"]]
+        let networks: [[String: Any]] = [["id": networkID, "name": "Servers", "vlanId": 20, "enabled": true, "ipv4Configuration": ["hostIpAddress": "192.0.2.1", "prefixLength": 24]]]
+        let unifiRecords = try InfrastructureParser.unifi(devices: devices, details: [deviceID: detail], clients: clients, networks: networks, siteID: siteID, siteName: "Lab", source: "https://unifi.example.test", date: date)
+        try check(unifiRecords.count == 2 && unifiRecords[0].category == "Коммутатор" && unifiRecords[0].facts[.interfaces].contains("1000 Мбит/с"), "UniFi device roles and reported port speed")
+        try check(unifiRecords[1].facts[.interfaces].contains("VLAN 20") && unifiRecords[1].facts[.interfaces].contains("предположительно"), "UniFi subnet membership marked inferred")
+        try check(!String(decoding: try JSONEncoder().encode(unifiRecords[0].facts), as: UTF8.self).contains("never-copy"), "UniFi unrelated secrets omitted")
+        var unknown = clients[0]; unknown["ipAddress"] = "not-an-IP"
+        let unknownRecords = try InfrastructureParser.unifi(devices: [], details: [:], clients: [unknown], networks: [], siteID: siteID, siteName: "Lab", source: "source", date: date)
+        try check(unknownRecords[0].draft.kind == .information && unknownRecords[0].address.isEmpty, "UniFi missing IP creates information draft")
+        try rejected({ _ = try InfrastructureParser.unifi(devices: devices + devices, details: [:], clients: [], networks: [], siteID: siteID, siteName: "Lab", source: "source", date: date) }, "UniFi duplicate device ID rejected")
+        let routerRecords = try InfrastructureParser.mikrotik(resource: [["version": "7.18", "board-name": "hAP", "cpu": "ARM", "cpu-count": "4", "total-memory": "1073741824", "uptime": "1d"]], identity: [["name": "router-lab"]], board: [["model": "C52", "serial-number": "fixture-serial"]], interfaces: [["name": "ether1", "type": "ether", "mac-address": "aa:bb:cc:dd:ee:01", "running": "true", "actual-mtu": "1500"]], addresses: [["address": "192.0.2.1/24", "interface": "ether1"]], neighbors: [["identity": "neighbor", "address": "192.0.2.20", "mac-address": "aa:bb:cc:dd:ee:02", "platform": "MikroTik", "board": "hAP"]], leases: [["address": "192.0.2.20", "active-address": "", "mac-address": "AA:BB:CC:DD:EE:02", "active-mac-address": "", "status": "bound", "host-name": "neighbor"]], vlans: [["name": "server-vlan", "vlan-id": "20", "interface": "ether1"]], controllerHost: "router.example.test", source: "https://router.example.test", date: date)
+        try check(routerRecords.count == 2 && routerRecords[0].address == "router.example.test" && routerRecords[0].facts[.memory] == "1.00 GiB", "RouterOS hardware facts and neighbor/lease merge")
+        try check(routerRecords[1].status.contains("DHCP: bound") && routerRecords[0].facts[.interfaces].contains("VLAN 20"), "RouterOS lease and VLAN facts")
+        try check(!routerRecords[0].facts[.interfaces].contains("1500 Мбит"), "MTU never mistaken for link speed")
+
         let pve = try object("""
         {"data":[{"id":"node/pve1","node":"pve1","type":"node","status":"online","maxcpu":8,"maxmem":17179869184},{"id":"qemu/100","vmid":100,"node":"pve1","name":"VM demo","type":"qemu","status":"running","maxcpu":2,"maxmem":2147483648,"maxdisk":21474836480,"cpu":0.2,"uptime":99},{"id":"lxc/101","vmid":101,"node":"pve1","name":"LXC demo","type":"lxc","status":"stopped"},{"type":"storage","node":"pve1","id":"local"}]}
         """)
@@ -119,6 +157,29 @@ import Darwin
             let client = try InfrastructureAPIClient(connection: fixture, key: "fixture-token-only", allowLoopbackHTTP: true)
             do { _ = try await client.collect(); try check(false, "network failure expected") }
             catch let error as InfrastructureError { try check(error == expected, "bounded error mapping for " + suffix + ": " + String(describing: error)) }
+        }
+        var unifi = InfrastructureConnection(); unifi.provider = .unifi; unifi.title = "UniFi fixture"; unifi.baseURL = base
+        let unifiClient = try InfrastructureAPIClient(connection: unifi, key: "fixture-unifi-key", allowLoopbackHTTP: true)
+        let sites = try await unifiClient.sites(); try check(sites.count == 1, "UniFi explicit site list")
+        unifi.unifiSiteID = sites[0].id
+        let uniInventory = try await InfrastructureAPIClient(connection: unifi, key: "fixture-unifi-key", allowLoopbackHTTP: true).collect()
+        try check(uniInventory.records.count == 2 && uniInventory.records[1].facts[.interfaces].contains("VLAN 20"), "UniFi owned fixture devices, clients, and VLANs")
+        try check(!uniInventory.records.contains { String(decoding: (try? JSONEncoder().encode($0.facts)) ?? Data(), as: UTF8.self).contains("fixture-unifi-key") }, "UniFi key echo redacted")
+        let partial = try await InfrastructureAPIClient(connection: unifi, key: "partial-unifi-key", allowLoopbackHTTP: true).collect()
+        try check(partial.records.count == 1 && partial.warnings.contains { $0.contains("403") }, "UniFi limited client permissions preserve device preview")
+        var router = InfrastructureConnection(); router.provider = .mikrotik; router.title = "Router fixture"; router.baseURL = base; router.username = "fixture-reader"
+        let routerInventory = try await InfrastructureAPIClient(connection: router, key: "fixture password Ю", allowLoopbackHTTP: true).collect()
+        try check(routerInventory.records.count == 2 && routerInventory.records[0].facts[.serial] == "[Учётные данные скрыты]", "MikroTik GET .proplist facts and credential echo redaction")
+        var redirectedRouter = router; redirectedRouter.username = "redirect-fixture"
+        do { _ = try await InfrastructureAPIClient(connection: redirectedRouter, key: "fixture password Ю", allowLoopbackHTTP: true).collect(); try check(false, "MikroTik redirect should fail") } catch InfrastructureError.redirect {}
+        var deniedRouter = router; deniedRouter.username = "denied-fixture"
+        do { _ = try await InfrastructureAPIClient(connection: deniedRouter, key: "fixture password Ю", allowLoopbackHTTP: true).collect(); try check(false, "MikroTik Basic challenge should fail without retry") } catch InfrastructureError.http(401) {}
+        if let tls {
+            for candidate in [unifi, router] {
+                var candidate = candidate; candidate.baseURL = tls
+                let key = candidate.provider == .unifi ? "fixture-unifi-key" : "fixture password Ю"
+                do { _ = try await InfrastructureAPIClient(connection: candidate, key: key).collect(); try check(false, "new provider untrusted TLS succeeded") } catch InfrastructureError.certificate {}
+            }
         }
         var slow = pve; slow.baseURL += "/slow"; slow.guestAddresses = false
         let slowClient = try InfrastructureAPIClient(connection: slow, key: "fixture-token-only", allowLoopbackHTTP: true)

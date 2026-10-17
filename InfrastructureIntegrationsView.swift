@@ -50,11 +50,12 @@ struct InfrastructureIntegrationsView: View {
             .onAppear { select(model.connections.first); if model.connections.isEmpty { newConnection(.proxmox) } }
             .onChange(of: selectedID) { _, id in if let connection = model.connections.first(where: { $0.id == id }) { draft = connection; apiKey = ""; query = ""; selectedRecordID = nil; model.clearSnapshot() } }
             .onChange(of: model.snapshot?.date) { _, _ in selectedRecordID = nil }
+            .onChange(of: model.unifiSites) { _, sites in if draft.provider == .unifi, draft.unifiSiteID == nil, sites.count == 1 { draft.unifiSiteID = sites[0].id } }
             .onDisappear { model.stop(); apiKey = "" }
             .alert("Удалить интеграцию?", isPresented: $deleting) {
                 Button("Отмена", role: .cancel) {}
                 Button("Удалить", role: .destructive) { if let connection = selectedConnection { model.remove(connection); select(model.connections.first) } }
-            } message: { Text("Настройки и API-токен будут удалены. Созданные записи сохранятся.") }
+            } message: { Text("Настройки и учётные данные будут удалены. Созданные записи сохранятся.") }
     }
 
     private var header: some View {
@@ -62,7 +63,7 @@ struct InfrastructureIntegrationsView: View {
             Image(systemName: "square.stack.3d.up").font(.title).foregroundStyle(Color.accentColor)
             VStack(alignment: .leading, spacing: 3) {
                 Text("Интеграции").font(.title2).bold()
-                Text("Proxmox VE · Docker · NetBox").font(.caption).foregroundStyle(.secondary)
+                Text("Proxmox VE · Docker · NetBox · UniFi · MikroTik").font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
             if model.busy { ProgressView().controlSize(.small); Button("Остановить") { model.stop() } }
@@ -75,10 +76,13 @@ struct InfrastructureIntegrationsView: View {
                     Label(connection.displayTitle, systemImage: connection.provider.icon).lineLimit(2).tag(connection.id)
                 }
             }.listStyle(.sidebar).overlay { if model.connections.isEmpty { VStack(spacing: 8) { Image(systemName: "square.stack.3d.up").font(.title2); Text("Нет сохранённых подключений").multilineTextAlignment(.center).font(.caption); Text("Добавь и сохрани подключение справа.").multilineTextAlignment(.center).font(.caption2) }.foregroundStyle(.secondary).padding(12).allowsHitTesting(false) } }
-            Menu {
-                ForEach(InfrastructureProvider.allCases) { provider in Button { newConnection(provider) } label: { Label(provider.title, systemImage: provider.icon) } }
-            } label: { Label("Добавить", systemImage: "plus") }.disabled(model.busy || !model.loadSucceeded || model.connections.count >= 40)
-            Button(role: .destructive) { deleting = true } label: { Label("Удалить", systemImage: "trash") }.disabled(selectedConnection == nil || model.busy || !model.loadSucceeded)
+            HStack(spacing: 8) {
+                Menu {
+                    ForEach(InfrastructureProvider.allCases) { provider in Button { newConnection(provider) } label: { Label(provider.title, systemImage: provider.icon) } }
+                } label: { Label("Добавить", systemImage: "plus").fixedSize() }.disabled(model.busy || !model.loadSucceeded || model.connections.count >= 40)
+                Spacer(minLength: 0)
+                Button(role: .destructive) { deleting = true } label: { Image(systemName: "trash") }.help("Удалить выбранную интеграцию").accessibilityLabel("Удалить выбранную интеграцию").disabled(selectedConnection == nil || model.busy || !model.loadSucceeded)
+            }.fixedSize(horizontal: false, vertical: true)
             if !model.loadSucceeded { Button("Повторить чтение") { model.reload() } }
         }.padding(12).frame(width: 205).disabled(model.busy)
     }
@@ -96,23 +100,40 @@ struct InfrastructureIntegrationsView: View {
                 Button { if model.save(draft, key: apiKey) { selectedID = draft.id; apiKey = "" } } label: { Label("Сохранить", systemImage: "square.and.arrow.down") }
                     .disabled(draft.validation != nil || model.busy || !model.loadSucceeded || savedDraft && apiKey.isEmpty)
                 Button { query = ""; selectedRecordID = nil; model.collect(draft) } label: { Label("Получить объекты", systemImage: "arrow.down.circle") }
-                    .disabled(!savedDraft || model.busy || !model.loadSucceeded)
+                    .disabled(!savedDraft || model.busy || !model.loadSucceeded || draft.provider == .unifi && (draft.unifiSiteID.flatMap(UUID.init(uuidString:)) == nil))
                 Spacer()
             }
         }.disabled(model.busy)
     }
     private var apiConfiguration: some View {
         VStack(alignment: .leading, spacing: 9) {
-            LabeledContent("Адрес") { TextField(draft.provider == .proxmox ? "https://pve.example.com:8006" : "https://netbox.example.com", text: $draft.baseURL).textFieldStyle(.roundedBorder) }
+            LabeledContent("Адрес") { TextField(draft.provider == .proxmox ? "https://pve.example.com:8006" : draft.provider == .unifi ? "https://unifi.example.com" : draft.provider == .mikrotik ? "https://router.example.com" : "https://netbox.example.com", text: $draft.baseURL).textFieldStyle(.roundedBorder) }
+            if draft.provider == .mikrotik { LabeledContent("Пользователь") { TextField("Пользователь RouterOS", text: Binding(get: { draft.username ?? "" }, set: { draft.username = $0 })).textFieldStyle(.roundedBorder) } }
+            if draft.provider == .unifi {
+                LabeledContent("Путь API") { Picker("Путь API", selection: Binding(get: { draft.effectiveUniFiAPIPath }, set: { draft.unifiAPIPath = $0 })) { Text("UniFi OS / Console").tag("/proxy/network/integration/v1"); Text("Самостоятельный Network").tag("/integration/v1") }.labelsHidden() }
+                HStack {
+                    Text("Площадка")
+                    Picker("Площадка", selection: Binding(get: { draft.unifiSiteID ?? "" }, set: { draft.unifiSiteID = $0.isEmpty ? nil : $0 })) {
+                        Text("Выбери площадку").tag("")
+                        ForEach(model.unifiSites) { site in Text(site.name.isEmpty ? site.id : site.name).tag(site.id) }
+                        if let id = draft.unifiSiteID, !id.isEmpty, !model.unifiSites.contains(where: { $0.id == id }) { Text(id).tag(id) }
+                    }.labelsHidden()
+                    Button("Получить площадки") { model.loadUniFiSites(draft) }.disabled(!savedDraft || model.busy)
+                }
+            }
             if draft.provider == .proxmox {
                 LabeledContent("ID токена") { TextField("user@realm!token-name", text: $draft.tokenID).textFieldStyle(.roundedBorder) }
             }
-            LabeledContent(draft.provider == .proxmox ? "Секрет токена" : "API-токен") {
+            LabeledContent(draft.provider == .proxmox ? "Секрет токена" : draft.provider == .mikrotik ? "Пароль" : draft.provider == .unifi ? "API-ключ" : "API-токен") {
                 SecureField(model.hasKey(draft) ? "Сохранён · оставь пустым" : "Сохраняется в Связке ключей", text: $apiKey).textFieldStyle(.roundedBorder)
             }
             if draft.provider == .proxmox {
                 Toggle("Получать IP гостевых систем через агент VM / интерфейсы LXC", isOn: $draft.guestAddresses).font(.callout)
                 Text("Токен с правами чтения PVEAuditor. Для адресов VM нужен QEMU Guest Agent и право VM.GuestAgent.Audit; недоступные значения остаются неизвестными.").font(.caption).foregroundStyle(.secondary)
+            } else if draft.provider == .unifi {
+                Text("API-ключ из Network → Integrations. Сохрани адрес и ключ, получи площадки, выбери площадку и сохрани её. Читаются устройства, клиенты, сети/VLAN и доступные сведения портов; Wi-Fi-пароли не запрашиваются.").font(.caption).foregroundStyle(.secondary)
+            } else if draft.provider == .mikrotik {
+                Text("RouterOS 7 REST через доверенный HTTPS. Нужен пользователь с правами read и rest-api; без write/policy/sensitive. Читаются только выбранные поля оборудования, интерфейсов, IP, соседей, VLAN и DHCP. Скорость портов GET interface не сообщает.").font(.caption).foregroundStyle(.secondary)
             } else {
                 Text("Токен NetBox с выключенным Write enabled. Поддерживаются токены v2 (nbt_…) и v1. Читаются устройства, VM, primary IP и основные инвентарные поля.").font(.caption).foregroundStyle(.secondary)
             }

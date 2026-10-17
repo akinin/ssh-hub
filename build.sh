@@ -70,6 +70,8 @@ swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$b
 "$build_dir/update-quit-tests"
 "$build_dir/update-quit-tests" --later
 "$build_dir/update-quit-tests" --later --timeout
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" WorkspaceDivider.swift WorkspaceDividerTests.swift -o "$build_dir/workspace-divider-tests" -framework AppKit -framework SwiftUI
+"$build_dir/workspace-divider-tests"
 # The 3.0 feature checks use synthetic metadata and owned loopback/process fixtures.
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift SSHCredentials.swift SharedCredentials.swift SharedCredentialsView.swift SharedCredentialsTests.swift -o "$build_dir/shared-credentials-tests" -framework AppKit -framework Security -framework LocalAuthentication
 "$build_dir/shared-credentials-tests"
@@ -80,7 +82,11 @@ infrastructure_sources=(SSHConfig.swift ConfigChanges.swift ConnectionAppearance
 swiftc -parse-as-library -swift-version 5 -D INFRASTRUCTURE_TEST -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" "${infrastructure_sources[@]}" InfrastructureIntegrationsView.swift InfrastructureIntegrationTests.swift -o "$build_dir/infrastructure-tests" -framework AppKit -framework Security -framework LocalAuthentication
 "$build_dir/infrastructure-tests"
 python3 InfrastructureIntegrationTests.py "$build_dir/infrastructure-tests"
-swiftc -parse-as-library -swift-version 5 -D MONITORING_TEST -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" Monitoring.swift MonitoringView.swift MonitoringTests.swift -o "$build_dir/monitoring-tests" -framework SwiftUI -framework UserNotifications
+monitoring_sources=(SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift ConnectionTree.swift WorkspaceProfiles.swift WorkspaceLayout.swift WorkspaceSnapshot.swift SavedCommands.swift SSHCredentials.swift SSHLoginPolicy.swift ConnectionProbe.swift Tunnels.swift ConnectionTunnel.swift ToolkitRuntime.swift HubFeatureStorage.swift Maintenance.swift TCPAvailability.swift Monitoring.swift MonitoringInstallation.swift MonitoringView.swift MonitoringInstallationView.swift)
+swiftc -parse-as-library -swift-version 5 -D MONITORING_TEST -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" "${monitoring_sources[@]}" MonitoringTests.swift -o "$build_dir/monitoring-tests" -framework SwiftUI -framework UserNotifications
+swiftc -parse-as-library -swift-version 5 -D MONITORING_TEST -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" "${monitoring_sources[@]}" MonitoringInstallationTests.swift -o "$build_dir/monitoring-installation-tests" -framework SwiftUI -framework UserNotifications
+"$build_dir/monitoring-installation-tests"
+python3 MonitoringCollector/test_install.py
 python3 MonitoringCollector/test_collector.py "$build_dir/monitoring-tests"
 swiftc -parse-as-library -swift-version 5 -D ASSISTANT_TEST -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift AIAssistant.swift AIAssistantIntegrationTests.swift -o "$build_dir/assistant-integration-tests" -framework Security
 "$build_dir/assistant-integration-tests"
@@ -92,7 +98,9 @@ swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$b
 "$build_dir/search-safety-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift HubFeatureStorage.swift AIAssistant.swift TCPAvailability.swift AssistantChat.swift AssistantChatTests.swift -o "$build_dir/assistant-chat-tests" -framework Security
 "$build_dir/assistant-chat-tests"
-backup_operations_sources=(SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift WorkspaceProfiles.swift ConnectionTree.swift HubFeatureStorage.swift GlobalSearch.swift ConnectionDocumentation.swift ConnectionAttachments.swift SavedCommands.swift SessionJournal.swift AIAssistant.swift Maintenance.swift SSHCredentials.swift SharedCredentials.swift SSHLoginPolicy.swift ToolkitRuntime.swift Tunnels.swift ConnectionProbe.swift InfrastructureIntegrations.swift RecordInventory.swift TopologyData.swift TopologyRecordSeed.swift Monitoring.swift TCPAvailability.swift AssistantChat.swift BackupOperations.swift)
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConnectionDocumentation.swift AssistantActions.swift AssistantActionsTests.swift -o "$build_dir/assistant-actions-tests"
+"$build_dir/assistant-actions-tests"
+backup_operations_sources=(SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift WorkspaceProfiles.swift ConnectionTree.swift HubFeatureStorage.swift GlobalSearch.swift ConnectionDocumentation.swift ConnectionAttachments.swift SavedCommands.swift SessionJournal.swift AIAssistant.swift Maintenance.swift SSHCredentials.swift SharedCredentials.swift SSHLoginPolicy.swift ToolkitRuntime.swift Tunnels.swift ConnectionProbe.swift InfrastructureIntegrations.swift RecordInventory.swift TopologyData.swift TopologyRecordSeed.swift Monitoring.swift MonitoringInstallation.swift ConnectionTunnel.swift WorkspaceLayout.swift WorkspaceSnapshot.swift TCPAvailability.swift AssistantChat.swift BackupOperations.swift)
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" "${backup_operations_sources[@]}" BackupOperationsTests.swift -o "$build_dir/backup-operations-tests" -framework AppKit -framework Security -framework LocalAuthentication -framework UserNotifications
 "$build_dir/backup-operations-tests"
 app_dir="$build_dir/SSH Hub.app"
@@ -100,7 +108,7 @@ mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 # Keep the deployment kit exact: test fixtures and Python bytecode do not ship.
 rm -rf "$app_dir/Contents/Resources/MonitoringCollector"
 mkdir -p "$app_dir/Contents/Resources/MonitoringCollector"
-for collector_file in collector.py config.example.json ssh-hub-monitor.service Caddyfile.example README.md; do
+for collector_file in collector.py install.py config.example.json ssh-hub-monitor.service Caddyfile.example README.md; do
     cp "MonitoringCollector/$collector_file" "$app_dir/Contents/Resources/MonitoringCollector/$collector_file"
 done
 clang -arch arm64 -mmacosx-version-min=14.0 -isysroot "$sdk_dir" -O2 TelnetHelper.c -o "$app_dir/Contents/MacOS/SSHTelnet"
@@ -115,7 +123,7 @@ swiftc -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-ca
 swiftc -parse-as-library -swift-version 5 -O -sdk "$sdk_dir" -target arm64-apple-macosx14.0 -module-cache-path "$build_dir/module-cache" LoginAskpass.swift -o "$app_dir/Contents/MacOS/SSHLoginAskpass"
 swiftc -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift PublicKeys.swift TerminalLauncher.swift ConnectionTree.swift ConsoleLaunch.swift SSHCredentials.swift WorkspaceProfiles.swift WorkspaceLayout.swift WorkspaceSnapshot.swift SavedCommands.swift WorkspaceTests.swift -o "$build_dir/workspace-tests" -framework AppKit -framework Security
 "$build_dir/workspace-tests" "$app_dir/Contents/MacOS/SSHLoginAskpass"
-advanced_sources=(SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift ConnectionAttachments.swift ConnectionDocumentation.swift SavedCommands.swift ConnectionTree.swift WorkspaceProfiles.swift WorkspaceLayout.swift WorkspaceSnapshot.swift RecordTemplate.swift CommandLibrary.swift Nmap.swift ConnectionProbe.swift Tunnels.swift RecordInventory.swift WinboxSettings.swift TopologyData.swift BackupArchive.swift BackupRestoration.swift TCPAvailability.swift SessionJournal.swift HubFeatureStorage.swift GlobalSearch.swift Maintenance.swift SSHCredentials.swift SharedCredentials.swift SSHLoginPolicy.swift ToolkitRuntime.swift InfrastructureIntegrations.swift TopologyRecordSeed.swift Monitoring.swift AIAssistant.swift AssistantChat.swift BackupOperations.swift)
+advanced_sources=(SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift ConnectionAttachments.swift ConnectionDocumentation.swift SavedCommands.swift ConnectionTree.swift WorkspaceProfiles.swift WorkspaceLayout.swift WorkspaceSnapshot.swift RecordTemplate.swift CommandLibrary.swift Nmap.swift ConnectionProbe.swift Tunnels.swift RecordInventory.swift WinboxSettings.swift TopologyData.swift BackupArchive.swift BackupRestoration.swift TCPAvailability.swift SessionJournal.swift HubFeatureStorage.swift GlobalSearch.swift Maintenance.swift SSHCredentials.swift SharedCredentials.swift SSHLoginPolicy.swift ToolkitRuntime.swift InfrastructureIntegrations.swift TopologyRecordSeed.swift Monitoring.swift MonitoringInstallation.swift ConnectionTunnel.swift AIAssistant.swift AssistantChat.swift BackupOperations.swift)
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" "${advanced_sources[@]}" AdvancedTests.swift -o "$build_dir/advanced-tests" -framework AppKit -framework Security -framework LocalAuthentication -framework UserNotifications
 "$build_dir/advanced-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift PublicKeys.swift TerminalLauncher.swift ConsoleLaunch.swift ConnectionLaunch.swift CommandTask.swift RemoteFiles.swift VNCConnection.swift RemoteProtocolTests.swift -o "$build_dir/remote-protocol-tests" -framework AppKit
