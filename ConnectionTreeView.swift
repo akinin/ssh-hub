@@ -234,7 +234,7 @@ struct ConnectionTreeView: NSViewRepresentable {
             menu.removeAllItems()
             if let outline { contextItem = outline.item(atRow: outline.clickedRow) as? TreeItem }
             func add(_ title: String, _ action: String) {
-                let symbols = ["connect": "play.circle", "sftp": "folder", "external": "arrow.up.forward.square", "website": "macwindow", "browser": "arrow.up.forward.square", "dashboard": "rectangle.grid.2x2", "documentation": "doc.richtext", "attachments": "paperclip", "edit": "pencil", "appearance": "photo", "group": "folder.badge.gearshape", "favorite": "star", "template": "square.stack", "duplicate": "plus.square.on.square", "copy": "doc.on.doc", "export": "square.and.arrow.up", "delete": "trash", "record": "plus", "folder": "folder.badge.plus", "folderLogo": "photo", "subfolder": "folder.badge.plus"]
+                let symbols = ["connect": "play.circle", "sftp": "folder", "loginNotify": "bell.badge", "external": "arrow.up.forward.square", "website": "macwindow", "browser": "arrow.up.forward.square", "dashboard": "rectangle.grid.2x2", "documentation": "doc.richtext", "attachments": "paperclip", "edit": "pencil", "appearance": "photo", "group": "folder.badge.gearshape", "favorite": "star", "template": "square.stack", "duplicate": "plus.square.on.square", "copy": "doc.on.doc", "export": "square.and.arrow.up", "delete": "trash", "record": "plus", "folder": "folder.badge.plus", "folderLogo": "photo", "subfolder": "folder.badge.plus"]
                 let item = NSMenuItem(title: title, action: #selector(menuAction(_:)), keyEquivalent: "")
                 item.image = NSImage(systemSymbolName: symbols[action] ?? "circle", accessibilityDescription: nil)
                 // Public macOS 27 API: .visible == 1. Keep the stable macOS 26 SDK build compatible with older systems.
@@ -245,7 +245,7 @@ struct ConnectionTreeView: NSViewRepresentable {
                 if let entry = item.node.entry {
                     if entry.recordKind?.isWeb == true { add("Открыть внутри", "website"); add("Открыть в браузере", "browser") }
                     else if entry.canConnect { add("Подключиться", "connect") }
-                    if entry.canSSH { add("Открыть SFTP", "sftp"); add("Во внешнем терминале", "external") }
+                    if entry.canSSH { add("Открыть SFTP", "sftp"); add("Во внешнем терминале", "external"); add("Уведомления о входе…", "loginNotify") }
                     add("Панель управления", "dashboard")
                     menu.addItem(.separator()); add("Документация", "documentation"); add("Вложения", "attachments"); add("Редактировать…", "edit"); add("Название и логотип…", "appearance"); add("Переместить в папку…", "group")
                     add(store.isFavorite(entry) ? "Убрать из избранного" : "В избранное", "favorite")
@@ -266,6 +266,7 @@ struct ConnectionTreeView: NSViewRepresentable {
                 switch action {
                 case "connect": store.connect(entry)
                 case "sftp": store.openSFTP(entry)
+                case "loginNotify": store.showLoginNotifications(entry)
                 case "external": store.connectExternally(entry)
                 case "website": store.openWebsite(entry)
                 case "browser": store.openWebsiteInBrowser(entry)

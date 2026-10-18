@@ -38,6 +38,7 @@ extension AliasStore {
         } catch { self.error = "Не удалось скопировать инвентаризацию или настройки WinBox: " + error.localizedDescription }
     }
     func refreshRecordTools() {
+        loginNotifications?.refreshBinding()
         topologyModels.values.forEach { model in
             if model.entries.map(\.id) != profileEntries.map(\.id) || model.entries.map(\.options) != profileEntries.map(\.options) { model.stop() }
             model.entries = profileEntries

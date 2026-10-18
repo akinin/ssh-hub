@@ -86,6 +86,10 @@ monitoring_sources=(SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swi
 swiftc -parse-as-library -swift-version 5 -D MONITORING_TEST -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" "${monitoring_sources[@]}" MonitoringTests.swift -o "$build_dir/monitoring-tests" -framework SwiftUI -framework UserNotifications
 swiftc -parse-as-library -swift-version 5 -D MONITORING_TEST -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" "${monitoring_sources[@]}" MonitoringInstallationTests.swift -o "$build_dir/monitoring-installation-tests" -framework SwiftUI -framework UserNotifications
 "$build_dir/monitoring-installation-tests"
+swiftc -parse-as-library -swift-version 5 -D MONITORING_TEST -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" "${monitoring_sources[@]}" LoginNotifications.swift LoginNotificationsView.swift LoginNotificationTests.swift -o "$build_dir/login-notification-tests" -framework SwiftUI -framework UserNotifications
+"$build_dir/login-notification-tests"
+PYTHONDONTWRITEBYTECODE=1 python3 LoginNotifications/test_manage.py
+PYTHONDONTWRITEBYTECODE=1 python3 LoginNotifications/test_notify.py
 python3 MonitoringCollector/test_install.py
 python3 MonitoringCollector/test_collector.py "$build_dir/monitoring-tests"
 swiftc -parse-as-library -swift-version 5 -D ASSISTANT_TEST -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift AIAssistant.swift AIAssistantIntegrationTests.swift -o "$build_dir/assistant-integration-tests" -framework Security
@@ -110,6 +114,11 @@ rm -rf "$app_dir/Contents/Resources/MonitoringCollector"
 mkdir -p "$app_dir/Contents/Resources/MonitoringCollector"
 for collector_file in collector.py install.py config.example.json ssh-hub-monitor.service Caddyfile.example README.md; do
     cp "MonitoringCollector/$collector_file" "$app_dir/Contents/Resources/MonitoringCollector/$collector_file"
+done
+rm -rf "$app_dir/Contents/Resources/LoginNotifications"
+mkdir -p "$app_dir/Contents/Resources/LoginNotifications"
+for notification_file in manage.py notify.py; do
+    cp "LoginNotifications/$notification_file" "$app_dir/Contents/Resources/LoginNotifications/$notification_file"
 done
 clang -arch arm64 -mmacosx-version-min=14.0 -isysroot "$sdk_dir" -O2 TelnetHelper.c -o "$app_dir/Contents/MacOS/SSHTelnet"
 zsh build-rdp.sh "${SSH_HUB_RDP_CACHE:-$build_dir/rdp}" "$app_dir/Contents/MacOS/SSHRDP" "$sdk_dir" "$build_dir/rdp-fixture"

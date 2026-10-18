@@ -78,9 +78,10 @@ extension AliasStore {
     }
     func stopOperations(clear: Bool = false) {
         AssistantAPI.stopAll(); assistant?.stop(); assistantCommandTask?.cancel(); assistantCommandTask = nil; assistantCommandRunID = nil
-        MonitoringInstallationModel.stopAll()
+        MonitoringInstallationModel.stopAll(); LoginNotificationModel.stopAll(); loginNotifications?.close()
         infrastructure?.stop(); monitoring?.stop(); maintenance?.stop(); sharedCredentials?.lock()
         if clear {
+            loginNotifications = nil
             operationsPanel = nil; assistantVisible = false; assistantExpanded = false; assistantCommandReview = nil; assistantProposalReview = nil; assistantRecordDraft = nil; assistantAppliedActions = []; assistant = nil; infrastructureImport = nil
             sharedCredentials?.deactivate(); sharedCredentials = nil
             infrastructure = nil; monitoring = nil; maintenance = nil

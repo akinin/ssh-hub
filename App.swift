@@ -35,6 +35,7 @@ import ConsoleSupport
     var assistantCommandTask: Task<Void, Never>?
     var assistantCommandRunID: UUID?
     var assistant: AssistantChatModel?
+    @Published var loginNotifications: LoginNotificationModel?
     @Published var infrastructureImport: InfrastructureImportTarget?
     var sharedCredentials: SharedCredentialVault?
     var infrastructure: InfrastructureIntegrationModel?
@@ -560,6 +561,7 @@ import ConsoleSupport
                 CommandMenu("Инструменты") {
                     ForEach(OperationsPanel.allCases.filter { $0 != .search }) { panel in Button { store.operationsPanel = panel } label: { Label(panel.title + "…", systemImage: panel.icon) } }
                     Divider()
+                    Button("Уведомления о входе…", systemImage: "bell.badge") { store.showLoginNotifications() }.disabled(store.current?.canSSH != true)
                     Button("ИИ-помощник…", systemImage: "sparkles") { store.presentAssistant() }
                 }
                 CommandMenu("Подключения") { StatusMenu().environmentObject(store) }
@@ -581,10 +583,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         InventoryModel.stopAll()
         TopologyModel.stopAll()
         let tunnels = TunnelManager.shared
-        guard tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || MaintenanceModel.pending || AssistantAPI.pending else { return .terminateNow }
+        guard tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending else { return .terminateNow }
         tunnels.stopAll()
         UpdateTermination.finishAfterCleanup(sender) {
-            tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || MaintenanceModel.pending || AssistantAPI.pending
+            tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending
         }
         return .terminateLater
     }
@@ -737,7 +739,8 @@ struct MainView: View {
             .init(title: "Статус доступности…", symbol: "waveform.path.ecg", action: { store.showingAvailability = true }),
             .divider,
             .init(title: "Сетевые инструменты…", symbol: "wrench.and.screwdriver", action: { store.openScanner() }),
-            .init(title: "Сетевые карты…", symbol: "point.3.connected.trianglepath.dotted", action: { store.openTopology() })
+            .init(title: "Сетевые карты…", symbol: "point.3.connected.trianglepath.dotted", action: { store.openTopology() }),
+            .init(title: "Уведомления о входе…", symbol: "bell.badge", enabled: store.current?.canSSH == true, action: { store.showLoginNotifications() })
         ]
         items.append(.divider)
         items += OperationsPanel.allCases.filter { $0 != .search }.map { panel in ToolbarMenuAction(title: panel.title + "…", symbol: panel.icon, action: { store.operationsPanel = panel }) }
@@ -878,6 +881,7 @@ struct MainView: View {
         .sheet(isPresented: $store.showingTemplates) { TemplatesView().environmentObject(store) }
         .sheet(isPresented: $store.showingAvailability) { AvailabilityView(monitor: store.availability).environmentObject(store) }
         .sheet(item: $store.operationsPanel) { OperationsPanelView(panel: $0).environmentObject(store) }
+        .sheet(item: $store.loginNotifications) { model in LoginNotificationsView(model: model).onDisappear { model.close() } }
         .sheet(isPresented: $store.assistantExpanded, onDismiss: { if !store.assistantVisible { store.assistant?.stop() } }) { AssistantHostView(expanded: true).environmentObject(store).frame(width: 900, height: 720) }
         .sheet(item: $store.infrastructureImport) { InfrastructureRecordCreation(value: $0.value).environmentObject(store) }
         .sheet(isPresented: $store.showingSettings) { AppSettingsView().environmentObject(store) }
@@ -962,6 +966,7 @@ struct AliasDetail: View {
                     tile("Редактировать", detail: "Параметры записи", icon: "pencil") { store.edit(entry) }
                     if entry.canSSH {
                         tile("Проверить", detail: "Доступность SSH", icon: "network") { store.check(entry) }.disabled(store.checkingID != nil)
+                        tile("Уведомления", detail: "Вход по SSH → Telegram", icon: "bell.badge") { store.showLoginNotifications(entry) }
                         tile("Внешний терминал", detail: "Открыть отдельно", icon: "arrow.up.forward.square") { store.connectExternally(entry) }
                     }
                 }

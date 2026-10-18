@@ -75,7 +75,7 @@ final class MonitoringInstallProcess: @unchecked Sendable {
     init(testExecutable: URL) { executable = testExecutable }
     #endif
     func cancel() { lock.lock(); cancelled = true; let process = process; lock.unlock(); if let process, process.isRunning { process.terminate(); DispatchQueue.global().asyncAfter(deadline: .now() + 1) { if process.isRunning { kill(process.processIdentifier, SIGKILL) } } } }
-    func run(arguments: [String], environment: [String: String], payload: Data) async throws -> Data {
+    func run(arguments: [String], environment: [String: String], payload: Data, failureMapper: @escaping @Sendable (Data) -> String = { MonitoringInstallProcess.failure($0) }) async throws -> Data {
         guard payload.count <= 262_144 else { throw MonitoringError.limit }
         return try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in DispatchQueue.global(qos: .userInitiated).async { [self] in
@@ -114,7 +114,7 @@ final class MonitoringInstallProcess: @unchecked Sendable {
                     process.waitUntilExit(); drain()
                     lock.lock(); self.process = nil; let cancelled = self.cancelled; lock.unlock()
                     if cancelled { throw CancellationError() }
-                    guard process.terminationStatus == 0 else { throw ConfigError.message(Self.failure(bytes)) }
+                    guard process.terminationStatus == 0 else { throw ConfigError.message(failureMapper(bytes)) }
                     continuation.resume(returning: bytes)
                 } catch { if process.isRunning { process.terminate(); process.waitUntilExit() }; lock.lock(); self.process = nil; lock.unlock(); continuation.resume(throwing: error) }
             } }
