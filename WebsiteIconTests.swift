@@ -18,6 +18,15 @@ import AppKit
         check(icons.map(\.absoluteString) == ["https://example.test/icon.png", "https://example.test/apple.png", "https://example.test/favicon.ico"], "declared icons, relative URLs, unsafe URLs and fallback")
         check(!WebsiteIcon.redirectAllowed(from: page, to: URL(string: "https://other.test/icon")!) && !WebsiteIcon.redirectAllowed(from: page, to: URL(string: "http://example.test/icon")!), "cross-origin and TLS downgrade redirects blocked")
         check(WebsiteIcon.redirectAllowed(from: URL(string: "http://example.test/")!, to: page), "same-host HTTPS upgrade allowed")
+        let publicOrigin = WebsiteIconOrigin(URL(string: "https://public.example.test:8443/")!)!
+        let privateOrigin = WebsiteIconOrigin(URL(string: "https://192.168.55.10:8443/")!)!
+        for origin in [publicOrigin, privateOrigin] {
+            check(origin.matches(URLProtectionSpace(host: origin.host, port: origin.port, protocol: "https", realm: nil, authenticationMethod: NSURLAuthenticationMethodServerTrust)), "explicit exception supports public and private hosts")
+            check(!origin.matches(URLProtectionSpace(host: origin.host, port: origin.port + 1, protocol: "https", realm: nil, authenticationMethod: NSURLAuthenticationMethodServerTrust)), "exception never transfers to another port")
+            check(!origin.matches(URLProtectionSpace(host: "other.example.test", port: origin.port, protocol: "https", realm: nil, authenticationMethod: NSURLAuthenticationMethodServerTrust)), "exception never transfers to another host")
+        }
+        check(WebsiteIconOrigin(URL(string: "http://example.test/")!) == nil, "only HTTPS origins can receive an exception")
+        check(WebsiteIconCertificateFailure.from(URLError(.timedOut), requestedURL: page) == nil && WebsiteIconCertificateFailure.from(URLError(.secureConnectionFailed), requestedURL: page) == nil, "timeouts and protocol failures are not certificate approvals")
         for path in ["/declared", "/fallback", "/redirect", "/large-icon"] {
             let data = try await WebsiteIcon.load(base + path)
             check(ConnectionAppearance.validLogo(data), "normalized bounded PNG")
@@ -31,6 +40,21 @@ import AppKit
         try await Task.sleep(nanoseconds: 80_000_000); slow.cancel()
         do { _ = try await slow.value; fatalError("cancelled request succeeded") } catch {}
         check(Date().timeIntervalSince(start) < 2, "cancel promptly drains request")
-        print("Website icon checks passed: declared/fallback ICO, PNG normalization, URL restrictions, cookie-free requests, redirects/auth, content/stream bounds and cancellation")
+        let tls = CommandLine.arguments[2], otherTLS = CommandLine.arguments[3]
+        let origin = WebsiteIconOrigin(URL(string: tls)!)!, other = WebsiteIconOrigin(URL(string: otherTLS)!)!
+        func certificateFailure(_ address: String, accepting: Set<WebsiteIconOrigin> = []) async throws -> WebsiteIconCertificateFailure {
+            do { _ = try await WebsiteIcon.load(address, acceptingCertificatesFor: accepting); fatalError("unapproved self-signed certificate accepted") }
+            catch let failure as WebsiteIconCertificateFailure { return failure }
+        }
+        check(try await certificateFailure(tls + "/declared").origin == origin, "self-signed HTTPS fails with a retryable exact origin")
+        check(try await certificateFailure(tls + "/declared", accepting: [other]).origin == origin, "another approved origin does not disable validation")
+        check(ConnectionAppearance.validLogo(try await WebsiteIcon.load(tls + "/declared", acceptingCertificatesFor: [origin])), "explicit retry accepts self-signed HTTPS and normalizes its icon")
+        check(try await certificateFailure(tls + "/declared").origin == origin, "successful exception is not retained by later normal loads")
+        check(try await certificateFailure(tls + "/external-icon", accepting: [origin]).origin == other, "external icon certificate failure survives fallback and requires its own approval")
+        check(ConnectionAppearance.validLogo(try await WebsiteIcon.load(tls + "/external-icon", acceptingCertificatesFor: [origin, other])), "separately approved origins can complete one icon operation")
+        for path in ["/auth", "/huge-page", "/redirect-other"] {
+            await reject { _ = try await WebsiteIcon.load(tls + path, acceptingCertificatesFor: [origin, other]) }
+        }
+        print("Website icon checks passed: declared/fallback ICO, PNG normalization, URL restrictions, no cookies/auth, redirects/bounds/cancellation, self-signed TLS explicit retry, exact host/port scope and no persisted trust")
     }
 }

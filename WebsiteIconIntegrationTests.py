@@ -4,6 +4,8 @@ import pathlib
 import struct
 import subprocess
 import sys
+import ssl
+import tempfile
 import threading
 import time
 import zlib
@@ -19,6 +21,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.headers.get('Cookie') or self.headers.get('Authorization'):
             Handler.credentials_received = True
         path = self.path.split('?')[0]
+        if path == '/favicon.ico' and getattr(self.server, 'tls_fixture', False):
+            self.send_response(404); self.end_headers(); return
+        if path == '/external-icon':
+            content = ('<link rel="icon" href="%s/icons/site.ico">' % self.server.other_base).encode()
+            self.send_response(200); self.send_header('Content-Type', 'text/html'); self.send_header('Content-Length', str(len(content))); self.end_headers(); self.wfile.write(content); return
+        if path == '/redirect-other':
+            self.send_response(302); self.send_header('Location', self.server.other_base + '/declared'); self.end_headers(); return
         if path in ['/redirect', '/redirect-cross', '/loop']:
             self.send_response(302)
             self.send_header('Location', '/declared' if path == '/redirect' else '/loop' if path == '/loop' else 'http://localhost:%d/declared' % self.server.server_port)
@@ -64,7 +73,23 @@ if __name__ == '__main__':
             print(base, flush=True)
             while True: time.sleep(60)
         else:
-            subprocess.run([sys.argv[1], base], check=True)
-            assert not Handler.credentials_received, 'icon loader sent authentication or cookies'
+            with tempfile.TemporaryDirectory(prefix='ssh-hub-icon-tls-') as directory:
+                root = pathlib.Path(directory)
+                config = root / 'openssl.cnf'
+                config.write_text('[req]\ndistinguished_name=dn\nx509_extensions=v3\nprompt=no\n[dn]\nCN=localhost\n[v3]\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n')
+                subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-config', str(config), '-keyout', str(root / 'key.pem'), '-out', str(root / 'cert.pem')], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); context.load_cert_chain(root / 'cert.pem', root / 'key.pem')
+                tls_servers = []
+                try:
+                    for _ in range(2):
+                        fixture = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler); fixture.daemon_threads = True; fixture.tls_fixture = True
+                        fixture.socket = context.wrap_socket(fixture.socket, server_side=True)
+                        threading.Thread(target=fixture.serve_forever, daemon=True).start(); tls_servers.append(fixture)
+                    tls_bases = ['https://127.0.0.1:%d' % fixture.server_port for fixture in tls_servers]
+                    tls_servers[0].other_base = tls_bases[1]; tls_servers[1].other_base = tls_bases[0]
+                    subprocess.run([sys.argv[1], base, *tls_bases], check=True)
+                    assert not Handler.credentials_received, 'icon loader sent authentication or cookies'
+                finally:
+                    for fixture in tls_servers: fixture.shutdown(); fixture.server_close()
     finally:
         server.shutdown(); server.server_close()

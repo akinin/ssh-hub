@@ -26,15 +26,51 @@ enum ConnectionLogo {
 
 
 
+struct WebsiteIconOrigin: Hashable {
+    let host: String
+    let port: Int
+    init?(_ url: URL) {
+        guard url.scheme?.lowercased() == "https", let host = url.host, !host.isEmpty else { return nil }
+        self.host = Self.hostname(host); port = url.port ?? 443
+    }
+    private static func hostname(_ value: String) -> String { value.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]")) }
+    var displayName: String { "https://" + (host.contains(":") ? "[\(host)]" : host) + (port == 443 ? "" : ":\(port)") }
+    func matches(_ space: URLProtectionSpace) -> Bool {
+        !space.isProxy() && space.protocol?.lowercased() == "https" && Self.hostname(space.host) == host && space.port == port
+    }
+}
+struct WebsiteIconCertificateFailure: LocalizedError {
+    let origin: WebsiteIconOrigin
+    var errorDescription: String? { "Не удалось проверить сертификат сайта \(origin.displayName)." }
+    static func from(_ error: Error, requestedURL: URL) -> Self? {
+        let error = error as NSError
+        let codes: Set<Int> = [URLError.serverCertificateHasBadDate.rawValue, URLError.serverCertificateUntrusted.rawValue, URLError.serverCertificateHasUnknownRoot.rawValue, URLError.serverCertificateNotYetValid.rawValue]
+        guard error.domain == NSURLErrorDomain, codes.contains(error.code),
+              let origin = WebsiteIconOrigin((error.userInfo[NSURLErrorFailingURLErrorKey] as? URL) ?? requestedURL) else { return nil }
+        return Self(origin: origin)
+    }
+}
 private final class WebsiteIconPolicy: NSObject, URLSessionTaskDelegate {
     private var redirects = 0
+    private let acceptedOrigins: Set<WebsiteIconOrigin>
+    init(acceptedOrigins: Set<WebsiteIconOrigin>) { self.acceptedOrigins = acceptedOrigins }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         redirects += 1
         guard redirects <= 3, let from = response.url, let to = request.url, WebsiteIcon.redirectAllowed(from: from, to: to) else { completionHandler(nil); return }
         completionHandler(request)
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        completionHandler(challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust ? .performDefaultHandling : .cancelAuthenticationChallenge, nil)
+        authenticate(challenge, completionHandler: completionHandler)
+    }
+    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        authenticate(challenge, completionHandler: completionHandler)
+    }
+    private func authenticate(_ challenge: URLAuthenticationChallenge, completionHandler: (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        let space = challenge.protectionSpace
+        guard space.authenticationMethod == NSURLAuthenticationMethodServerTrust else { completionHandler(.cancelAuthenticationChallenge, nil); return }
+        if acceptedOrigins.contains(where: { $0.matches(space) }), let trust = space.serverTrust {
+            completionHandler(.useCredential, URLCredential(trust: trust))
+        } else { completionHandler(.performDefaultHandling, nil) }
     }
 }
 enum WebsiteIcon {
@@ -75,16 +111,19 @@ enum WebsiteIcon {
         if let fallback = URL(string: "/favicon.ico", relativeTo: page)?.absoluteURL, !icons.contains(fallback) { icons.append(fallback) }
         return icons
     }
-    private static func fetch(_ url: URL, maximum: Int, timeout: TimeInterval) async throws -> (Data, HTTPURLResponse) {
+    private static func fetch(_ url: URL, maximum: Int, timeout: TimeInterval, acceptedOrigins: Set<WebsiteIconOrigin>) async throws -> (Data, HTTPURLResponse) {
         try Task.checkCancellation()
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil; configuration.httpCookieStorage = nil; configuration.urlCredentialStorage = nil
         configuration.httpShouldSetCookies = false; configuration.timeoutIntervalForRequest = timeout; configuration.timeoutIntervalForResource = timeout
-        let session = URLSession(configuration: configuration, delegate: WebsiteIconPolicy(), delegateQueue: nil)
+        let session = URLSession(configuration: configuration, delegate: WebsiteIconPolicy(acceptedOrigins: acceptedOrigins), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         request.setValue("SSH-Hub-Website-Icon", forHTTPHeaderField: "User-Agent")
-        let (bytes, response) = try await session.bytes(for: request)
+        let result: (URLSession.AsyncBytes, URLResponse)
+        do { result = try await session.bytes(for: request) }
+        catch { throw WebsiteIconCertificateFailure.from(error, requestedURL: url) ?? error }
+        let (bytes, response) = result
         guard let response = response as? HTTPURLResponse, response.statusCode == 200, response.expectedContentLength <= Int64(maximum) else { throw ConfigError.message("Сайт не отдал подходящий файл иконки или файл слишком большой.") }
         var data = Data()
         for try await byte in bytes {
@@ -94,24 +133,27 @@ enum WebsiteIcon {
         }
         return (data, response)
     }
-    static func load(_ text: String) async throws -> Data {
+    static func load(_ text: String, acceptingCertificatesFor acceptedOrigins: Set<WebsiteIconOrigin> = []) async throws -> Data {
         let url = try address(text), deadline = Date().addingTimeInterval(25)
-        let (pageData, response) = try await fetch(url, maximum: 1_000_000, timeout: 8)
+        let (pageData, response) = try await fetch(url, maximum: 1_000_000, timeout: 8, acceptedOrigins: acceptedOrigins)
         if response.mimeType?.hasPrefix("image/") == true { return try ConnectionLogo.normalize(pageData) }
         guard response.mimeType == "text/html" || response.mimeType == "application/xhtml+xml",
               let html = String(data: pageData, encoding: .utf8) ?? String(data: pageData, encoding: .isoLatin1) else { throw ConfigError.message("По этому адресу нет HTML-страницы или изображения.") }
         let page = response.url ?? url
+        var certificateFailure: WebsiteIconCertificateFailure?
         for candidate in candidates(html: html, page: page) {
             try Task.checkCancellation()
             let remaining = deadline.timeIntervalSinceNow
             guard remaining > 0 else { break }
             do {
-                let (data, iconResponse) = try await fetch(candidate, maximum: 524_288, timeout: min(6, remaining))
+                let (data, iconResponse) = try await fetch(candidate, maximum: 524_288, timeout: min(6, remaining), acceptedOrigins: acceptedOrigins)
                 guard iconResponse.mimeType?.hasPrefix("image/") == true || ["application/octet-stream", "application/ico"].contains(iconResponse.mimeType ?? "") else { continue }
                 let png = try ConnectionLogo.normalize(data); try Task.checkCancellation(); return png
             } catch is CancellationError { throw CancellationError() }
+            catch let failure as WebsiteIconCertificateFailure { certificateFailure = certificateFailure ?? failure }
             catch { if Task.isCancelled { throw CancellationError() } }
         }
+        if let certificateFailure { throw certificateFailure }
         throw ConfigError.message("Иконка сайта не найдена. Можно указать другой адрес или выбрать изображение с Mac.")
     }
 }

@@ -87,6 +87,8 @@ struct WebsiteIconView: View {
     @State private var address: String
     @State private var task: Task<Void, Never>?
     @State private var error: String?
+    @State private var certificateFailure: WebsiteIconCertificateFailure?
+    @State private var acceptedOrigins: Set<WebsiteIconOrigin> = []
     let apply: (Data) -> Void
     init(address: String, apply: @escaping (Data) -> Void) { _address = State(initialValue: address); self.apply = apply }
     var body: some View {
@@ -95,6 +97,10 @@ struct WebsiteIconView: View {
             TextField("https://example.com", text: $address).textFieldStyle(.roundedBorder).accessibilityIdentifier("websiteIconURL").disabled(task != nil)
             Text("Загрузится иконка страницы или favicon. Пароли и cookies браузера не используются. Изменение логотипа записи применяется после сохранения.").font(.caption).foregroundStyle(.secondary)
             if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
+            if certificateFailure != nil {
+                Button("Всё равно получить") { load(acceptCertificate: true) }.disabled(task != nil)
+                    .accessibilityIdentifier("websiteIconAcceptCertificate")
+            }
             HStack {
                 if task != nil { ProgressView().controlSize(.small); Text("Загрузка…").font(.caption) }
                 Spacer()
@@ -102,12 +108,17 @@ struct WebsiteIconView: View {
                 Button("Получить иконку") { load() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(task != nil || (try? WebsiteIcon.address(address)) == nil)
             }
         }.padding(20).frame(width: 440).onDisappear { task?.cancel() }
+            .onChange(of: address) { _, _ in error = nil; certificateFailure = nil; acceptedOrigins = [] }
     }
-    private func load() {
-        error = nil
+    private func load(acceptCertificate: Bool = false) {
+        guard task == nil else { return }
+        if acceptCertificate, let certificateFailure { acceptedOrigins.insert(certificateFailure.origin) }
+        else { acceptedOrigins = [] }
+        let target = address, accepted = acceptedOrigins
+        error = nil; certificateFailure = nil
         task = Task { @MainActor in
-            do { let data = try await WebsiteIcon.load(address); try Task.checkCancellation(); apply(data); task = nil; dismiss() }
-            catch { if !Task.isCancelled { self.error = error.localizedDescription }; task = nil }
+            do { let data = try await WebsiteIcon.load(target, acceptingCertificatesFor: accepted); try Task.checkCancellation(); apply(data); task = nil; dismiss() }
+            catch { if !Task.isCancelled { self.error = error.localizedDescription; certificateFailure = error as? WebsiteIconCertificateFailure }; task = nil }
         }
     }
 }
