@@ -5,14 +5,32 @@ import UniformTypeIdentifiers
 struct KDBXVaultsView: View {
     @ObservedObject var vault: SharedCredentialVault
     @ObservedObject var workspace: KDBXWorkspace
+    var embedded = false
+    var profileName: String? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var unlocking: KDBXDatabaseLink?
     @State private var error: String?
     private var links: [KDBXDatabaseLink] { vault.document.kdbxDatabases ?? [] }
     var body: some View {
+        Group {
+            if embedded { content.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading) }
+            else { content.frame(width: 740, height: 520) }
+        }.sheet(item: $unlocking) { link in KDBXUnlockView(link: link, workspace: workspace) }
+    }
+    private var content: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Базы KeePass", systemImage: "lock.rectangle.stack").font(.title2.bold())
+            if !embedded { Label("Базы KeePass", systemImage: "lock.rectangle.stack").font(.title2.bold()) }
+            if let profileName { Text("Профиль: " + profileName).font(.callout).foregroundStyle(.secondary) }
             Text("Подключи существующий файл KDBX 3.1 или 4.x. SSH Hub читает базу; пароли и сам файл остаются в KeePass. Мастер-пароль не сохраняется.").font(.callout).foregroundStyle(.secondary)
+            if vault.isLocked {
+                HStack {
+                    Label("Учётные данные заблокированы", systemImage: "lock.shield")
+                    Spacer()
+                    Button("Разблокировать…") {
+                        Task { do { try await vault.unlock() } catch { self.error = error.localizedDescription } }
+                    }.disabled(vault.authenticating)
+                }
+            }
             HStack {
                 Button("Подключить базу…", systemImage: "plus") { choose(nil) }.disabled(vault.isLocked || links.count >= 20)
                 Spacer()
@@ -37,14 +55,13 @@ struct KDBXVaultsView: View {
                             if link.bookmark == nil { Text("После восстановления архива выбери файл базы заново.").font(.caption).foregroundStyle(.orange) }
                         }.padding(12).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 9))
                     }
-                    if links.isEmpty { ContentUnavailableView("Нет подключённых баз", systemImage: "lock.rectangle.stack", description: Text("Выбери свою базу, затем создай общий набор с записью KeePass и назначь его подключениям.")) }
+                    if links.isEmpty { ContentUnavailableView("Нет подключённых баз", systemImage: "lock.rectangle.stack", description: Text("Подключи файл базы. Затем выбери нужную запись KeePass в редакторе подключения или в общих учётных данных.")) }
                 }
-            }.frame(minHeight: 260)
-            if let error = error ?? workspace.error { Text(error).font(.caption).foregroundStyle(.red) }
+            }.frame(minHeight: embedded ? 100 : 260)
+            if let error = error ?? vault.loadError ?? workspace.error { Text(error).font(.caption).foregroundStyle(.red) }
             Text("Блокировка приложения, профиля или сеанса macOS закрывает базы. При изменении файла требуется повторное открытие. Файлы ключей и база не входят в архив SSH Hub.").font(.caption).foregroundStyle(.secondary)
-            HStack { Spacer(); Button("Готово") { dismiss() }.keyboardShortcut(.cancelAction) }
-        }.padding(22).frame(width: 740, height: 520)
-            .sheet(item: $unlocking) { link in KDBXUnlockView(link: link, workspace: workspace) }
+            if !embedded { HStack { Spacer(); Button("Готово") { dismiss() }.keyboardShortcut(.cancelAction) } }
+        }.padding(22)
     }
     private func choose(_ replacing: KDBXDatabaseLink?) {
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false

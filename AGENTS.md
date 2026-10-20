@@ -4,6 +4,11 @@
 
 Нативное приложение для macOS 14+ на Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
 
+## Изменения 3.1.1 (сборка 46)
+
+- Настройки → KeePass используют тот же KDBXVaultsView(embedded: true), vault и workspace текущего профиля; никаких отдельных копий списка баз. Locked vault разблокируется явно, базу открывает прежний KDBXUnlockView.
+- RecordTileCustomizationView объединяет индивидуальные/общие плитки в segmented tabs. Независимые черновики сохраняются при переключении, Save применяет только затронутые области, Cancel не пишет preferences; общие изменения проверяют исходный Data. «Использовать общие» удаляет individual override при Save. RecordActionRows используется и прежним редактором общих плиток в настройках.
+
 ## Изменения 3.1.0 (сборка 45)
 
 - RecordCredentialFields + optional SharedCredentialDocument.recordKeePass: прямые UUID-привязки в редакторах, взаимоисключающие с bindings. Direct KeePass меняет только runtime username/password, сохраняет SSH auth/key. Изменение staged до Save, failure откатывает public metadata через CAS; одиночная отмена включает привязку. Закрытые/отсутствующие базы не дают fallback. Backup фильтрует и remap обе карты, bookmarks не переносит.

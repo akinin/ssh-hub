@@ -3,10 +3,10 @@ import AppKit
 import ServiceManagement
 
 private enum AppSettingsSection: String, CaseIterable, Identifiable {
-    case connections, workspace, startup, updates, transfer, security
+    case connections, keePass, workspace, startup, updates, transfer, security
     var id: String { rawValue }
-    var title: String { switch self { case .security: return "Защита входа"; case .connections: return "Подключения"; case .workspace: return "Рабочая область"; case .startup: return "Запуск"; case .updates: return "Обновления"; case .transfer: return "Перенос данных" } }
-    var icon: String { switch self { case .security: return "lock.shield"; case .connections: return "network"; case .workspace: return "rectangle.split.2x1"; case .startup: return "power"; case .updates: return "arrow.triangle.2.circlepath"; case .transfer: return "externaldrive" } }
+    var title: String { switch self { case .keePass: return "KeePass"; case .security: return "Защита входа"; case .connections: return "Подключения"; case .workspace: return "Рабочая область"; case .startup: return "Запуск"; case .updates: return "Обновления"; case .transfer: return "Перенос данных" } }
+    var icon: String { switch self { case .keePass: return "lock.rectangle.stack"; case .security: return "lock.shield"; case .connections: return "network"; case .workspace: return "rectangle.split.2x1"; case .startup: return "power"; case .updates: return "arrow.triangle.2.circlepath"; case .transfer: return "externaldrive" } }
 }
 
 struct AppSettingsView: View {
@@ -48,8 +48,12 @@ struct AppSettingsView: View {
                 Divider()
                 VStack(alignment: .leading, spacing: 0) {
                     Text(selectedSection.title).font(.headline).padding(.horizontal, 22).padding(.top, 20)
+                    if selectedSection == .keePass {
+                        keePassSettings
+                    } else {
                     Form {
                         switch selectedSection {
+                        case .keePass: EmptyView()
                         case .security: AppAccessSettingsView()
                         case .connections:
                             Section {
@@ -100,6 +104,7 @@ struct AppSettingsView: View {
                             }
                         }
                     }.formStyle(.grouped)
+                    }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
             Divider()
@@ -112,6 +117,11 @@ struct AppSettingsView: View {
             .sheet(isPresented: $showingActionTiles) { GlobalRecordActionsEditor() }
             .onAppear { refreshLoginStatus() }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refreshLoginStatus() }
+    }
+    private var keePassSettings: some View {
+        let vault = store.credentialVault()
+        return KDBXVaultsView(vault: vault, workspace: store.kdbx!, embedded: true, profileName: store.profileName)
+            .id(vault.repository.scope)
     }
     private func refreshLoginStatus() {
         let status = SMAppService.mainApp.status

@@ -1016,7 +1016,6 @@ struct AliasDetail: View {
     @EnvironmentObject var store: AliasStore
     let entry: SSHAlias
     @State private var customizingTiles = false
-    @State private var customizingGlobalTiles = false
     @AppStorage(RecordActionDefaults.key) private var globalTiles = Data()
     var body: some View {
         ScrollView {
@@ -1028,7 +1027,7 @@ struct AliasDetail: View {
                         recordInfo
                     }
                 }
-                HStack { Spacer(); Button("Для всех записей…", systemImage: "square.grid.2x2") { customizingGlobalTiles = true }.font(.caption).accessibilityIdentifier("customizeGlobalRecordTiles"); Button("Для этой записи…", systemImage: "slider.horizontal.3") { customizingTiles = true }.font(.caption).accessibilityIdentifier("customizeRecordTiles") }
+                HStack { Spacer(); Button("Настроить плитки…", systemImage: "slider.horizontal.3") { customizingTiles = true }.font(.caption).accessibilityIdentifier("customizeRecordTiles") }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 165), spacing: 10)], spacing: 10) {
                     ForEach(RecordAction.layout(store.appearance(entry).actionTiles, global: RecordActionDefaults.decode(globalTiles), entry: entry).filter { !$0.hidden }) { style in
                         if let action = RecordAction(rawValue: style.id) {
@@ -1058,12 +1057,12 @@ struct AliasDetail: View {
                 Text(entry.localID == nil ? "SSH-алиас из " + entry.source.path.replacingOccurrences(of: NSHomeDirectory(), with: "~") : entry.sshAlias == nil ? "Запись хранится в SSH Hub." : "Запись связана с SSH-алиасом «" + (entry.sshAlias ?? "") + "».").font(.caption).foregroundStyle(.secondary)
             }.padding(24).frame(maxWidth: 850, alignment: .leading).frame(maxWidth: .infinity)
         }.sheet(isPresented: $customizingTiles) {
-            RecordActionsEditor(entry: entry, stored: store.appearance(entry).actionTiles, inherited: RecordActionDefaults.decode(globalTiles)) { tiles in
+            RecordTileCustomizationView(entry: entry, stored: store.appearance(entry).actionTiles, inherited: RecordActionDefaults.decode(globalTiles)) { tiles in
                 guard let current = store.aliases.first(where: { $0.favoriteID == entry.favoriteID }) else { return }
                 var appearance = store.appearance(current); appearance.actionTiles = tiles
                 store.setAppearance(appearance, for: current)
             }
-        }.sheet(isPresented: $customizingGlobalTiles) { GlobalRecordActionsEditor() }
+        }
     }
     private func run(_ action: RecordAction) {
         switch action {
