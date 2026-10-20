@@ -27,6 +27,10 @@ def call(helper, path, master):
     if response['ok']:
         request = {'id':'read','op':'read','entry_id':response['result']['entries'][0]['id']}
         process.stdin.write(json.dumps(request).encode()+b'\n');process.stdin.flush(); secret=json.loads(process.stdout.readline())
+        assert response['result']['writable'] is False
+        draft=dict(title='Must not write',username='fixture',password='owned',url='',notes='',group_id='11111111-2222-3333-4444-555555555555')
+        process.stdin.write(json.dumps(dict(id='save',op='save',draft=draft)).encode()+b'\n');process.stdin.flush()
+        assert json.loads(process.stdout.readline()).get('code')=='read_only_format'
     process.stdin.close(); process.wait(timeout=3)
     assert not process.stderr.read()
     return response, secret

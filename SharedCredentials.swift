@@ -322,7 +322,7 @@ final class SharedCredentialRuntime: @unchecked Sendable {
         if let issue = loadError { throw SharedCredentialError.invalid(issue) }
         guard !isLocked else { throw SharedCredentialError.locked }
         if let error = preset.validation { throw SharedCredentialError.invalid(error) }
-        if preset.kdbx != nil && changePassword { throw SharedCredentialError.invalid("Пароли KeePass изменяются в приложении, которое управляет базой.") }
+        if preset.kdbx != nil && changePassword { throw SharedCredentialError.invalid("Изменяй пароль через «Настройки → KeePass → Записи» или в KeePassXC.") }
         let old = changePassword ? try runtime.readSecret(preset.id) : nil
         var value = document
         if let index = value.presets.firstIndex(where: { $0.id == preset.id }) { value.presets[index] = preset } else { value.presets.append(preset) }

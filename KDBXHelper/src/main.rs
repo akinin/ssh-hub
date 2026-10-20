@@ -1,4 +1,4 @@
-//! SSH Hub read-only KDBX worker. Secrets use inherited private pipes only.
+//! SSH Hub isolated KDBX worker. Secrets use inherited private pipes only.
 use keepass::{Database, DatabaseKey, db::{EntryId, GroupRef, Times}};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -17,9 +17,10 @@ struct Request {
     master_password: Option<String>,
     key_path: Option<String>,
     entry_id: Option<uuid::Uuid>,
+    draft: Option<Edit>,
 }
 impl Drop for Request { fn drop(&mut self) { if let Some(p) = &mut self.master_password { p.zeroize(); } } }
-struct Vault { database: Database, path: String, hash: Vec<u8>, allowed: HashSet<uuid::Uuid>, expired: HashSet<uuid::Uuid> }
+struct Vault { database: Database, path: String, hash: Vec<u8>, editor: Option<(keepass::preserving::Document, DatabaseKey)>, allowed: HashSet<uuid::Uuid>, expired: HashSet<uuid::Uuid> }
 fn file_bytes(path: &str, maximum: u64) -> Result<Vec<u8>, &'static str> {
     if path.len() > 4096 || !path.starts_with('/') || path.contains('\0') { return Err("invalid_path"); }
     let mut file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path).map_err(|_| "file_unavailable")?;
@@ -66,14 +67,15 @@ fn open(request: &Request) -> Result<(Vault, Value), &'static str> {
         let parsed = key.with_keyfile(&mut io::Cursor::new(&bytes));
         bytes.zeroize(); key = parsed.map_err(|_| "invalid_keyfile")?;
     }
+    let editor = keepass::preserving::Document::open(&data, &key).ok().map(|doc| (doc,key.clone()));
     let database = Database::parse(&data, key).map_err(|_| "credentials_or_corrupt")?;
     let mut rows = Vec::new(); let mut allowed = HashSet::new();
     catalog_group(database.root(), String::new(), database.meta.recyclebin_uuid, false, 0, &mut rows, &mut allowed)?;
     rows.sort_by_key(|row| format!("{}/{}", row["group"],row["title"]));
     let expired = rows.iter().filter(|r| r["expired"] == true).filter_map(|r| r["id"].as_str().and_then(|id| id.parse().ok())).collect();
-    let result = json!({"entries":rows});
+    let result = json!({"entries":rows,"writable":editor.is_some(),"groups":editor.as_ref().map(|(d,_)| groups(&d.root)).unwrap_or_default()});
     if serde_json::to_vec(&result).map_err(|_| "catalog_limit")?.len() > 1_500_000 { return Err("catalog_limit"); }
-    Ok((Vault { database, path: path.clone(), hash: Sha256::digest(&data).to_vec(), allowed, expired }, result))
+    Ok((Vault { database, path: path.clone(), hash: Sha256::digest(&data).to_vec(), editor, allowed, expired }, result))
 }
 fn secret(vault: &Vault, id: uuid::Uuid) -> Result<Value, &'static str> {
     if !vault.allowed.contains(&id) { return Err("entry_missing"); }
@@ -100,10 +102,12 @@ fn run(reader: &mut impl BufRead, writer: &mut impl Write) -> io::Result<()> {
         let result = match request.op.as_str() {
             "open" if vault.is_none() => match open(&request) { Ok((value, catalog)) => { vault = Some(value); Ok(catalog) }, Err(code) => Err(code) },
             "read" => match (vault.as_ref(), request.entry_id) { (Some(v),Some(id)) => secret(v,id), _ => Err("locked") },
+            "detail" => match (vault.as_ref(), request.entry_id) { (Some(v),Some(id)) => detail(v,id), _ => Err("locked") },
+            "save" => match (vault.as_mut(),request.draft.as_ref()) { (Some(v),Some(draft)) => save(v,request.entry_id,draft), _ => Err("locked") },
             "close" => return Ok(()),
             _ => Err("invalid_request"),
         };
-        let fatal = matches!(result, Err("file_changed"));
+        let fatal = matches!(result, Err("file_changed" | "verification_failed"));
         let mut bytes = serde_json::to_vec(&response(&request.id, result)).map_err(io::Error::other)?;
         bytes.push(b'\n'); let output = writer.write_all(&bytes).and_then(|_| writer.flush()); bytes.zeroize(); output?;
         if fatal { return Ok(()); }
@@ -117,4 +121,6 @@ fn main() {
     let _ = run(&mut input.lock(), &mut output.lock());
 }
 
+mod editing;
+use editing::{Edit, groups, detail, save};
 #[cfg(test)] mod tests;

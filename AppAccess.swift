@@ -33,7 +33,7 @@ struct AppPasswordVerifier: Codable, Equatable {
 }
 enum AppAccessError: LocalizedError {
     case invalid, short, keychain, incorrect
-    var errorDescription: String? { switch self { case .invalid: return "Не удалось прочитать защиту входа. Доступ заблокирован."; case .short: return "Пароль приложения — от 12 символов, одной строкой."; case .keychain: return "Связка ключей недоступна. Разблокируй её в macOS и повтори запуск."; case .incorrect: return "Неверный пароль приложения." } }
+    var errorDescription: String? { switch self { case .invalid: return "Не удалось прочитать настройки авторизации. Доступ заблокирован."; case .short: return "Пароль приложения — от 12 символов, одной строкой."; case .keychain: return "Связка ключей недоступна. Разблокируй её в macOS и повтори запуск."; case .incorrect: return "Неверный пароль приложения." } }
 }
 
 protocol AppAccessStorage {
@@ -59,7 +59,7 @@ struct AppAccessKeychain: AppAccessStorage {
     func write(_ data: Data?) throws {
         guard let data else { let status = SecItemDelete(query as CFDictionary); guard status == errSecSuccess || status == errSecItemNotFound else { throw AppAccessError.keychain }; return }
         var status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-        if status == errSecItemNotFound { var item = query; item[kSecValueData as String] = data; item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly; item[kSecAttrLabel as String] = "SSH Hub · Защита входа"; status = SecItemAdd(item as CFDictionary, nil) }
+        if status == errSecItemNotFound { var item = query; item[kSecValueData as String] = data; item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly; item[kSecAttrLabel as String] = "SSH Hub · Авторизация"; status = SecItemAdd(item as CFDictionary, nil) }
         guard status == errSecSuccess else { throw AppAccessError.keychain }
     }
 }
@@ -205,22 +205,22 @@ struct AppAccessSettingsView: View {
     @State private var notice = ""
     var body: some View {
         Section {
-            Text(access.enabled ? "Защита входа включена" : "Защита входа выключена").font(.headline)
+            Text(access.enabled ? "Авторизация включена" : "Авторизация выключена").font(.headline)
             if access.enabled { PasswordEntryView(prompt: "Текущий пароль приложения", text: $current) }
             PasswordEntryView(prompt: "Новый пароль приложения (от 12 символов)", text: $password, onGenerated: { confirmation = $0 })
             PasswordEntryView(prompt: "Повтори новый пароль", text: $confirmation, showsGenerator: false)
             Toggle("Разрешить вход с Touch ID вместо пароля", isOn: $touchID).disabled(!access.supportsTouchID)
             if !access.supportsTouchID { Text("Touch ID недоступен или отпечатки не настроены в macOS.").font(.caption).foregroundStyle(.secondary) }
-            Text("Пароль остаётся резервным способом входа. Защита запрашивается при следующем запуске. Она закрывает доступ к интерфейсу, но не шифрует SSH-конфиг и материалы на диске.").font(.caption).foregroundStyle(.secondary)
+            Text("Пароль остаётся резервным способом входа. Авторизация запрашивается при следующем запуске. Она закрывает доступ к интерфейсу, но не шифрует SSH-конфиг и материалы на диске.").font(.caption).foregroundStyle(.secondary)
             HStack {
-                Button(access.enabled ? "Сменить пароль и сохранить" : "Включить защиту входа") { save(removing: false) }.disabled(password.isEmpty || password != confirmation || access.busy)
-                if access.enabled { Button("Отключить защиту") { save(removing: true) }.disabled(current.isEmpty || access.busy) }
+                Button(access.enabled ? "Сменить пароль и сохранить" : "Включить авторизацию") { save(removing: false) }.disabled(password.isEmpty || password != confirmation || access.busy)
+                if access.enabled { Button("Отключить авторизацию") { save(removing: true) }.disabled(current.isEmpty || access.busy) }
             }
             if let error { Text(error).foregroundStyle(.red).font(.caption) }
             if !notice.isEmpty { Text(notice).foregroundStyle(.secondary).font(.caption) }
         }.onAppear { touchID = access.usesTouchID }.onDisappear { current = ""; password = ""; confirmation = "" }
     }
     private func save(removing: Bool) {
-        Task { do { try await access.configure(current: current, password: removing ? nil : password, touchID: touchID); current = ""; password = ""; confirmation = ""; error = nil; notice = removing ? "Защита выключена." : "Настройки входа сохранены." } catch { self.error = error.localizedDescription } }
+        Task { do { try await access.configure(current: current, password: removing ? nil : password, touchID: touchID); current = ""; password = ""; confirmation = ""; error = nil; notice = removing ? "Авторизация выключена." : "Настройки входа сохранены." } catch { self.error = error.localizedDescription } }
     }
 }

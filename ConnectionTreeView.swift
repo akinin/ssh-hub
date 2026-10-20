@@ -54,6 +54,7 @@ private final class TreeScrollView: NSScrollView {
 }
 
 struct ConnectionTreeView: NSViewRepresentable {
+    @AppStorage(InterfaceDensity.key) private var densityValue = InterfaceDensity.normal.rawValue
     @EnvironmentObject var store: AliasStore
     func makeCoordinator() -> Coordinator { Coordinator(store: store) }
     func makeNSView(context: Context) -> NSScrollView {
@@ -62,8 +63,8 @@ struct ConnectionTreeView: NSViewRepresentable {
         column.width = 280; column.resizingMask = .autoresizingMask
         outline.autoresizingMask = [.width]
         outline.addTableColumn(column); outline.outlineTableColumn = column; outline.headerView = nil
-        outline.style = .sourceList; outline.rowSizeStyle = .small
-        outline.rowHeight = 23; outline.intercellSpacing = NSSize(width: 0, height: 0); outline.usesAutomaticRowHeights = false
+        outline.style = .sourceList; outline.rowSizeStyle = .custom
+        outline.rowHeight = context.coordinator.density.rowHeight; outline.intercellSpacing = NSSize(width: 0, height: 0); outline.usesAutomaticRowHeights = false
         outline.indentationPerLevel = 14; outline.allowsMultipleSelection = true
         outline.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         outline.autoresizesOutlineColumn = true
@@ -80,10 +81,11 @@ struct ConnectionTreeView: NSViewRepresentable {
         context.coordinator.refresh()
         return scroll
     }
-    func updateNSView(_ nsView: NSScrollView, context: Context) { context.coordinator.refresh() }
+    func updateNSView(_ nsView: NSScrollView, context: Context) { context.coordinator.density = InterfaceDensity(rawValue: densityValue) ?? .normal; context.coordinator.refresh() }
     @MainActor final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
         static let dragType = NSPasteboard.PasteboardType("com.olshaniki.ssh-hub.sidebar-record")
         let store: AliasStore
+        var density = InterfaceDensity.normal
         weak var outline: NSOutlineView?
         private var availabilitySubscription: AnyCancellable?
         private var roots: [TreeItem] = []
@@ -106,12 +108,12 @@ struct ConnectionTreeView: NSViewRepresentable {
             updating = true; defer { updating = false }
             let nodes = ConnectionTree.build(entries: store.filtered, groups: store.groups,
                                          folders: store.query.isEmpty && store.groupFilter == "all" ? store.folders : [], order: store.sidebarOrder, title: store.title)
-            var presentation = [store.profiles.active.uuidString, store.query, store.groupFilter]
+            var presentation = [store.profiles.active.uuidString, store.query, store.groupFilter, density.rawValue]
             func describe(_ nodes: [ConnectionTreeNode]) {
                 for node in nodes {
                     presentation += [node.id, node.title]
                     if let entry = node.entry {
-                        presentation += [store.featureTags[entry.favoriteID, default: []].map(\.rawValue).joined(separator: ","), entry.host, entry.user, entry.port, entry.authentication.rawValue, entry.options.map(\.id).joined(separator: "\n"), store.appearance(entry).logo?.base64EncodedString() ?? "", String(store.availability.selected.contains(entry.favoriteID))]
+                        presentation += [store.featureTags[entry.favoriteID, default: []].map(\.rawValue).joined(separator: ","), entry.host, entry.user, entry.port, entry.authentication.rawValue, entry.recordKind?.rawValue ?? "ssh", entry.options.map(\.id).joined(separator: "\n"), store.appearance(entry).logo?.base64EncodedString() ?? "", String(store.availability.selected.contains(entry.favoriteID))]
                         if let result = store.availability.results[entry.favoriteID] { presentation += [String(result.reachable), result.detail, String(result.date.timeIntervalSince1970)] }
                     } else { presentation.append(store.folderAppearance(String(node.id.dropFirst("folder:".count))).logo?.base64EncodedString() ?? "") }
                     describe(node.children); presentation.append("end:" + node.id)
@@ -136,7 +138,7 @@ struct ConnectionTreeView: NSViewRepresentable {
                 return item.node.id == selected
             })
             if outline.selectedRowIndexes != chosen { outline.selectRowIndexes(chosen, byExtendingSelection: false) }
-            outline.rowHeight = 23
+            outline.rowHeight = density.rowHeight
             if let scroll = outline.enclosingScrollView {
                 outline.tableColumns.first?.width = max(1, scroll.contentSize.width)
                 scroll.needsLayout = true
@@ -185,7 +187,7 @@ struct ConnectionTreeView: NSViewRepresentable {
             guard let item = item as? TreeItem else { return nil }
             let cell = NSTableCellView()
             let icon = NSImageView(); icon.imageScaling = .scaleProportionallyUpOrDown
-            let text = NSTextField(labelWithString: item.node.title); text.font = .systemFont(ofSize: 12, weight: item.node.isFolder ? .medium : .regular)
+            let text = NSTextField(labelWithString: item.node.title); text.font = .systemFont(ofSize: density == .compact ? 12 : 13, weight: item.node.isFolder ? .medium : .regular)
             text.lineBreakMode = .byTruncatingTail; text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             if let entry = item.node.entry {
                 icon.image = store.appearance(entry).logo.flatMap(NSImage.init(data:)) ?? NSImage(systemSymbolName: entry.recordKind?.icon ?? "server.rack", accessibilityDescription: nil)
@@ -199,6 +201,19 @@ struct ConnectionTreeView: NSViewRepresentable {
             }
             var views: [NSView] = [icon, text]
             if let entry = item.node.entry {
+                let kind = entry.recordKind ?? .ssh
+                let badge = NSTextField(labelWithString: kind.badge)
+                badge.font = .monospacedSystemFont(ofSize: 9, weight: .medium)
+                badge.textColor = .secondaryLabelColor; badge.alignment = .center
+                badge.wantsLayer = true; badge.layer?.cornerRadius = 3
+                badge.layer?.backgroundColor = NSColor.secondaryLabelColor.withAlphaComponent(0.10).cgColor
+                badge.setContentCompressionResistancePriority(.required, for: .horizontal)
+                badge.setContentHuggingPriority(.required, for: .horizontal)
+                badge.toolTip = "Тип записи: " + kind.title
+                badge.setAccessibilityLabel("Тип записи: " + kind.title)
+                badge.translatesAutoresizingMaskIntoConstraints = false
+                badge.widthAnchor.constraint(greaterThanOrEqualToConstant: CGFloat(kind.badge.count * 6 + 8)).isActive = true
+                views.append(badge)
                 for tag in store.featureTags[entry.favoriteID, default: []] {
                     let badge = NSImageView(); badge.image = NSImage(systemSymbolName: tag.icon, accessibilityDescription: tag.title); badge.contentTintColor = .secondaryLabelColor; badge.toolTip = tag.title
                     badge.translatesAutoresizingMaskIntoConstraints = false; badge.widthAnchor.constraint(equalToConstant: 11).isActive = true; badge.heightAnchor.constraint(equalToConstant: 11).isActive = true; views.append(badge)

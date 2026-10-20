@@ -9,6 +9,7 @@ struct KDBXVaultsView: View {
     var profileName: String? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var unlocking: KDBXDatabaseLink?
+    @State private var managing: KDBXDatabaseLink?
     @State private var error: String?
     private var links: [KDBXDatabaseLink] { vault.document.kdbxDatabases ?? [] }
     var body: some View {
@@ -16,12 +17,13 @@ struct KDBXVaultsView: View {
             if embedded { content.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading) }
             else { content.frame(width: 740, height: 520) }
         }.sheet(item: $unlocking) { link in KDBXUnlockView(link: link, workspace: workspace) }
+        .sheet(item: $managing) { link in KDBXEntriesView(link: link, workspace: workspace) }
     }
     private var content: some View {
         VStack(alignment: .leading, spacing: 16) {
             if !embedded { Label("Базы KeePass", systemImage: "lock.rectangle.stack").font(.title2.bold()) }
             if let profileName { Text("Профиль: " + profileName).font(.callout).foregroundStyle(.secondary) }
-            Text("Подключи существующий файл KDBX 3.1 или 4.x. SSH Hub читает базу; пароли и сам файл остаются в KeePass. Мастер-пароль не сохраняется.").font(.callout).foregroundStyle(.secondary)
+            Text("Подключи базу KeePassXC или KeePass. KDBX 4.0 и 4.1 можно редактировать; KDBX 3.1 доступен для чтения. Мастер-пароль не сохраняется.").font(.callout).foregroundStyle(.secondary)
             if vault.isLocked {
                 HStack {
                     Label("Учётные данные заблокированы", systemImage: "lock.shield")
@@ -48,7 +50,11 @@ struct KDBXVaultsView: View {
                                 }
                                 Spacer()
                                 if workspace.runtime.catalog(link.id) == nil { Button("Открыть…") { unlocking = link }.disabled(workspace.busy != nil || vault.isLocked || link.bookmark == nil) }
-                                else { Button { workspace.runtime.lock(link.id) } label: { Image(systemName: "lock") }.help("Заблокировать базу") }
+                                else {
+                                    if workspace.runtime.canWrite(link.id) { Button("Записи…", systemImage: "list.bullet.rectangle") { managing = link }.disabled(workspace.busy != nil) }
+                                    else { Text("Только чтение").font(.caption).foregroundStyle(.secondary) }
+                                    Button { workspace.runtime.lock(link.id) } label: { Image(systemName: "lock") }.help("Заблокировать базу").disabled(workspace.busy != nil)
+                                }
                                 Button { choose(link) } label: { Image(systemName: "folder") }.help("Выбрать файл заново").disabled(vault.isLocked)
                                 Button(role: .destructive) { do { try vault.removeDatabase(link.id); workspace.runtime.lock(link.id) } catch { self.error = error.localizedDescription } } label: { Image(systemName: "link.badge.plus").rotationEffect(.degrees(45)) }.help("Отключить базу от SSH Hub; файл останется на месте").disabled(vault.isLocked)
                             }
@@ -59,7 +65,7 @@ struct KDBXVaultsView: View {
                 }
             }.frame(minHeight: embedded ? 100 : 260)
             if let error = error ?? vault.loadError ?? workspace.error { Text(error).font(.caption).foregroundStyle(.red) }
-            Text("Блокировка приложения, профиля или сеанса macOS закрывает базы. При изменении файла требуется повторное открытие. Файлы ключей и база не входят в архив SSH Hub.").font(.caption).foregroundStyle(.secondary)
+            Text("Блокировка приложения, профиля или сеанса macOS закрывает базы. Перед записью создаётся зашифрованная копия рядом с базой. Изменённый другим приложением файл нужно открыть заново. Файлы ключей и база не входят в архив SSH Hub.").font(.caption).foregroundStyle(.secondary)
             if !embedded { HStack { Spacer(); Button("Готово") { dismiss() }.keyboardShortcut(.cancelAction) } }
         }.padding(22)
     }
@@ -90,7 +96,7 @@ private struct KDBXUnlockView: View {
                 Button("Ключевой файл…") { let panel = NSOpenPanel(); panel.canChooseDirectories = false; if panel.runModal() == .OK { keyFile = panel.url } }
                 if keyFile != nil { Button { keyFile = nil } label: { Image(systemName: "xmark") }.help("Убрать ключевой файл") }
             }
-            Text("Мастер-пароль и ключевой файл используются только для открытия базы. После блокировки их потребуется указать снова.").font(.caption).foregroundStyle(.secondary)
+            Text("Ключи базы остаются только в памяти обработчика до блокировки. Мастер-пароль и ключевой файл потребуется указать снова после её закрытия.").font(.caption).foregroundStyle(.secondary)
             if let error = workspace.error { Text(error).font(.caption).foregroundStyle(.red) }
             HStack {
                 if workspace.busy != nil { ProgressView().controlSize(.small); Text("Открываем базу…").font(.caption) }

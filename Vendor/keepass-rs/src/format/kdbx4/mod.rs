@@ -1,5 +1,5 @@
 #[cfg(feature = "save_kdbx4")]
-mod dump;
+pub(crate) mod dump;
 mod parse;
 
 use crate::{

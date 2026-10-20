@@ -28,21 +28,31 @@ pub fn dump_kdbx4(
     db_key: &DatabaseKey,
     writer: &mut dyn Write,
 ) -> Result<(), DatabaseSaveError> {
-    if !matches!(db.config.version, DatabaseVersion::KDB4(1)) {
-        return Err(DatabaseSaveError::UnsupportedVersion);
-    }
+    if !matches!(db.config.version, DatabaseVersion::KDB4(1)) { return Err(DatabaseSaveError::UnsupportedVersion); }
+    dump_kdbx4_payload(&db.config, db_key, writer, &[], None, |cipher| crate::format::xml_db::to_xml(db, cipher))
+}
 
+/// Shared authenticated container writer. The preserving editor supplies the original XML tree.
+pub(crate) fn dump_kdbx4_payload(
+    config: &crate::config::DatabaseConfig,
+    db_key: &DatabaseKey,
+    writer: &mut dyn Write,
+    comments: &[Vec<u8>],
+    original_kdf: Option<&VariantDictionary>,
+    payload: impl FnOnce(&mut dyn crate::crypt::ciphers::Cipher) -> Result<(Vec<u8>, Vec<Value<Vec<u8>>>), DatabaseSaveError>,
+) -> Result<(), DatabaseSaveError> {
+    if !matches!(config.version, DatabaseVersion::KDB4(0 | 1)) { return Err(DatabaseSaveError::UnsupportedVersion); }
     // generate encryption keys and seeds on the fly when saving
     let mut master_seed = vec![0; HEADER_MASTER_SEED_SIZE];
     getrandom::fill(&mut master_seed)?;
 
-    let mut outer_iv = vec![0; db.config.outer_cipher_config.get_iv_size()];
+    let mut outer_iv = vec![0; config.outer_cipher_config.get_iv_size()];
     getrandom::fill(&mut outer_iv)?;
 
-    let mut inner_random_stream_key = vec![0; db.config.inner_cipher_config.get_key_size()];
+    let mut inner_random_stream_key = vec![0; config.inner_cipher_config.get_key_size()];
     getrandom::fill(&mut inner_random_stream_key)?;
 
-    let (kdf, kdf_seed) = db.config.kdf_config.get_kdf_and_seed()?;
+    let (kdf, kdf_seed) = config.kdf_config.get_kdf_and_seed()?;
 
     #[cfg(feature = "challenge_response")]
     let db_key = db_key.clone().perform_challenge(&kdf_seed)?;
@@ -50,18 +60,18 @@ pub fn dump_kdbx4(
     // dump the outer header - need to buffer so that SHA256 can be computed
     let mut header_data = Vec::new();
 
-    db.config.version.dump(&mut header_data)?;
+    config.version.dump(&mut header_data)?;
 
     KDBX4OuterHeader {
-        outer_cipher_config: db.config.outer_cipher_config.clone(),
-        compression_config: db.config.compression_config.clone(),
+        outer_cipher_config: config.outer_cipher_config.clone(),
+        compression_config: config.compression_config.clone(),
         master_seed: master_seed.clone(),
         outer_iv: outer_iv.clone(),
-        kdf_config: db.config.kdf_config.clone(),
+        kdf_config: config.kdf_config.clone(),
         kdf_seed,
-        public_custom_data: db.config.public_custom_data.clone(),
+        public_custom_data: config.public_custom_data.clone(),
     }
-    .dump(&mut header_data)?;
+    .dump_preserving(&mut header_data, comments, original_kdf)?;
 
     let header_sha256 = crypt::calculate_sha256(&[&header_data]);
 
@@ -87,32 +97,29 @@ pub fn dump_kdbx4(
     writer.write_all(&header_hmac)?;
 
     // Initialize inner encryptor from inner header params
-    let mut inner_cipher = db
-        .config
+    let mut inner_cipher = config
         .inner_cipher_config
         .get_cipher(&inner_random_stream_key)?;
 
     // convert database to XML and header attachments
-    let (xml, attachments) = crate::format::xml_db::to_xml(db, &mut *inner_cipher)?;
+    let (xml, attachments) = payload(&mut *inner_cipher)?;
 
     // dump inner header into buffer
     let mut payload = Vec::new();
     KDBX4InnerHeader {
-        inner_random_stream: db.config.inner_cipher_config.clone(),
+        inner_random_stream: config.inner_cipher_config.clone(),
         inner_random_stream_key,
     }
     .dump(&attachments, &mut payload)?;
 
     payload.extend(xml);
 
-    let payload_compressed = db
-        .config
+    let payload_compressed = config
         .compression_config
         .get_compression()
         .compress(&payload)?;
 
-    let payload_encrypted = db
-        .config
+    let payload_encrypted = config
         .outer_cipher_config
         .get_cipher(&master_key, &outer_iv)?
         .encrypt(&payload_compressed)?;
@@ -124,7 +131,8 @@ pub fn dump_kdbx4(
 }
 
 impl KDBX4OuterHeader {
-    fn dump(&self, writer: &mut dyn Write) -> Result<(), DatabaseSaveError> {
+    fn dump_preserving(&self, writer: &mut dyn Write, comments: &[Vec<u8>], original_kdf: Option<&VariantDictionary>) -> Result<(), DatabaseSaveError> {
+        for comment in comments { writer.write_u8(super::HEADER_COMMENT)?; writer.write_with_len(comment)?; }
         writer.write_u8(HEADER_OUTER_ENCRYPTION_ID)?;
         writer.write_with_len(&self.outer_cipher_config.dump())?;
 
@@ -137,7 +145,8 @@ impl KDBX4OuterHeader {
         writer.write_u8(HEADER_MASTER_SEED)?;
         writer.write_with_len(&self.master_seed)?;
 
-        let vd: VariantDictionary = self.kdf_config.to_variant_dictionary(&self.kdf_seed);
+        let mut vd: VariantDictionary = original_kdf.cloned().unwrap_or_else(|| self.kdf_config.to_variant_dictionary(&self.kdf_seed));
+        vd.set("S", self.kdf_seed.clone());
         let mut vd_buffer = Vec::new();
         vd.dump(&mut vd_buffer)?;
 

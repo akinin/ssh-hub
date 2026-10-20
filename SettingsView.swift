@@ -5,13 +5,14 @@ import ServiceManagement
 private enum AppSettingsSection: String, CaseIterable, Identifiable {
     case connections, keePass, workspace, startup, updates, transfer, security
     var id: String { rawValue }
-    var title: String { switch self { case .keePass: return "KeePass"; case .security: return "Защита входа"; case .connections: return "Подключения"; case .workspace: return "Рабочая область"; case .startup: return "Запуск"; case .updates: return "Обновления"; case .transfer: return "Перенос данных" } }
+    var title: String { switch self { case .keePass: return "KeePass"; case .security: return "Авторизация"; case .connections: return "Подключения"; case .workspace: return "Рабочая область"; case .startup: return "Запуск"; case .updates: return "Обновления"; case .transfer: return "Перенос данных" } }
     var icon: String { switch self { case .keePass: return "lock.rectangle.stack"; case .security: return "lock.shield"; case .connections: return "network"; case .workspace: return "rectangle.split.2x1"; case .startup: return "power"; case .updates: return "arrow.triangle.2.circlepath"; case .transfer: return "externaldrive" } }
 }
 
 struct AppSettingsView: View {
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) private var dismiss
+    @AppStorage(InterfaceDensity.key) private var density = InterfaceDensity.normal.rawValue
     @AppStorage("consoleDestination.v1") private var consoleDestination = "embedded"
     @AppStorage("restoreWorkspace.v1") private var restoreWorkspace = true
     @AppStorage("terminalID") private var terminalID = "com.apple.Terminal"
@@ -25,7 +26,7 @@ struct AppSettingsView: View {
     @State private var selectedSection = AppSettingsSection.connections
     var body: some View {
         VStack(spacing: 0) {
-            HubSheetHeader(title: "Настройки", subtitle: "Подключения, рабочая область и защита", icon: "gearshape").padding(20)
+            HubSheetHeader(title: "Настройки", subtitle: "Подключения, рабочая область и авторизация", icon: "gearshape").padding(20)
             Divider()
             HStack(spacing: 0) {
                 VStack(spacing: 5) {
@@ -57,6 +58,10 @@ struct AppSettingsView: View {
                             }
                         case .workspace:
                             Section {
+                                Picker("Плотность интерфейса", selection: $density) {
+                                    ForEach(InterfaceDensity.allCases) { Text($0.title).tag($0.rawValue) }
+                                }.pickerStyle(.segmented)
+                                Text("Высота строк списка и размер плиток. Применяется сразу во всех профилях.").font(.caption).foregroundStyle(.secondary)
                                 Button("Плитки всех записей…", systemImage: "square.grid.2x2") { showingActionTiles = true }
                                 Text("Общий порядок, цвета и набор плиток. Индивидуальные настройки записей имеют приоритет.").font(.caption).foregroundStyle(.secondary)
                                 Toggle("Восстанавливать вкладки, панели и окна", isOn: $restoreWorkspace)

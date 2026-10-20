@@ -12,5 +12,16 @@ SSH Hub changes (2026-10-20):
 - Cargo.toml omits the unused, empty deprecated block-modes 0.9 crate.
 
 The isolated helper also bounds the encrypted file to 64 MiB, key files to 1 MiB,
-JSON frames, catalog size and lifetime. The production helper has no save feature.
+JSON frames, catalog size and lifetime.
+
+SSH Hub editing changes (3.4.0):
+- preserving.rs and the shared dump_kdbx4_payload writer retain the original XML
+  tree and attachment IDs when editing KDBX4.0/4.1. New container random values
+  are generated on save, with original KDF/cipher settings and header custom data.
+  Protected XML values are re-encrypted in document order. A full decrypted
+  round-trip comparison precedes file replacement. Unknown XML is retained;
+  ambiguous identities/fields, DTD/entities and unsupported structures reject edits.
+  Normal Database::save remains restricted to KDBX4.1. The helper owns fingerprint
+  checks, exclusive staging, encrypted backup and atomic replacement; it never
+  emits plaintext XML or keys into files, logs or arguments. KDBX3 remains read-only.
 No original license text has been changed.

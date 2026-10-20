@@ -867,14 +867,14 @@ struct MainView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "terminal.fill").font(.title2).foregroundStyle(.blue)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("SSH Hub").font(.headline)
-                        Text(store.countText).font(.caption).foregroundStyle(.secondary)
+                        Text("SSH Hub").font(.headline).lineLimit(1)
+                        Text(store.countText).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer()
                     ProfileSelector().environmentObject(store).font(.caption).frame(width: 86)
                     Button { store.folderParent = ""; store.creatingFolder = true } label: { Image(systemName: "folder.badge.plus") }
                         .buttonStyle(.plain).help("Новая папка").accessibilityLabel("Новая папка")
-                }.padding(.horizontal, 14).padding(.vertical, 12)
+                }.fixedSize(horizontal: false, vertical: true).padding(.horizontal, 14).padding(.vertical, 12)
                 HStack(spacing: 8) {
                     TextField("Поиск по имени или адресу", text: $store.query).textFieldStyle(.roundedBorder)
                     Menu {
@@ -965,7 +965,7 @@ struct MainView: View {
                         toolbarButton("Настройки", symbol: "gearshape", help: "Настройки · ⌘,") { store.showingSettings = true }
                     }
                     toolbarButton("ИИ-помощник", symbol: "sparkles", help: "Показать или скрыть ИИ-помощника") { if store.assistantVisible || store.assistantExpanded { store.closeAssistant() } else { store.presentAssistant() } }
-                    toolbarButton("Заблокировать", symbol: "lock", help: access.enabled ? "Заблокировать SSH Hub" : "Включи пароль приложения в настройках защиты") { store.lockApplication() }.disabled(!access.enabled)
+                    toolbarButton("Заблокировать", symbol: "lock", help: access.enabled ? "Заблокировать SSH Hub" : "Включи пароль приложения в настройках авторизации") { store.lockApplication() }.disabled(!access.enabled)
                     toolbarButton("Новая запись", symbol: "plus", help: "Новая запись · ⌘N") { store.newRecord() }
                 }.padding(.horizontal, 10).fixedSize(horizontal: true, vertical: true)
             }
@@ -1048,6 +1048,13 @@ struct AliasDetail: View {
     let entry: SSHAlias
     @State private var customizingTiles = false
     @AppStorage(RecordActionDefaults.key) private var globalTiles = Data()
+    @AppStorage(InterfaceDensity.key) private var densityValue = InterfaceDensity.normal.rawValue
+    private var density: InterfaceDensity { InterfaceDensity(rawValue: densityValue) ?? .normal }
+    private var visibleTiles: [RecordActionStyle] { RecordAction.layout(store.appearance(entry).actionTiles, global: RecordActionDefaults.decode(globalTiles), entry: entry).filter { !$0.hidden } }
+    private var primaryAction: String? {
+        let preferred: [RecordAction] = entry.recordKind == .website ? [.browser, .inside] : entry.recordKind == .web ? [.inside, .browser] : [.connect]
+        return preferred.first { action in visibleTiles.contains { $0.id == action.id } }?.id
+    }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -1060,9 +1067,9 @@ struct AliasDetail: View {
                 }
                 HStack { Text("Действия").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary); Spacer(); Button("Настроить…", systemImage: "slider.horizontal.3") { customizingTiles = true }.font(.caption).help("Настроить плитки записи").accessibilityIdentifier("customizeRecordTiles") }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 10)], spacing: 10) {
-                    ForEach(RecordAction.layout(store.appearance(entry).actionTiles, global: RecordActionDefaults.decode(globalTiles), entry: entry).filter { !$0.hidden }) { style in
+                    ForEach(visibleTiles) { style in
                         if let action = RecordAction(rawValue: style.id) {
-                            tile(action.title, detail: action.detail(entry), icon: action == .connect ? entry.recordKind?.icon ?? action.icon : action.icon, color: style.tint) { run(action) }
+                            tile(action.title, detail: action.detail(entry), icon: action == .connect ? entry.recordKind?.icon ?? action.icon : action.icon, color: style.tint, primary: action.id == primaryAction) { run(action) }
                                 .disabled(action == .check && store.checkingID != nil)
                         }
                     }
@@ -1086,7 +1093,7 @@ struct AliasDetail: View {
                     HStack { Text(entry.command).font(.system(.caption, design: .monospaced)).textSelection(.enabled); Spacer(); Button { store.copy(entry.command) } label: { Image(systemName: "doc.on.doc") }.help("Копировать команду SSH") }.padding(12).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
                 }
                 Text(entry.localID == nil ? "SSH-алиас из " + entry.source.path.replacingOccurrences(of: NSHomeDirectory(), with: "~") : entry.sshAlias == nil ? "Запись хранится в SSH Hub." : "Запись связана с SSH-алиасом «" + (entry.sshAlias ?? "") + "».").font(.caption).foregroundStyle(.secondary)
-            }.padding(24).frame(maxWidth: 1000, alignment: .leading).frame(maxWidth: .infinity)
+            }.padding(density == .compact ? 16 : 24).frame(maxWidth: 1000, alignment: .leading).frame(maxWidth: .infinity)
         }.sheet(isPresented: $customizingTiles) {
             RecordTileCustomizationView(entry: entry, stored: store.appearance(entry).actionTiles, inherited: RecordActionDefaults.decode(globalTiles)) { tiles in
                 guard let current = store.aliases.first(where: { $0.favoriteID == entry.favoriteID }) else { return }
@@ -1122,7 +1129,7 @@ struct AliasDetail: View {
         VStack(alignment: .leading, spacing: 4) {
             Button { store.stylingAlias = entry } label: { Text(store.title(entry)).font(.title2).bold().lineLimit(2) }.buttonStyle(.plain).help("Изменить название и логотип")
             Text(entry.secondaryTitle).font(.callout).foregroundStyle(.secondary).textSelection(.enabled).lineLimit(2)
-            Text(entry.canSSH ? "\(entry.user) · порт \(entry.port)" : (entry.recordKind?.title ?? "Запись")).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            Text((entry.recordKind ?? .ssh).title + (entry.canSSH ? " · \(entry.user) · порт \(entry.port)" : "")).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             RecordFeatureBadges(tags: store.featureTags[entry.favoriteID, default: []])
         }
     }
@@ -1144,8 +1151,8 @@ struct AliasDetail: View {
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("Действия с записью").accessibilityLabel("Действия с записью")
         }
     }
-    private func tile(_ title: String, detail: String, icon: String, color: Color = .blue, action: @escaping () -> Void) -> some View {
-        RecordActionTile(title: title, detail: detail, icon: icon, color: color, action: action)
+    private func tile(_ title: String, detail: String, icon: String, color: Color = .blue, primary: Bool = false, action: @escaping () -> Void) -> some View {
+        RecordActionTile(title: title, detail: detail, icon: icon, color: color, primary: primary, density: density, action: action)
     }
     private func parameter(_ label: String, _ value: String) -> some View {
         GridRow { Text(label).foregroundStyle(.secondary); Text(value).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.font(.callout)

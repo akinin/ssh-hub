@@ -11,11 +11,33 @@ struct KDBXEntryInfo: Decodable, Identifiable, Equatable {
     var modified: Double?
     var valid: Bool { title.utf8.count <= 512 && username.utf8.count <= 512 && group.utf8.count <= 2048 && [title,username,group].allSatisfy { !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) } && modified.map(\.isFinite) != false }
 }
+struct KDBXGroupInfo: Decodable, Identifiable { var id: UUID; var title: String }
+struct KDBXEntryDraft: Codable {
+    var title = ""
+    var username = ""
+    var password = ""
+    var url = ""
+    var notes = ""
+    var groupID: UUID
+    var historyCount: Int? = nil
+    enum CodingKeys: String, CodingKey { case title, username, password, url, notes; case groupID = "group_id"; case historyCount = "history_count" }
+    var validation: String? {
+        let fields = [(title,512),(username,512),(password,16384),(url,4096)]
+        if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || fields.contains(where: { $0.0.utf8.count > $0.1 || $0.0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }) || notes.utf8.count > 8192 || notes.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) && !["\n", "\r", "\t"].contains(String($0)) }) { return "Название обязательно. Поля должны быть однострочными; заметки — до 8192 байт." }
+        if (try? JSONEncoder().encode(self).count) ?? Int.max > 30_000 { return "Суммарный размер полей слишком большой для сохранения. Сократи заметки или пароль." }
+        return nil
+    }
+}
 enum KDBXError: LocalizedError {
     case failure(String)
     var errorDescription: String? {
         guard case .failure(let code) = self else { return nil }
         switch code {
+        case "read_only_format", "unsupported_xml": return "Эта база доступна только для чтения. Запись поддерживается для KDBX 4.0 и 4.1; нестандартные структуры не изменяются."
+        case "database_busy": return "База занята другим приложением. Заверши редактирование в KeePassXC и повтори сохранение."
+        case "write_unavailable", "write_failed": return "Не удалось сохранить базу. Проверь права на файл и папку. Исходный файл не заменяется до завершения проверки."
+        case "verification_failed": return "Проверка сохранённой базы не прошла. Открой базу заново и проверь результат; зашифрованная резервная копия сохраняется рядом с файлом."
+        case "invalid_edit", "invalid_group": return "Проверь поля и выбери существующую группу базы."
         case "locked": return "База KeePass заблокирована. Разблокируй её в общих учётных данных."
         case "credentials_or_corrupt": return "Не удалось открыть базу: проверь мастер-пароль, ключевой файл и целостность KDBX. Слишком большие параметры защиты также не поддерживаются."
         case "unsupported_format": return "Поддерживаются базы KDBX 3.1 и 4.x. Старый KDB и ключи плагинов не поддерживаются."
@@ -116,7 +138,7 @@ final class KDBXClient: @unchecked Sendable {
 }
 
 final class KDBXRuntime: KDBXCredentialSource, @unchecked Sendable {
-    private struct Session { let client: KDBXClient; let generation: UUID; var entries: [KDBXEntryInfo]? }
+    private struct Session { let client: KDBXClient; let generation: UUID; var entries: [KDBXEntryInfo]?; var writable = false; var groups: [KDBXGroupInfo] = [] }
     private let mutex = NSLock()
     private var sessions: [UUID: Session] = [:]
     private var active = true
@@ -127,13 +149,33 @@ final class KDBXRuntime: KDBXCredentialSource, @unchecked Sendable {
         sessions[id] = Session(client: client, generation: generation); mutex.unlock()
         old?.client.stop(); changed?(); return generation
     }
-    func accept(_ id: UUID, generation: UUID, entries: [KDBXEntryInfo]) throws {
+    func accept(_ id: UUID, generation: UUID, entries: [KDBXEntryInfo], writable: Bool = false, groups: [KDBXGroupInfo] = []) throws {
         guard entries.count <= 2000, entries.allSatisfy(\.valid), Set(entries.map(\.id)).count == entries.count else { throw KDBXError.failure("catalog_limit") }
         mutex.lock(); defer { mutex.unlock() }
         guard active, sessions[id]?.generation == generation, sessions[id]?.client.running == true else { throw KDBXError.failure("locked") }
-        sessions[id]?.entries = entries
+        sessions[id]?.entries = entries; sessions[id]?.writable = writable; sessions[id]?.groups = groups
     }
     func catalog(_ id: UUID) -> [KDBXEntryInfo]? { mutex.lock(); defer { mutex.unlock() }; guard active, sessions[id]?.client.running == true else { return nil }; return sessions[id]?.entries }
+    func canWrite(_ id: UUID) -> Bool { mutex.lock(); defer { mutex.unlock() }; return active && sessions[id]?.writable == true && sessions[id]?.client.running == true }
+    func groups(_ id: UUID) -> [KDBXGroupInfo] { mutex.lock(); defer { mutex.unlock() }; return active && sessions[id]?.client.running == true ? sessions[id]?.groups ?? [] : [] }
+    func editRequest(_ id: UUID, op: String, fields: [String: Any]) throws -> [String: Any] {
+        mutex.lock(); let session = active ? sessions[id] : nil; mutex.unlock()
+        guard let session, session.writable else { throw KDBXError.failure("locked") }
+        do {
+            let result = try session.client.request(op, fields: fields, timeout: op == "save" ? 90 : 5)
+            mutex.lock(); let valid = active && sessions[id]?.generation == session.generation; mutex.unlock()
+            guard valid else { throw KDBXError.failure("locked") }
+            if op == "save" {
+                let entries = try JSONDecoder().decode([KDBXEntryInfo].self, from: JSONSerialization.data(withJSONObject: result["entries"] ?? []))
+                let groups = try JSONDecoder().decode([KDBXGroupInfo].self, from: JSONSerialization.data(withJSONObject: result["groups"] ?? []))
+                try accept(id, generation: session.generation, entries: entries, writable: true, groups: groups); changed?()
+            }
+            return result
+        } catch {
+            if case KDBXError.failure(let code) = error, ["database_busy", "invalid_edit", "invalid_group", "write_unavailable", "write_failed"].contains(code) { throw error }
+            lock(id); throw error
+        }
+    }
     func lock(_ id: UUID) { mutex.lock(); let value = sessions.removeValue(forKey: id); mutex.unlock(); value?.client.stop(); changed?() }
     func lock() { mutex.lock(); let values = Array(sessions.values); sessions.removeAll(); mutex.unlock(); values.forEach { $0.client.stop() }; changed?() }
     func deactivate() { mutex.lock(); active = false; mutex.unlock(); lock() }
@@ -190,10 +232,32 @@ final class KDBXRuntime: KDBXCredentialSource, @unchecked Sendable {
             guard generation == operation else { throw KDBXError.failure("locked") }
             let data = try JSONSerialization.data(withJSONObject: result["entries"] ?? [])
             let entries = try JSONDecoder().decode([KDBXEntryInfo].self, from: data)
-            try runtime.accept(link.id, generation: token, entries: entries)
+            let groups = try JSONDecoder().decode([KDBXGroupInfo].self, from: JSONSerialization.data(withJSONObject: result["groups"] ?? []))
+            try runtime.accept(link.id, generation: token, entries: entries, writable: result["writable"] as? Bool == true, groups: groups)
             pending = nil; objectWillChange.send()
         } catch { runtime.lock(link.id); if generation == operation { self.error = (error as? KDBXError)?.localizedDescription ?? "Не удалось открыть базу KeePass. Проверь файл и повтори." } }
         if generation == operation { busy = nil; pending = nil }
+    }
+    func loadDraft(database: UUID, entry: UUID) async throws -> KDBXEntryDraft {
+        let runtime = runtime
+        let result = try await Task.detached { try runtime.editRequest(database, op: "detail", fields: ["entry_id": entry.uuidString]) }.value
+        return try JSONDecoder().decode(KDBXEntryDraft.self, from: JSONSerialization.data(withJSONObject: result))
+    }
+    func saveDraft(database: UUID, entry: UUID?, draft: KDBXEntryDraft) async throws -> String {
+        guard busy == nil else { throw KDBXError.failure("database_busy") }
+        if let validation = draft.validation { throw NSError(domain: "KDBX", code: 1, userInfo: [NSLocalizedDescriptionKey: validation]) }
+        busy = database; error = nil; let operation = generation
+        defer { if generation == operation { busy = nil } }
+        var fields: [String: Any] = ["draft": try JSONSerialization.jsonObject(with: JSONEncoder().encode(draft))]
+        if var object = fields["draft"] as? [String: Any] { object.removeValue(forKey: "history_count"); fields["draft"] = object }
+        if let entry { fields["entry_id"] = entry.uuidString }
+        let runtime = runtime
+        let result: [String: Any]
+        do { result = try await Task.detached { try runtime.editRequest(database, op: "save", fields: fields) }.value }
+        catch { if generation == operation { self.error = error.localizedDescription }; throw error }
+        guard generation == operation else { throw KDBXError.failure("locked") }
+        objectWillChange.send()
+        return result["backup_name"] as? String ?? ""
     }
     func cancel() { generation = UUID(); pending?.stop(); pending = nil; busy = nil; runtime.lock(); error = nil }
 }

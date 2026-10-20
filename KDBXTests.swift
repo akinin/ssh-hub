@@ -38,6 +38,16 @@ private final class MemorySecrets: SharedCredentialSecretStorage {
         let prepared = try SSHPasswordStore.preparedEntry(for: entry, config: config)
         try check(try SSHPasswordStore.password(for: prepared, config: config) == "synthetic-fixture-secret" && backend.reads == 0, "external binding bypasses Keychain")
         try check(try Data(contentsOf: path) == before, "base stays read-only")
+        var edited = try await workspace.loadDraft(database: link.id, entry: ref.entryID)
+        edited.title = "Changed by native editor"; edited.notes = "Owned native notes"
+        let backup = try await workspace.saveDraft(database: link.id, entry: ref.entryID, draft: edited)
+        try check(try Data(contentsOf: root.appendingPathComponent(backup)) == before, "encrypted backup preserves original")
+        try check(workspace.runtime.catalog(link.id)?.first?.id == ref.entryID && workspace.runtime.catalog(link.id)?.first?.title == edited.title, "catalog refresh preserves binding UUID")
+        try check(try workspace.runtime.password(ref, expectedUsername: "fixture") == "synthetic-fixture-secret", "binding reads after atomic save")
+        var oversized = edited; oversized.password = String(repeating: "\\", count: 16384); oversized.notes = String(repeating: "\\", count: 8192)
+        try check(oversized.validation != nil, "encoded IPC frame budget validated before writing")
+        let detail = try await workspace.loadDraft(database: link.id, entry: ref.entryID)
+        try check(detail.historyCount == 1 && detail.notes == edited.notes, "history and notes persisted")
         let json = String(decoding: try JSONEncoder().encode(vault.document), as: UTF8.self)
         try check(!json.contains("synthetic master") && !json.contains("synthetic-fixture-secret"), "no secrets in metadata")
         var edit = RecordCredentialEdit(key: SharedCredentialRepository.recordKey(entry), document: document, scope: repository.scope); edit.choice = .keePass(ref)
@@ -45,10 +55,15 @@ private final class MemorySecrets: SharedCredentialSecretStorage {
         let direct = try SSHPasswordStore.preparedEntry(for: entry, config: config)
         try check(direct.authentication == entry.authentication && direct.user == "fixture", "direct binding preserves explicit SSH auth")
         try check(try SSHPasswordStore.password(for: direct, config: config) == "synthetic-fixture-secret" && backend.reads == 0, "direct binding reads only owned KeePass")
+        try check(FileManager.default.fileExists(atPath: root.appendingPathComponent(".owned.kdbx.ssh-hub.lock").path), "stable private OS lock anchor exists")
         workspace.cancel(); fails { _ = try SSHPasswordStore.preparedEntry(for: entry, config: config) }
         fails { _ = try SSHPasswordStore.password(for: prepared, config: config) }
         try check(backend.reads == 0, "locked base never falls back")
         await workspace.open(link, password: "synthetic master", keyFile: nil)
+        var reopenedEdit = try await workspace.loadDraft(database: link.id, entry: ref.entryID)
+        reopenedEdit.notes = "Second owned save after worker lock"
+        _ = try await workspace.saveDraft(database: link.id, entry: ref.entryID, draft: reopenedEdit)
+        try check(workspace.runtime.catalog(link.id)?.first?.id == ref.entryID, "OS lock anchor reusable after process termination")
         try Data("changed".utf8).write(to: path)
         fails { _ = try workspace.runtime.password(ref, expectedUsername: "fixture") }
         try check(workspace.runtime.catalog(link.id) == nil, "stale base closes session")

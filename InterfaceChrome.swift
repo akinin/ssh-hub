@@ -1,6 +1,15 @@
 import SwiftUI
 import AppKit
 
+enum InterfaceDensity: String, CaseIterable, Identifiable {
+    case normal, compact
+    static let key = "interfaceDensity.v1"
+    var id: String { rawValue }
+    var title: String { self == .normal ? "Обычный" : "Компактный" }
+    var rowHeight: CGFloat { self == .normal ? 28 : 21 }
+    var tileHeight: CGFloat { self == .normal ? 76 : 56 }
+}
+
 struct HubSheetHeader: View {
     let title: String
     let subtitle: String
@@ -55,20 +64,22 @@ struct RecordActionTile: View {
     let detail: String
     let icon: String
     let color: Color
+    var primary = false
+    var density = InterfaceDensity.normal
     let action: () -> Void
     @Environment(\.isEnabled) private var enabled
     @State private var hovering = false
     var body: some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                Image(systemName: icon).font(.system(size: 22, weight: .regular)).foregroundStyle(color).frame(width: 30)
+                Image(systemName: icon).font(.system(size: density == .compact ? 19 : 22, weight: primary ? .medium : .regular)).foregroundStyle(color).frame(width: 30)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.primary).lineLimit(2)
+                    Text(title).font(.system(size: 13, weight: primary ? .bold : .medium)).foregroundStyle(.primary).lineLimit(2)
                     Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }.frame(maxWidth: .infinity, alignment: .leading)
-            }.padding(.horizontal, 14).frame(maxWidth: .infinity, alignment: .leading).frame(height: 72)
-                .background(color.opacity(hovering ? 0.11 : 0.055), in: RoundedRectangle(cornerRadius: 10))
-                .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(color.opacity(hovering ? 0.35 : 0.08), lineWidth: 1) }
+            }.padding(.horizontal, 14).frame(maxWidth: .infinity, alignment: .leading).frame(height: density.tileHeight)
+                .background(primary ? color.opacity(hovering ? 0.24 : 0.16) : Color.primary.opacity(hovering ? 0.07 : 0.035), in: RoundedRectangle(cornerRadius: 10))
+                .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(primary ? color.opacity(hovering ? 0.65 : 0.4) : Color.primary.opacity(hovering ? 0.15 : 0.06), lineWidth: 1) }
                 .contentShape(RoundedRectangle(cornerRadius: 10))
         }.buttonStyle(.plain).onHover { hovering = $0 }.help(title + " · " + detail)
             .opacity(enabled ? 1 : 0.45).accessibilityLabel(title + ", " + detail)

@@ -74,6 +74,14 @@ enum RecordKind: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String { switch self { case .ssh: return "SSH"; case .website: return "Веб-ссылка"; case .information: return "Информационная запись"; case .serial: return "Serial port"; case .rdp: return "RDP"; case .vnc: return "VNC"; case .web: return "Встроенный веб"; case .telnet: return "Telnet"; case .ftp: return "FTP"; case .ftps: return "FTPS"; case .webdav: return "WebDAV"; case .mosh: return "Mosh"; case .adb: return "ADB"; case .docker: return "Docker"; case .kubernetes: return "Kubernetes"; case .localShell: return "Локальная консоль" } }
     var icon: String { switch self { case .ssh, .mosh, .telnet, .localShell: return "terminal"; case .website, .web: return "globe"; case .information: return "doc.text"; case .serial: return "cable.connector"; case .rdp, .vnc: return "desktopcomputer"; case .ftp, .ftps, .webdav: return "folder.badge.gearshape"; case .adb: return "iphone"; case .docker, .kubernetes: return "shippingbox" } }
+    var badge: String { switch self {
+        case .website, .web: return "WEB"
+        case .information: return "INFO"
+        case .serial: return "COM"
+        case .localShell: return "LOCAL"
+        case .kubernetes: return "K8S"
+        default: return rawValue.uppercased()
+    } }
     var isWeb: Bool { self == .website || self == .web }
     var isFiles: Bool { [.ftp, .ftps, .webdav].contains(self) }
     var isDesktop: Bool { self == .rdp || self == .vnc }
