@@ -7,7 +7,7 @@ import LocalAuthentication
 import Darwin
 
 // Only references and public connection settings are Codable; passwords stay in Keychain.
-struct KDBXReference: Codable, Equatable {
+struct KDBXReference: Codable, Equatable, Hashable {
     var databaseID: UUID
     var entryID: UUID
 }
@@ -46,15 +46,39 @@ struct SharedCredentialDocument: Codable, Equatable {
     var bindings: [String: UUID] = [:]
     var requiresAuthentication = true
     var kdbxDatabases: [KDBXDatabaseLink]? = nil
+    var recordKeePass: [String: KDBXReference]? = nil
+    var recordKeys: Set<String> { Set(bindings.keys).union((recordKeePass ?? [:]).keys) }
+    func hasBinding(_ key: String) -> Bool { bindings[key] != nil || recordKeePass?[key] != nil }
     var validation: String? {
-        guard presets.count <= 200, bindings.count <= 5000, Set(presets.map(\.id)).count == presets.count,
-              bindings.keys.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 8192 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }) else { return "Некорректные общие учётные данные." }
+        guard presets.count <= 200, recordKeys.count <= 5000, Set(bindings.keys).isDisjoint(with: (recordKeePass ?? [:]).keys), Set(presets.map(\.id)).count == presets.count,
+              recordKeys.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 8192 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }) else { return "Некорректные общие учётные данные." }
         if let links = kdbxDatabases, links.count > 20 || Set(links.map(\.id)).count != links.count || !links.allSatisfy(\.valid) { return "Некорректные подключения KeePass." }
         return presets.compactMap(\.validation).first
     }
     // A missing preset deliberately keeps a binding: it must never expose an older per-record password.
-    func preset(for key: String) -> SharedCredentialPreset? { bindings[key].flatMap { id in presets.first { $0.id == id } } }
-    mutating func moveBinding(from old: String, to new: String) { guard old != new, let id = bindings[old] else { return }; bindings[new] = id; bindings.removeValue(forKey: old) }
+    func preset(for key: String) -> SharedCredentialPreset? {
+        if let reference = recordKeePass?[key] { return SharedCredentialPreset(id: reference.entryID, title: "KeePass", kdbx: reference) }
+        return bindings[key].flatMap { id in presets.first { $0.id == id } }
+    }
+    func choice(for key: String) -> RecordCredentialChoice {
+        if let reference = recordKeePass?[key] { return .keePass(reference) }
+        return bindings[key].map(RecordCredentialChoice.preset) ?? .record
+    }
+    mutating func setChoice(_ choice: RecordCredentialChoice, for key: String) throws {
+        bindings.removeValue(forKey: key); recordKeePass?.removeValue(forKey: key)
+        switch choice {
+        case .record: break
+        case .preset(let id): guard presets.contains(where: { $0.id == id }) else { throw SharedCredentialError.missing }; bindings[key] = id
+        case .keePass(let reference):
+            guard let reference, kdbxDatabases?.contains(where: { $0.id == reference.databaseID }) == true else { throw SharedCredentialError.invalid("Выбери запись подключённой базы KeePass.") }
+            if recordKeePass == nil { recordKeePass = [:] }; recordKeePass?[key] = reference
+        }
+    }
+    mutating func moveBinding(from old: String, to new: String) {
+        guard old != new else { return }
+        if let id = bindings.removeValue(forKey: old) { bindings[new] = id }
+        if let reference = recordKeePass?.removeValue(forKey: old) { if recordKeePass == nil { recordKeePass = [:] }; recordKeePass?[new] = reference }
+    }
 }
 
 enum SharedCredentialError: Error, LocalizedError, Equatable {
@@ -186,11 +210,11 @@ final class SharedCredentialRuntime: @unchecked Sendable {
         guard active else { throw SharedCredentialError.inactive }
         if let loadIssue { throw SharedCredentialError.invalid(loadIssue) }
         if let scope = entry.credentialRuntimeScope ?? entry.sharedCredentialScope, scope != repository.scope { throw SharedCredentialError.inactive }
-        guard !entry.isQuickConnection, document.bindings[SharedCredentialRepository.recordKey(entry)] != nil else { return nil }
+        guard !entry.isQuickConnection, document.hasBinding(SharedCredentialRepository.recordKey(entry)) else { return nil }
         guard let value = document.preset(for: SharedCredentialRepository.recordKey(entry)) else { throw SharedCredentialError.missing }
         guard !document.requiresAuthentication || context != nil else { throw SharedCredentialError.locked }; return value
     }
-    func isBound(_ entry: SSHAlias, config: URL) -> Bool { mutex.lock(); defer { mutex.unlock() }; return !entry.isQuickConnection && matches(config) && document.bindings[SharedCredentialRepository.recordKey(entry)] != nil }
+    func isBound(_ entry: SSHAlias, config: URL) -> Bool { mutex.lock(); defer { mutex.unlock() }; return !entry.isQuickConnection && matches(config) && document.hasBinding(SharedCredentialRepository.recordKey(entry)) }
     func password(_ entry: SSHAlias, config: URL) -> SSHSharedPasswordResolution {
         mutex.lock(); defer { mutex.unlock() }
         if let scope = entry.credentialRuntimeScope ?? entry.sharedCredentialScope, scope != repository.scope { return .blocked(SharedCredentialError.inactive.localizedDescription) }
@@ -227,8 +251,9 @@ final class SharedCredentialRuntime: @unchecked Sendable {
         var result = originalEntry
         result.credentialRuntimeScope = repository.scope; result.sharedCredentialScope = repository.scope; result.preparedSSHTarget = originalEntry.sshTarget
         result.preparedConfigSource = originalEntry.connectionConfig(fallback: config)
-        let auth: SSHAuthentication = preset.authentication == .automatic ? (preset.identityFile.isEmpty ? .password : .keyAndPassword) : preset.authentication
-        var overrides = auth.options.map { SSHOption(key: $0.0, value: $0.1) }
+        let direct = document.recordKeePass?[key] != nil
+        let auth: SSHAuthentication = direct ? originalEntry.authentication : preset.authentication == .automatic ? (preset.identityFile.isEmpty ? .password : .keyAndPassword) : preset.authentication
+        var overrides = direct ? [] : auth.options.map { SSHOption(key: $0.0, value: $0.1) }
         if !username.isEmpty { overrides.insert(SSHOption(key: "User", value: username), at: 0) }
         if !preset.identityFile.isEmpty { overrides += [SSHOption(key: "IdentityFile", value: preset.identityFile), SSHOption(key: "IdentitiesOnly", value: "yes")] }
         // OpenSSH accumulates IdentityFile directives across Include files. Keep the
@@ -329,7 +354,7 @@ final class SharedCredentialRuntime: @unchecked Sendable {
     func bind(_ id: UUID?, to recordKey: String) throws {
         guard !isLocked else { throw SharedCredentialError.locked }
         guard id == nil || document.presets.contains(where: { $0.id == id }) else { throw SharedCredentialError.missing }
-        var value = document; value.bindings[recordKey] = id; try persist(value)
+        var value = document; try value.setChoice(id.map(RecordCredentialChoice.preset) ?? .record, for: recordKey); try persist(value)
     }
     func moveBinding(from old: String, to new: String) throws { var value = document; value.moveBinding(from: old, to: new); try persist(value) }
     func setAuthenticationRequired(_ required: Bool) async throws {
@@ -338,5 +363,48 @@ final class SharedCredentialRuntime: @unchecked Sendable {
         if required || isLocked { try await unlock() }
         var value = document; value.requiresAuthentication = required; try persist(value)
         runtime.lock(); isLocked = required
+    }
+}
+
+// Draft only: no secret values and no writes until the surrounding editor saves.
+enum RecordCredentialChoice: Equatable, Hashable {
+    case record, preset(UUID), keePass(KDBXReference?)
+    var isKeePass: Bool { if case .keePass = self { return true }; return false }
+    var isExternal: Bool { self != .record }
+    static func supports(_ entry: SSHAlias) -> Bool { !entry.isQuickConnection && (entry.canSSH || entry.recordKind?.hasPassword == true || entry.recordKind?.isWeb == true) }
+}
+struct RecordCredentialEdit {
+    var sourceKey: String?
+    var scope = ""
+    var original: RecordCredentialChoice = .record
+    var choice: RecordCredentialChoice = .record
+    init() {}
+    init(key: String?, document: SharedCredentialDocument, scope: String) {
+        sourceKey = key; self.scope = scope
+        original = key.map { document.choice(for: $0) } ?? .record; choice = original
+    }
+}
+struct CredentialBindingChange { let before: SharedCredentialDocument; let after: SharedCredentialDocument }
+extension SharedCredentialVault {
+    func applyRecordChoice(_ edit: RecordCredentialEdit, target: String) throws -> CredentialBindingChange? {
+        guard edit.scope == repository.scope else { throw SharedCredentialError.inactive }
+        if let source = edit.sourceKey { guard document.choice(for: source) == edit.original else { throw SharedCredentialError.changed } }
+        if edit.sourceKey != target { guard !document.hasBinding(target) else { throw SharedCredentialError.changed } }
+        guard edit.choice != edit.original || edit.sourceKey != target && edit.choice.isExternal else { return nil }
+        guard !isLocked || edit.choice == edit.original else { throw SharedCredentialError.locked }
+        var value = document
+        if let source = edit.sourceKey, source != target { value.bindings.removeValue(forKey: source); value.recordKeePass?.removeValue(forKey: source) }
+        try value.setChoice(edit.choice, for: target)
+        let change = CredentialBindingChange(before: document, after: value)
+        try persist(value); return change
+    }
+    func replaceBindings(_ value: SharedCredentialDocument, expected: SharedCredentialDocument) throws {
+        guard !isLocked else { throw SharedCredentialError.locked }
+        guard document == expected else { throw SharedCredentialError.changed }
+        try persist(value)
+    }
+    func rollbackBindings(_ change: CredentialBindingChange) throws {
+        guard document == change.after else { throw SharedCredentialError.changed }
+        try persist(change.before)
     }
 }

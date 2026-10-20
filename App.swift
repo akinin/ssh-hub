@@ -14,9 +14,15 @@ import ConsoleSupport
     var rawAliases: [SSHAlias] = []
     @Published var recordEditor: RecordEditorTarget?
     @Published var deletingRecord: SSHAlias?
+    var undoCredentialChange: CredentialBindingChange?
     @Published var undoRecordChange: LocalRecordChange?
     let attachmentsRepository = AttachmentsRepository()
-    @Published var selected: String?
+    @Published var selected: String? { didSet {
+        if selected != oldValue { selectedRecordKeys = Set(aliases.first { $0.id == selected }.map { [$0.favoriteID] } ?? []) }
+    } }
+    @Published var selectedRecordKeys = Set<String>()
+    @Published var batchTarget: RecordBatchTarget?
+    @Published var undoBatchChange: (RecordBatchPlan, RecordBatchTarget)?
     @Published var pages: [EntryPage] = []
     @Published var workspace = WorkspaceLayout() { didSet { saveWorkspace() } }
     @Published var splitFraction = 0.5 { didSet { saveWorkspace() } }
@@ -352,9 +358,13 @@ import ConsoleSupport
         } catch { self.error = error.localizedDescription }
     }
     func undo() {
+        if undoBatchChange != nil { undoBatch(); return }
         if let change = undoRecordChange { undoRecord(change); return }
         guard let change = undoChange else { return }
+        var credentialsReverted = false
+        let credentialChange = undoCredentialChange
         do {
+            if let credentialChange { try credentialVault().rollbackBindings(credentialChange); credentialsReverted = true }
             _ = try config.undo(change)
             if let names = undoNames, let after = names.after { moveFavorite(from: after, to: names.before) }
             for (id, metadata) in undoImportedMetadata {
@@ -368,7 +378,11 @@ import ConsoleSupport
             UserDefaults.standard.set(groups, forKey: "aliasGroups.v1"); persistFavorites()
             reload(select: undoNames?.before.name)
             clearUndo(); notice = "Изменение отменено."
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            var detail = error.localizedDescription
+            if credentialsReverted, let credentialChange { do { try credentialVault().replaceBindings(credentialChange.after, expected: credentialChange.before) } catch { detail += "\nНе удалось восстановить привязки: " + error.localizedDescription } }
+            self.error = detail
+        }
     }
     func check(_ entry: SSHAlias) {
         guard entry.canSSH, checkingID == nil else { return }
@@ -382,7 +396,7 @@ import ConsoleSupport
         }
     }
     func cancelCheck() { probe?.cancel() }
-    func clearUndo() { undoRecordChange = nil; undoAppearanceEdit = nil; undoGroupEdit = nil; undoChange = nil; undoNames = nil; undoImportedMetadata = [:] }
+    func clearUndo() { undoCredentialChange = nil; undoBatchChange = nil; undoRecordChange = nil; undoAppearanceEdit = nil; undoGroupEdit = nil; undoChange = nil; undoNames = nil; undoImportedMetadata = [:] }
     var current: SSHAlias? { aliases.first { $0.id == selected } }
     func reload(select name: String? = nil) {
         do {
@@ -575,6 +589,7 @@ struct HubCommands: Commands {
                 Button("Статус доступности…") { store.showingAvailability = true }
                 Button("Сетевая карта…") { store.openTopology() }
                 Button("Быстрое подключение…") { QuickAccessController.shared.show() }.keyboardShortcut("p", modifiers: [.command, .shift])
+                Button("Массовое редактирование…") { store.showBatchEditor() }.disabled((session.store?.batchEntries.count ?? 0) < 2)
                 Button("Обновить список") { store.reload() }.keyboardShortcut("r", modifiers: .command)
                 Button("Создать SSH-ключ…") { store.generatingKey = true }.keyboardShortcut("k", modifiers: [.command, .shift])
                 Button("Показать конфиг в Finder") { store.openConfig() }.keyboardShortcut("o", modifiers: .command)
@@ -602,7 +617,7 @@ struct HubCommands: Commands {
         CommandGroup(after: .undoRedo) {
             Group {
                 Button("Отменить изменение записи") { store.undo() }
-                .keyboardShortcut("z", modifiers: [.command, .option]).disabled(session.store?.undoChange == nil && session.store?.undoRecordChange == nil)
+                .keyboardShortcut("z", modifiers: [.command, .option]).disabled(session.store?.undoChange == nil && session.store?.undoRecordChange == nil && session.store?.undoBatchChange == nil)
             }.disabled(access.locked || session.store == nil)
         }
         CommandMenu("Инструменты") {
@@ -861,7 +876,11 @@ struct MainView: View {
                 .frame(width: 40, height: 28).background(Color.primary.opacity(0.07), in: Capsule())
                         .help("Фильтр: " + filterTitle).accessibilityLabel("Фильтр подключений").accessibilityValue(filterTitle)
                 }.padding(.horizontal, 14).padding(.bottom, 10)
+                if store.batchEntries.count > 1 {
+                    HStack { Text("Выбрано: \(store.batchEntries.count)").font(.caption); Spacer(); Button("Изменить…") { store.showBatchEditor() }.controlSize(.small) }.padding(.horizontal, 14).padding(.bottom, 6)
+                }
                 ConnectionTreeView().environmentObject(store)
+                if store.undoBatchChange != nil { Button("Отменить массовое изменение") { store.undoBatch() }.font(.caption).padding(6) }
                 Divider()
                 HStack(spacing: 7) {
                     TextField("Узел или IP-адрес", text: $quickAddress).textFieldStyle(.plain)
@@ -924,6 +943,7 @@ struct MainView: View {
         .sheet(isPresented: $store.creatingFolder) { CreateFolderView().environmentObject(store) }
         .sheet(isPresented: $store.creatingAlias) { RecordChooserView().environmentObject(store) }
         .sheet(item: $store.recordEditor) { target in RecordEditorView(kind: target.record?.kind ?? target.template?.recordKind ?? .ssh, original: target.record, template: target.template, blueprint: target.blueprint).environmentObject(store) }
+        .sheet(item: $store.batchTarget) { RecordBatchView(target: $0).environmentObject(store) }
         .sheet(item: $store.editingAlias) { snapshot in CreateAliasView(editing: snapshot).environmentObject(store) }
         .sheet(item: $store.duplicatingAlias) { snapshot in CreateAliasView(duplicating: snapshot, existing: store.aliases).environmentObject(store) }
         .sheet(isPresented: $store.generatingKey) { GenerateKeyView(directory: store.config.sshDirectory) }
@@ -965,12 +985,16 @@ struct MainView: View {
         .onChange(of: store.revealRequest) { _, _ in
             columnVisibility = .all; sidebarController.setVisible(true)
         }
+        .onChange(of: store.query) { _, _ in
+            store.selectedRecordKeys.formIntersection(Set(store.filtered.map(\.favoriteID)))
+        }
         .onChange(of: store.groupFilter) { _, _ in
+            store.selectedRecordKeys.formIntersection(Set(store.filtered.map(\.favoriteID)))
             if !store.filtered.contains(where: { $0.id == store.selected }) { store.selected = store.filtered.first?.id }
         }
         .onChange(of: store.profiles.active) { _, _ in store.globalSearchQuery = "" }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            if !store.creatingAlias && store.editingAlias == nil && store.duplicatingAlias == nil && store.recordEditor == nil { store.reload() }
+            if !store.creatingAlias && store.editingAlias == nil && store.duplicatingAlias == nil && store.recordEditor == nil && store.batchTarget == nil { store.reload() }
         }
         .confirmationDialog("Удалить запись?", isPresented: Binding(get: { store.deletingRecord != nil }, set: { if !$0 { store.deletingRecord = nil } }), titleVisibility: .visible) {
             if let entry = store.deletingRecord { Button("Удалить запись", role: .destructive) { store.deletingRecord = nil; store.deleteRecord(entry) } }
@@ -1097,6 +1121,7 @@ struct CreateAliasView: View {
     let duplicating: AliasEditSnapshot?
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) var dismiss
+    @State private var credentialEdit = RecordCredentialEdit()
     @State private var draft = AliasDraft()
     @State private var aliasEnabled = true
     @State private var appearance = ConnectionAppearance()
@@ -1121,7 +1146,7 @@ struct CreateAliasView: View {
         _draft = State(initialValue: initial)
     }
     private var credentialTarget: SSHAlias {
-        SSHAlias(name: !aliasEnabled ? editing?.entry.name ?? draft.trimmedName : draft.trimmedName, source: editing?.entry.source ?? store.config.url, line: 0,
+        SSHAlias(name: !aliasEnabled ? editing?.entry.name ?? draft.trimmedName : draft.trimmedName, source: (editing ?? duplicating)?.entry.source ?? store.config.url, line: 0,
             options: [SSHOption(key: "HostName", value: draft.trimmedHost), SSHOption(key: "User", value: draft.user.trimmingCharacters(in: .whitespaces)), SSHOption(key: "Port", value: draft.port)])
     }
     private var canReuseSavedPassword: Bool {
@@ -1133,7 +1158,7 @@ struct CreateAliasView: View {
         return entry
     }
     private var validatedDraft: AliasDraft { var value = draft; if !aliasEnabled { value.name = "connection" }; return value }
-    private var validation: String? { (password.contains(where: { $0.isNewline || $0 == "\0" }) ? "Пароль должен занимать одну строку." : nil) ?? (!AliasTransfer.validGroup(group) ? "Проверь путь папки." : nil) ?? appearance.validation ?? validatedDraft.validation(existing: aliasEnabled ? store.aliasNameReservations().filter { $0.id != editing?.entry.id } : []) }
+    private var validation: String? { credentialEdit.validation(vault: store.credentialVault()) ?? (password.contains(where: { $0.isNewline || $0 == "\0" }) ? "Пароль должен занимать одну строку." : nil) ?? (!AliasTransfer.validGroup(group) ? "Проверь путь папки." : nil) ?? appearance.validation ?? validatedDraft.validation(existing: aliasEnabled ? store.aliasNameReservations().filter { $0.id != editing?.entry.id } : []) }
     private var preview: String { if !aliasEnabled { return "SSH-алиас будет удалён из общего конфига. Запись останется в SSH Hub и будет использовать отдельный конфиг подключения." }; return (editing ?? duplicating).flatMap { try? SSHConfig.editedPreview($0, draft: draft) } ?? draft.block }
     var body: some View {
         RecordEditorShell(title: duplicating != nil ? "Дублирование записи" : editing == nil ? "Новая запись · SSH" : "Редактирование записи", subtitle: "SSH · остальные параметры и комментарии сохраняются", icon: editing == nil ? "plus.square" : "pencil", sections: [.general, .connection, .key, .availability, .commands, .preview], selection: $editorSection) {
@@ -1165,6 +1190,8 @@ struct CreateAliasView: View {
         }.dismissOnOutsideClick()
             .onAppear {
                 expectedData = store.data
+                let vault = store.credentialVault()
+                credentialEdit = RecordCredentialEdit(key: editing?.entry.favoriteID, document: vault.document, scope: vault.repository.scope)
                 if let entry = (editing ?? duplicating)?.entry { appearance = store.appearance(entry) }
                 group = (editing ?? duplicating).map { store.group($0.entry) } ?? store.creatingRecordFolder
                 monitorInterval = store.availability.interval
@@ -1180,7 +1207,8 @@ struct CreateAliasView: View {
     }
     private var connectionFields: some View {
         VStack(alignment: .leading, spacing: 16) {
-            RecordSSHConnectionFields(host: $draft.host, user: $draft.user, port: $draft.port, jump: $draft.jump, authentication: $draft.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: canReuseSavedPassword, identifier: "alias", changedAt: editing.map { SSHPasswordStore.changedAt(for: $0.entry, config: store.config.url) } ?? nil, savedPassword: canReuseSavedPassword ? { try SSHPasswordStore.storedPassword(for: editing!.entry, config: store.config.url) } : nil)
+            RecordCredentialFields(vault: store.credentialVault(), workspace: store.kdbx!, choice: $credentialEdit.choice, username: $draft.user)
+            RecordSSHConnectionFields(host: $draft.host, user: $draft.user, port: $draft.port, jump: $draft.jump, authentication: $draft.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: canReuseSavedPassword, identifier: "alias", usesExternalCredentials: credentialEdit.choice.isExternal, changedAt: editing.map { SSHPasswordStore.changedAt(for: $0.entry, config: store.config.url) } ?? nil, savedPassword: canReuseSavedPassword ? { try SSHPasswordStore.storedPassword(for: editing!.entry, config: store.config.url) } : nil)
             RecordSSHKeyFields(identity: $draft.identity, entry: installationEntry).environmentObject(store)
             Divider()
             if editing != nil {
@@ -1207,11 +1235,13 @@ struct CreateAliasView: View {
         let target = credentialTarget
         var credentialChanged = false
         var previousPassword: String?
+        var bindingChange: CredentialBindingChange?
         do {
+            bindingChange = try store.applyCredentialEdit(credentialEdit, target: target.favoriteID)
             var replacement: String?
-            var changePassword = removePassword || (!keepPassword && canReuseSavedPassword)
-            if keepPassword && !password.isEmpty { replacement = password; changePassword = true }
-            else if keepPassword && canReuseSavedPassword && !removePassword,
+            var changePassword = !credentialEdit.choice.isExternal && (removePassword || (!keepPassword && canReuseSavedPassword))
+            if !credentialEdit.choice.isExternal && keepPassword && !password.isEmpty { replacement = password; changePassword = true }
+            else if !credentialEdit.choice.isExternal && keepPassword && canReuseSavedPassword && !removePassword,
                     let original = editing?.entry,
                     SSHPasswordStore.account(for: original, config: store.config.url) != SSHPasswordStore.account(for: target, config: store.config.url) {
                 replacement = try SSHPasswordStore.storedPassword(for: original, config: store.config.url); changePassword = replacement != nil
@@ -1234,12 +1264,14 @@ struct CreateAliasView: View {
                 }
                 if let saved = store.aliases.first(where: { $0.localID == record.id }) { store.availability.apply(entry: saved, enabled: monitorEnabled, interval: monitorInterval, available: store.aliases) }
                 store.notice = nil
+                store.undoCredentialChange = bindingChange
                 dismiss(); return
             }
             if let editing {
                 let change = try store.config.update(editing, draft: draft)
                 store.savedEdit(change, old: editing.entry, name: draft.trimmedName, appearance: appearance, group: group)
                 applyPreferences()
+                store.undoCredentialChange = bindingChange
                 dismiss(); return
             }
             if let duplicating {
@@ -1247,6 +1279,7 @@ struct CreateAliasView: View {
                 store.savedDuplicate(change, original: duplicating.entry, name: draft.trimmedName)
                 if let entry = store.current { store.setAppearance(appearance, for: entry) }
                 applyPreferences()
+                store.undoCredentialChange = bindingChange
                 dismiss(); return
             }
             let backup = try store.config.create(draft, expectedData: expectedData)
@@ -1259,7 +1292,9 @@ struct CreateAliasView: View {
             dismiss()
         } catch {
             if credentialChanged { try? SSHPasswordStore.set(previousPassword, for: target, config: store.config.url) }
-            self.error = error.localizedDescription
+            var message = error.localizedDescription
+            do { try store.rollbackCredentialEdit(bindingChange) } catch { message += "\nНе удалось откатить привязку учётных данных: " + error.localizedDescription }
+            self.error = message
         }
     }
     private func applyPreferences() {

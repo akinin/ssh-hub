@@ -44,6 +44,7 @@ struct BackupOperations: Codable {
             try MaintenanceWorkflow.validateCollection(workflows)
             var credentials = try SharedCredentialRepository(config: config, profileID: profile, root: base.appendingPathComponent("SharedCredentials")).load()
             credentials.kdbxDatabases = credentials.kdbxDatabases?.map { var link = $0; link.bookmark = nil; return link }
+            credentials.recordKeePass = credentials.recordKeePass.map { values in Dictionary(uniqueKeysWithValues: values.compactMap { key, reference in backupKey(key, exportIDs: exportIDs).map { ($0, reference) } }) }
             credentials.bindings = Dictionary(uniqueKeysWithValues: credentials.bindings.compactMap { key, preset in backupKey(key, exportIDs: exportIDs).map { ($0, preset) } })
             var integrations = try InfrastructureRepository(configURL: config, profileID: profile, root: base.appendingPathComponent("Integrations")).load()
             // Docker integrations without an included record cannot safely bind to
@@ -63,7 +64,7 @@ struct BackupOperations: Codable {
             try AssistantChatDocument.validate(chats)
             for index in chats.indices { chats[index].recordKey = chats[index].recordKey.flatMap { backupKey($0, exportIDs: exportIDs) } }
             let value = Self(profileID: profile, search: search.tags.isEmpty && search.folders.isEmpty ? nil : search, workflows: workflows.isEmpty ? nil : workflows,
-                credentials: credentials.presets.isEmpty && credentials.bindings.isEmpty && (credentials.kdbxDatabases ?? []).isEmpty && credentials.requiresAuthentication ? nil : credentials,
+                credentials: credentials.presets.isEmpty && credentials.recordKeys.isEmpty && (credentials.kdbxDatabases ?? []).isEmpty && credentials.requiresAuthentication ? nil : credentials,
                 integrations: integrations.isEmpty ? nil : integrations, monitoring: monitoring.endpoint.isEmpty ? nil : monitoring,
                 assistant: assistant.model.isEmpty && !(assistant.modelProfiles?.contains { !$0.model.isEmpty } ?? false) ? nil : assistant, chats: chats.isEmpty ? nil : chats)
             if value.hasContent { values.append(value) }
@@ -84,7 +85,7 @@ struct BackupOperations: Codable {
             if let workflows = value.workflows { try MaintenanceWorkflow.validateCollection(workflows); try bounded(workflows, limit: 2_000_000) }
             if let credentials = value.credentials {
                 if let error = credentials.validation { throw ConfigError.message(error) }
-                guard credentials.bindings.keys.allSatisfy({ recordID($0).map(recordIDs.contains) == true }) else { throw ConfigError.message("Неизвестная запись общих учётных данных в архиве.") }
+                guard credentials.recordKeys.allSatisfy({ recordID($0).map(recordIDs.contains) == true }) else { throw ConfigError.message("Неизвестная запись общих учётных данных в архиве.") }
                 try bounded(credentials, limit: 4_000_000)
             }
             if let integrations = value.integrations {
@@ -130,6 +131,7 @@ struct BackupOperations: Codable {
                 let oldIDs = Set(credentials.presets.map(\.id)).union(credentials.bindings.values)
                 let mapping = Dictionary(uniqueKeysWithValues: oldIDs.map { ($0, UUID()) })
                 for index in credentials.presets.indices { credentials.presets[index].id = mapping[credentials.presets[index].id]! }
+                credentials.recordKeePass = credentials.recordKeePass.map { values in Dictionary(uniqueKeysWithValues: values.compactMap { key, reference in recordKeys[key].map { ($0, reference) } }) }
                 credentials.bindings = Dictionary(uniqueKeysWithValues: credentials.bindings.compactMap { key, preset in recordKeys[key].map { ($0, mapping[preset]!) } })
                 credentials.kdbxDatabases = credentials.kdbxDatabases?.map { var link = $0; link.bookmark = nil; return link }
                 credentials.requiresAuthentication = true

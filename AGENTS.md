@@ -4,6 +4,11 @@
 
 Нативное приложение для macOS 14+ на Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
 
+## Изменения 3.1.0 (сборка 45)
+
+- RecordCredentialFields + optional SharedCredentialDocument.recordKeePass: прямые UUID-привязки в редакторах, взаимоисключающие с bindings. Direct KeePass меняет только runtime username/password, сохраняет SSH auth/key. Изменение staged до Save, failure откатывает public metadata через CAS; одиночная отмена включает привязку. Закрытые/отсутствующие базы не дают fallback. Backup фильтрует и remap обе карты, bookmarks не переносит.
+- ConnectionTreeView поддерживает native multiselect. RecordBatchPlan — неизменяемый просмотр папки, manual tags и credential source; пропускает неподходящие типы только для credential source, не меняет config/Keychain/базы. Save и undo проверяют профиль, fingerprint выбранных записей и исходные metadata; сбой между файлами откатывается без перезаписи более новых данных. Test fixtures собственные, никаких SSH или пользовательских секретов.
+
 ## Изменения 3.0.6 (сборка 44)
 
 - KDBX.swift/KDBXView.swift + SSHKDBX (Rust, MIT keepass-rs 0.17.0): только чтение KDBX3/4, UUID-привязка в SharedCredentialPreset. Мастер-пароль/секреты только private stdin/stdout, никаких argv/env/defaults/JSON. Каталог без паролей/заметок/URL. Нет fallback при закрытой/изменённой/отсутствующей базе. Процесс останавливается при vault/app/profile/macOS session lock и quit; pending участвует в drain. Backup удаляет bookmarks на export/restore и не включает KDBX/keyfile/master. Vendor license не менять; ограничения ресурсов в Vendor/keepass-rs/UPSTREAM.md. Cargo.lock обязателен, bundled KDBX-LICENSES.txt из закреплённых runtime packages. Rust/cargo нужен сборщику, не пользователю. Fixture path только у cargo test; production helper не создаёт базы.

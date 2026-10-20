@@ -54,10 +54,18 @@ struct SharedCredentialsView: View {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 3) { Text(entry.name); Text(entry.user + "@" + entry.host).font(.caption).foregroundStyle(.secondary) }
                                     Spacer()
-                                    Picker("Учётные данные", selection: Binding<UUID?>(get: { vault.document.bindings[SharedCredentialRepository.recordKey(entry)] }, set: { id in do { try vault.bind(id, to: SharedCredentialRepository.recordKey(entry)) } catch { self.error = error.localizedDescription } })) {
-                                        Text("Из записи").tag(UUID?.none)
-                                        ForEach(vault.document.presets) { preset in Text(preset.title).tag(Optional(preset.id)) }
-                                        if let id = vault.document.bindings[SharedCredentialRepository.recordKey(entry)], !vault.document.presets.contains(where: { $0.id == id }) { Text("Удалённый набор").tag(Optional(id)) }
+                                    Picker("Учётные данные", selection: Binding<String>(get: {
+                                        let key = SharedCredentialRepository.recordKey(entry)
+                                        if vault.document.recordKeePass?[key] != nil { return "keepass" }
+                                        return vault.document.bindings[key].map { "preset:" + $0.uuidString } ?? "record"
+                                    }, set: { value in
+                                        guard value != "keepass" else { return }
+                                        do { try vault.bind(value == "record" ? nil : UUID(uuidString: String(value.dropFirst(7))), to: SharedCredentialRepository.recordKey(entry)) } catch { self.error = error.localizedDescription }
+                                    })) {
+                                        Text("Из записи").tag("record")
+                                        if vault.document.recordKeePass?[SharedCredentialRepository.recordKey(entry)] != nil { Text("KeePass · из редактора записи").tag("keepass") }
+                                        ForEach(vault.document.presets) { preset in Text(preset.title).tag("preset:" + preset.id.uuidString) }
+                                        if let id = vault.document.bindings[SharedCredentialRepository.recordKey(entry)], !vault.document.presets.contains(where: { $0.id == id }) { Text("Удалённый набор").tag("preset:" + id.uuidString) }
                                     }.labelsHidden().frame(width: 230)
                                 }.padding(.vertical, 6)
                             }

@@ -105,6 +105,8 @@ operations_sources=(SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swi
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" "${operations_sources[@]}" OperationsTests.swift -o "$build_dir/operations-tests" -framework Security
 "$build_dir/operations-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" "${operations_sources[@]}" GlobalSearchSafetyTests.swift -o "$build_dir/search-safety-tests" -framework Security
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" "${operations_sources[@]}" SSHCredentials.swift SharedCredentials.swift RecordBatch.swift RecordBatchTests.swift -o "$build_dir/record-batch-tests" -framework AppKit -framework Security -framework LocalAuthentication
+"$build_dir/record-batch-tests"
 "$build_dir/search-safety-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift HubFeatureStorage.swift AIAssistant.swift TCPAvailability.swift AssistantChat.swift AssistantChatTests.swift -o "$build_dir/assistant-chat-tests" -framework Security
 "$build_dir/assistant-chat-tests"

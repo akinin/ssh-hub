@@ -95,6 +95,7 @@ struct KDBXEntryPicker: View {
     let onSelect: (KDBXReference, KDBXEntryInfo) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
+    @State private var unlocking: KDBXDatabaseLink?
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Label("Запись KeePass", systemImage: "key").font(.title2.bold())
@@ -109,12 +110,13 @@ struct KDBXEntryPicker: View {
                                     HStack { Image(systemName: "key"); VStack(alignment: .leading, spacing: 3) { Text(entry.title.isEmpty ? "Без названия" : entry.title); Text([entry.group,entry.username].filter { !$0.isEmpty }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary) }; Spacer(); if entry.expired { Text("Истёк срок").foregroundStyle(.orange).font(.caption) } }.padding(9).contentShape(Rectangle())
                                 }.buttonStyle(.plain).disabled(entry.expired)
                             }
-                        } else { Text("Сначала открой базу через «Базы KeePass…».").font(.caption).foregroundStyle(.secondary) }
+                        } else { HStack { Text("База заблокирована").font(.caption).foregroundStyle(.secondary); Spacer(); Button("Открыть…") { unlocking = link }.disabled(workspace.busy != nil || link.bookmark == nil) } }
                     }
                     if links.isEmpty { Text("Сначала подключи базу через «Базы KeePass…».").foregroundStyle(.secondary) }
                 }
             }.frame(minHeight: 280)
             HStack { Spacer(); Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction) }
         }.padding(22).frame(width: 620, height: 460)
+            .sheet(item: $unlocking) { KDBXUnlockView(link: $0, workspace: workspace) }
     }
 }

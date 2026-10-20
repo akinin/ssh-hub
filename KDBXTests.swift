@@ -40,6 +40,11 @@ private final class MemorySecrets: SharedCredentialSecretStorage {
         try check(try Data(contentsOf: path) == before, "base stays read-only")
         let json = String(decoding: try JSONEncoder().encode(vault.document), as: UTF8.self)
         try check(!json.contains("synthetic master") && !json.contains("synthetic-fixture-secret"), "no secrets in metadata")
+        var edit = RecordCredentialEdit(key: SharedCredentialRepository.recordKey(entry), document: document, scope: repository.scope); edit.choice = .keePass(ref)
+        _ = try vault.applyRecordChoice(edit, target: SharedCredentialRepository.recordKey(entry))
+        let direct = try SSHPasswordStore.preparedEntry(for: entry, config: config)
+        try check(direct.authentication == entry.authentication && direct.user == "fixture", "direct binding preserves explicit SSH auth")
+        try check(try SSHPasswordStore.password(for: direct, config: config) == "synthetic-fixture-secret" && backend.reads == 0, "direct binding reads only owned KeePass")
         workspace.cancel(); fails { _ = try SSHPasswordStore.preparedEntry(for: entry, config: config) }
         fails { _ = try SSHPasswordStore.password(for: prepared, config: config) }
         try check(backend.reads == 0, "locked base never falls back")

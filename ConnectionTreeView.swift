@@ -64,7 +64,7 @@ struct ConnectionTreeView: NSViewRepresentable {
         outline.addTableColumn(column); outline.outlineTableColumn = column; outline.headerView = nil
         outline.style = .sourceList; outline.rowSizeStyle = .small
         outline.rowHeight = 23; outline.intercellSpacing = NSSize(width: 0, height: 0); outline.usesAutomaticRowHeights = false
-        outline.indentationPerLevel = 14; outline.allowsMultipleSelection = false
+        outline.indentationPerLevel = 14; outline.allowsMultipleSelection = true
         outline.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         outline.autoresizesOutlineColumn = true
         outline.backgroundColor = .clear
@@ -130,9 +130,12 @@ struct ConnectionTreeView: NSViewRepresentable {
             if changed { restore(roots) }
             let selected = selectedID?.hasPrefix("folder:") == true && lastStoreSelection == store.selected ? selectedID : store.selected
             lastStoreSelection = store.selected
-            if let row = (0..<outline.numberOfRows).first(where: { (outline.item(atRow: $0) as? TreeItem)?.node.id == selected }) {
-                outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-            }
+            let chosen = IndexSet((0..<outline.numberOfRows).filter { row in
+                guard let item = outline.item(atRow: row) as? TreeItem else { return false }
+                if let entry = item.node.entry, !store.selectedRecordKeys.isEmpty { return store.selectedRecordKeys.contains(entry.favoriteID) }
+                return item.node.id == selected
+            })
+            if outline.selectedRowIndexes != chosen { outline.selectRowIndexes(chosen, byExtendingSelection: false) }
             outline.rowHeight = 23
             if let scroll = outline.enclosingScrollView {
                 outline.tableColumns.first?.width = max(1, scroll.contentSize.width)
@@ -143,7 +146,7 @@ struct ConnectionTreeView: NSViewRepresentable {
         func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any { (item as? TreeItem)?.children[index] ?? roots[index] }
         func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool { (item as? TreeItem)?.node.isFolder == true }
         func outlineView(_ outlineView: NSOutlineView, pasteboardWriterForItem item: Any) -> NSPasteboardWriting? {
-            guard store.query.isEmpty, store.groupFilter == "all", let entry = (item as? TreeItem)?.node.entry else { return nil }
+            guard outlineView.numberOfSelectedRows <= 1, store.query.isEmpty, store.groupFilter == "all", let entry = (item as? TreeItem)?.node.entry else { return nil }
             let value = NSPasteboardItem(); value.setString(entry.favoriteID, forType: Self.dragType); return value
         }
         private func draggedEntry(_ info: NSDraggingInfo) -> SSHAlias? {
@@ -217,8 +220,11 @@ struct ConnectionTreeView: NSViewRepresentable {
             return cell
         }
         func outlineViewSelectionDidChange(_ notification: Notification) {
-            guard !updating, let outline, let entry = (outline.item(atRow: outline.selectedRow) as? TreeItem)?.node.entry else { return }
-            store.showDashboard(entry)
+            guard !updating, let outline else { return }
+            let entries = outline.selectedRowIndexes.compactMap { (outline.item(atRow: $0) as? TreeItem)?.node.entry }
+            let keys = Set(entries.map(\.favoriteID))
+            if store.selectedRecordKeys != keys { store.selectedRecordKeys = keys }
+            if entries.count == 1 { store.showDashboard(entries[0]) }
         }
         func outlineViewItemDidCollapse(_ notification: Notification) { expansion(notification, expanded: false) }
         func outlineViewItemDidExpand(_ notification: Notification) { expansion(notification, expanded: true) }
@@ -228,7 +234,7 @@ struct ConnectionTreeView: NSViewRepresentable {
             if expanded { value.remove(item.node.id) } else { value.insert(item.node.id) }; collapsed = value
         }
         @objc func selectDashboard() {
-            guard !updating, let outline, let entry = (outline.item(atRow: outline.clickedRow) as? TreeItem)?.node.entry else { return }
+            guard !updating, let outline, outline.numberOfSelectedRows == 1, let entry = (outline.item(atRow: outline.clickedRow) as? TreeItem)?.node.entry else { return }
             store.showDashboard(entry)
         }
         @objc func openSelection() {
@@ -246,6 +252,11 @@ struct ConnectionTreeView: NSViewRepresentable {
                 // Public macOS 27 API: .visible == 1. Keep the stable macOS 26 SDK build compatible with older systems.
                 if item.responds(to: NSSelectorFromString("setPreferredImageVisibility:")) { item.setValue(1, forKey: "preferredImageVisibility") }
                 item.target = self; item.representedObject = action; menu.addItem(item)
+            }
+            if let entry = contextItem?.node.entry, store.selectedRecordKeys.count > 1, store.selectedRecordKeys.contains(entry.favoriteID) {
+                add("Изменить выбранные записи…", "batch")
+                add("Экспорт выбранных…", "batchExport")
+                return
             }
             if let item = contextItem {
                 if let entry = item.node.entry {
@@ -265,6 +276,8 @@ struct ConnectionTreeView: NSViewRepresentable {
         }
         @objc func menuAction(_ sender: NSMenuItem) {
             let action = sender.representedObject as? String ?? ""
+            if action == "batch" { store.showBatchEditor(); return }
+            if action == "batchExport" { store.export(entries: store.batchEntries); return }
             if action == "record" { store.newRecord(in: contextItem.map { $0.node.entry.map(store.group) ?? String($0.node.id.dropFirst("folder:".count)) } ?? ""); return }
             if action == "folder" { store.folderParent = ""; store.creatingFolder = true; return }
             guard let item = contextItem else { return }
