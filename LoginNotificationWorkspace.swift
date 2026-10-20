@@ -12,6 +12,10 @@ extension AliasStore {
                 guard let self, !self.endingWorkspace, self.profiles.active == profile, self.config.url == configuration else { return nil }
                 return self.profileEntries.first { $0.favoriteID == key }
             }
+            loginNotifications?.onStatus = { [weak self] status in
+                guard let self, self.profiles.active == profile, self.config.url == configuration, let current = self.profileEntries.first(where: { $0.favoriteID == key }), MaintenancePlan.fingerprint(current) == MaintenancePlan.fingerprint(entry) else { return }
+                self.recordNotificationStatus(status, entry: current)
+            }
         } catch { self.error = error.localizedDescription }
     }
 }

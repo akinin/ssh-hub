@@ -199,6 +199,7 @@ enum LoginNotificationFailure {
     private let config: URL
     private let resolveEntry: () -> SSHAlias?
     private let resources: URL?
+    var onStatus: ((LoginNotificationStatus?) -> Void)?
     @Published var configuration = LoginNotificationConfiguration()
     @Published var token = ""
     @Published var adoptLegacy = false
@@ -291,17 +292,17 @@ enum LoginNotificationFailure {
                 try Task.checkCancellation()
                 guard MaintenancePlan.fingerprint(try current()) == fingerprint else { throw ConfigError.message("Контекст записи изменился. Результат проверь заново.") }
                 let result = try LoginNotificationFailure.decode(data)
-                status = result; configuration = result.configuration
+                status = result; configuration = result.configuration; onStatus?(result)
                 if configuration.hostLabel.isEmpty { configuration.hostLabel = entryTitle }
                 if configuration.timeZone == nil { configuration.timeZone = TimeZone.current.identifier }
                 inspectedFingerprint = fingerprint; inspectedSnapshot = snapshot; adoptLegacy = false; review = nil; token = ""
                 message = action == .inspect ? "Состояние прочитано. Настройки на сервере не менялись." : "Действие подтверждено сервером."
             } catch is CancellationError {
                 message = action == .inspect ? "Проверка остановлена." : "Действие остановлено. Оно могло завершиться на сервере: проверь состояние перед повтором."
-                if action != .inspect { status = nil; inspectedSnapshot = nil; inspectedFingerprint = nil; review = nil }
+                if action != .inspect { onStatus?(nil); status = nil; inspectedSnapshot = nil; inspectedFingerprint = nil; review = nil }
             } catch {
                 self.error = error.localizedDescription
-                if action != .inspect { status = nil; inspectedSnapshot = nil; inspectedFingerprint = nil; review = nil }
+                if action != .inspect { onStatus?(nil); status = nil; inspectedSnapshot = nil; inspectedFingerprint = nil; review = nil }
             }
             operation = ""
         }

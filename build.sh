@@ -79,7 +79,7 @@ swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$b
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" WorkspaceDivider.swift WorkspaceDividerTests.swift -o "$build_dir/workspace-divider-tests" -framework AppKit -framework SwiftUI
 "$build_dir/workspace-divider-tests"
 # The 3.0 feature checks use synthetic metadata and owned loopback/process fixtures.
-swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift SSHCredentials.swift SharedCredentials.swift SharedCredentialsView.swift PasswordToolsView.swift SharedCredentialsTests.swift -o "$build_dir/shared-credentials-tests" -framework AppKit -framework Security -framework LocalAuthentication
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift SSHCredentials.swift SharedCredentials.swift KDBX.swift KDBXView.swift SharedCredentialsView.swift PasswordToolsView.swift SharedCredentialsTests.swift -o "$build_dir/shared-credentials-tests" -framework AppKit -framework Security -framework LocalAuthentication
 "$build_dir/shared-credentials-tests"
 maintenance_sources=(SSHConfig.swift ConfigChanges.swift WorkspaceProfiles.swift ConnectionAppearance.swift ConnectionTree.swift AliasTransfer.swift LocalConnections.swift SavedCommands.swift HubFeatureStorage.swift SSHCredentials.swift ToolkitRuntime.swift Tunnels.swift ConnectionProbe.swift TerminalLauncher.swift PublicKeys.swift SSHLoginPolicy.swift Maintenance.swift)
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" "${maintenance_sources[@]}" MaintenanceTests.swift -o "$build_dir/maintenance-tests" -framework AppKit -framework Security -framework LocalAuthentication
@@ -115,6 +115,19 @@ swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$b
 "$build_dir/backup-operations-tests"
 app_dir="$build_dir/SSH Hub.app"
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
+# Read-only KeePass helper: fixed dependency graph; no external runtime on the user's Mac.
+export CARGO_TARGET_DIR="$build_dir/kdbx-target"
+export MACOSX_DEPLOYMENT_TARGET=14.0
+SSH_HUB_KDBX_FIXTURE="$build_dir/kdbx-fixtures" cargo test --locked --manifest-path KDBXHelper/Cargo.toml
+cargo build --locked --release --manifest-path KDBXHelper/Cargo.toml
+cp "$CARGO_TARGET_DIR/release/ssh-hub-kdbx" "$app_dir/Contents/MacOS/SSHKDBX"
+python3 KDBXHelper/test_interop.py "$app_dir/Contents/MacOS/SSHKDBX"
+python3 KDBXHelper/licenses.py "$app_dir/Contents/Resources/KDBX-LICENSES.txt"
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift SSHCredentials.swift SharedCredentials.swift KDBX.swift KDBXTests.swift -o "$build_dir/kdbx-tests" -framework AppKit -framework Security -framework LocalAuthentication
+"$build_dir/kdbx-tests" "$app_dir/Contents/MacOS/SSHKDBX"
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" "${infrastructure_sources[@]}" ConnectionDocumentation.swift ConnectionAttachments.swift RecordFeatureTags.swift RecordFeatureTagsTests.swift -o "$build_dir/record-feature-tests" -framework AppKit -framework Security
+"$build_dir/record-feature-tests"
+
 # Keep the deployment kit exact: test fixtures and Python bytecode do not ship.
 rm -rf "$app_dir/Contents/Resources/MonitoringCollector"
 mkdir -p "$app_dir/Contents/Resources/MonitoringCollector"

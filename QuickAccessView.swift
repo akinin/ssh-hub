@@ -45,6 +45,7 @@ extension AliasStore {
     }
     @objc private func toggle() { if popover.isShown { close() } else { show() } }
     func show() {
+        guard !AppAccess.shared.locked else { openMain(); return }
         guard let button = statusItem?.button else { return }
         if !popover.isShown { popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY) }
         NSApplication.shared.activate(ignoringOtherApps: true)
@@ -55,7 +56,7 @@ extension AliasStore {
     func openMain(_ action: @escaping () -> Void = {}) {
         close(); showMain?()
         // Present sheets after SwiftUI has restored a previously closed main window.
-        DispatchQueue.main.async { action() }
+        DispatchQueue.main.async { if !AppAccess.shared.locked { action() } }
     }
 }
 

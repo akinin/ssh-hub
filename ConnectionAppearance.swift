@@ -75,12 +75,30 @@ enum RecordAction: String, CaseIterable, Identifiable {
         case .notifications: return "Вход по SSH → Telegram"
         case .terminal: return "Открыть отдельно"
     } }
-    static func layout(_ stored: [RecordActionStyle]?, entry: SSHAlias) -> [RecordActionStyle] {
+    static func catalog(_ stored: [RecordActionStyle]?) -> [RecordActionStyle] {
         let saved = stored ?? [], seen = Set(saved.map(\.id))
-        return (saved + allCases.filter { !seen.contains($0.id) }.map { RecordActionStyle(id: $0.id) }).filter { RecordAction(rawValue: $0.id)?.available(entry) == true }
+        return (saved + allCases.filter { !seen.contains($0.id) }.map { RecordActionStyle(id: $0.id) }).filter { RecordAction(rawValue: $0.id) != nil }
+    }
+    static func layout(_ stored: [RecordActionStyle]?, global: [RecordActionStyle]? = nil, entry: SSHAlias) -> [RecordActionStyle] {
+        catalog(stored ?? global).filter { RecordAction(rawValue: $0.id)?.available(entry) == true }
     }
     static func saving(_ edited: [RecordActionStyle], previous: [RecordActionStyle]?) -> [RecordActionStyle] {
         let seen = Set(edited.map(\.id))
         return edited + (previous ?? []).filter { !seen.contains($0.id) }
+    }
+}
+
+// App preference across profiles; per-record metadata remains an optional override.
+enum RecordActionDefaults {
+    static let key = "globalRecordActionTiles.v1"
+    static func valid(_ values: [RecordActionStyle]) -> Bool { values.count <= 32 && Set(values.map(\.id)).count == values.count && values.allSatisfy(\.valid) }
+    static func decode(_ data: Data?) -> [RecordActionStyle]? {
+        guard let data, data.count <= 16384, let values = try? JSONDecoder().decode([RecordActionStyle].self, from: data), valid(values) else { return nil }
+        return values
+    }
+    static func encode(_ values: [RecordActionStyle]?) throws -> Data {
+        guard let values else { return Data() }
+        guard valid(values) else { throw ConfigError.message("Некорректные общие настройки плиток.") }
+        return try JSONEncoder().encode(values)
     }
 }

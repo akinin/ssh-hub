@@ -6,19 +6,23 @@ extension RecordActionStyle {
 }
 
 struct RecordActionsEditor: View {
-    let entry: SSHAlias
+    let entry: SSHAlias?
+    let inherited: [RecordActionStyle]?
     let stored: [RecordActionStyle]?
     let onSave: ([RecordActionStyle]?) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var draft: [RecordActionStyle]
-    init(entry: SSHAlias, stored: [RecordActionStyle]?, onSave: @escaping ([RecordActionStyle]?) -> Void) {
-        self.entry = entry; self.stored = stored; self.onSave = onSave
-        _draft = State(initialValue: RecordAction.layout(stored, entry: entry))
+    @State private var resetSnapshot: [RecordActionStyle]?
+    init(entry: SSHAlias?, stored: [RecordActionStyle]?, inherited: [RecordActionStyle]? = nil, onSave: @escaping ([RecordActionStyle]?) -> Void) {
+        self.entry = entry; self.stored = stored; self.inherited = inherited; self.onSave = onSave
+        let initial = entry.map { RecordAction.layout(stored, global: inherited, entry: $0) } ?? RecordAction.catalog(stored)
+        _draft = State(initialValue: initial)
+        _resetSnapshot = State(initialValue: stored == nil ? initial : nil)
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("Плитки записи", systemImage: "square.grid.2x2").font(.title2.bold())
-            Text("Настройки действуют только для этой записи. Перетаскивай строки или используй стрелки.").font(.caption).foregroundStyle(.secondary)
+            Label(entry == nil ? "Плитки всех записей" : "Плитки записи", systemImage: "square.grid.2x2").font(.title2.bold())
+            Text(entry == nil ? "Общий порядок, цвета и набор плиток для записей без индивидуальных настроек. Для каждого типа показываются только подходящие действия." : "Настройки только этой записи. Можно вернуться к общему варианту. Перетаскивай строки или используй стрелки.").font(.caption).foregroundStyle(.secondary)
             List {
                 ForEach(draft.indices, id: \.self) { index in
                     if let action = RecordAction(rawValue: draft[index].id) {
@@ -34,14 +38,26 @@ struct RecordActionsEditor: View {
                 }.onMove { source, destination in draft.move(fromOffsets: source, toOffset: destination) }
             }.frame(minHeight: 330)
             HStack {
-                Button("По умолчанию") { draft = RecordAction.layout(nil, entry: entry) }
+                Button(entry == nil ? "По умолчанию" : "Использовать общие") {
+                    draft = entry.map { RecordAction.layout(nil, global: inherited, entry: $0) } ?? RecordAction.catalog(nil)
+                    resetSnapshot = draft
+                }
                 Menu("Добавить") {
                     ForEach(draft.indices.filter { draft[$0].hidden }, id: \.self) { index in Button(RecordAction(rawValue: draft[index].id)?.title ?? draft[index].id) { draft[index].hidden = false } }
                 }.disabled(!draft.contains(where: \.hidden))
                 Spacer()
                 Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Сохранить") { onSave(RecordAction.saving(draft, previous: stored)); dismiss() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                Button("Сохранить") { onSave(resetSnapshot == draft ? nil : RecordAction.saving(draft, previous: stored ?? inherited)); dismiss() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
             }
         }.padding(20).frame(width: 660)
+    }
+}
+
+struct GlobalRecordActionsEditor: View {
+    @AppStorage(RecordActionDefaults.key) private var data = Data()
+    var body: some View {
+        RecordActionsEditor(entry: nil, stored: RecordActionDefaults.decode(data)) { styles in
+            if let encoded = try? RecordActionDefaults.encode(styles) { data = encoded }
+        }
     }
 }

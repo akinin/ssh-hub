@@ -21,6 +21,7 @@ struct AppSettingsView: View {
     @State private var loginEnabled = false
     @State private var requiresApproval = false
     @State private var error: String?
+    @State private var showingActionTiles = false
     @State private var selectedSection = AppSettingsSection.connections
     var body: some View {
         VStack(spacing: 0) {
@@ -63,6 +64,8 @@ struct AppSettingsView: View {
                             }
                         case .workspace:
                             Section {
+                                Button("Плитки всех записей…", systemImage: "square.grid.2x2") { showingActionTiles = true }
+                                Text("Общий порядок, цвета и набор плиток. Индивидуальные настройки записей имеют приоритет.").font(.caption).foregroundStyle(.secondary)
                                 Toggle("Восстанавливать вкладки, панели и окна", isOn: $restoreWorkspace)
                                 Text("Сохранённые SSH, Serial и SFTP-вкладки подключаются по кнопке.").font(.caption).foregroundStyle(.secondary)
                             }
@@ -106,6 +109,7 @@ struct AppSettingsView: View {
                 Button("Готово") { dismiss() }.keyboardShortcut(.defaultAction)
             }.padding(14)
         }.frame(width: 820, height: 580).dismissOnOutsideClick()
+            .sheet(isPresented: $showingActionTiles) { GlobalRecordActionsEditor() }
             .onAppear { refreshLoginStatus() }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refreshLoginStatus() }
     }

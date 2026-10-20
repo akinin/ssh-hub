@@ -39,6 +39,7 @@ import ConsoleSupport
     @Published var loginNotifications: LoginNotificationModel?
     @Published var infrastructureImport: InfrastructureImportTarget?
     var sharedCredentials: SharedCredentialVault?
+    var kdbx: KDBXWorkspace?
     var infrastructure: InfrastructureIntegrationModel?
     var monitoring: MonitoringModel?
     var maintenance: MaintenanceModel?
@@ -62,6 +63,9 @@ import ConsoleSupport
     let documentation = DocumentationWorkspace()
     let savedCommands = SavedCommandsWorkspace()
     let availability = AvailabilityMonitor()
+    @Published var featureTags: [String: [RecordFeatureTag]] = [:]
+    var materialSubscription: AnyCancellable?
+    var featureTagTask: Task<Void, Never>?
     @Published var searchMetadata = SearchMetadata()
     @Published var query = ""
     @Published var error: String?
@@ -131,7 +135,7 @@ import ConsoleSupport
         if pages.isEmpty && ConsoleStore.shared.sessions.isEmpty, let initial = current ?? filtered.first { showDashboard(initial) }
         saveWorkspace()
         availability.configure(entries: aliases)
-        _ = credentialVault(); reloadSearchMetadata()
+        _ = credentialVault(); reloadSearchMetadata(); observeRecordMaterials(); refreshFeatureTags()
     }
     var ordered: [SSHAlias] {
         aliases.sorted {
@@ -143,7 +147,7 @@ import ConsoleSupport
         (groupFilter == "recent" ? recentAliases : ordered).filter { entry in
             let matchesGroup = groupFilter == "all" || groupFilter == "recent" || (groupFilter == "favorites" && isFavorite(entry)) || (groupFilter == "ungrouped" && group(entry).isEmpty) || (groupFilter.hasPrefix("group:") && (ConnectionTree.normalized(group(entry)) == String(groupFilter.dropFirst(6)) || ConnectionTree.normalized(group(entry)).hasPrefix(String(groupFilter.dropFirst(6)) + "/")))
             let matchesAvailability = (groupFilter == "available" || groupFilter == "unavailable") && availability.selected.contains(entry.favoriteID) && availability.results[entry.favoriteID]?.reachable == (groupFilter == "available")
-            return profiles.contains(entry.favoriteID) && (matchesGroup || matchesAvailability || matchesSmartFolder(entry)) && (query.isEmpty || "\(title(entry)) \(entry.name) \(entry.host) \(entry.user) \(entry.website ?? "") \(group(entry))".localizedCaseInsensitiveContains(query))
+            return profiles.contains(entry.favoriteID) && (matchesGroup || matchesAvailability || matchesSmartFolder(entry)) && (query.isEmpty || "\(title(entry)) \(entry.name) \(entry.host) \(entry.user) \(entry.website ?? "") \(group(entry)) \(tags(for: entry).joined(separator: " "))".localizedCaseInsensitiveContains(query))
         }
     }
     func showDocumentation(_ entry: SSHAlias) {
@@ -397,6 +401,7 @@ import ConsoleSupport
                 throw ConfigError.message("Имя отключённого SSH-алиаса занято другим блоком в конфиге. Переименуй новый блок в SSH-конфиге и обнови список.")
             }
             aliases = loadedAliases
+            refreshFeatureTags()
             profiles.discover(aliases.map(\.favoriteID))
             if profiles.profiles.contains(where: { $0.folderPaths == nil }) {
             profiles.migrateFolders(legacy: UserDefaults.standard.stringArray(forKey: "folderPaths.v1") ?? [], appearances: ConnectionAppearance.decode(UserDefaults.standard.data(forKey: "folderAppearance.v1")), groups: groups, keys: aliases.map(\.favoriteID))
@@ -591,6 +596,7 @@ struct HubCommands: Commands {
         CommandGroup(replacing: .appSettings) {
             Group {
                 Button("Настройки…") { store.showingSettings = true }.keyboardShortcut(",", modifiers: .command)
+                Button("Заблокировать SSH Hub", systemImage: "lock") { store.lockApplication() }.keyboardShortcut("l", modifiers: [.command, .control]).disabled(!access.enabled)
             }.disabled(access.locked || session.store == nil)
         }
         CommandGroup(after: .undoRedo) {
@@ -628,11 +634,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         RecordLogsModel.stopAll()
         InventoryModel.stopAll()
         TopologyModel.stopAll()
+        KDBXClient.stopAll()
         let tunnels = TunnelManager.shared
-        guard tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending else { return .terminateNow }
+        guard tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending else { return .terminateNow }
         tunnels.stopAll()
         UpdateTermination.finishAfterCleanup(sender) {
-            tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending
+            tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending
         }
         return .terminateLater
     }
@@ -723,6 +730,7 @@ struct StatusMenu: View {
 }
 
 struct MainView: View {
+    @ObservedObject private var access = AppAccess.shared
     @ObservedObject private var updater = AppUpdater.shared
     @EnvironmentObject var store: AliasStore
     @Environment(\.openWindow) private var openWindow
@@ -907,6 +915,7 @@ struct MainView: View {
                         .onChange(of: store.config.url) { _, _ in store.reloadTopologyMapIndex() }
                     toolbarButton("ИИ-помощник", symbol: "sparkles", help: "Показать или скрыть ИИ-помощника") { if store.assistantVisible || store.assistantExpanded { store.closeAssistant() } else { store.presentAssistant() } }
                     toolbarButton("Настройки", symbol: "gearshape", help: "Настройки · ⌘,") { store.showingSettings = true }
+                    toolbarButton("Заблокировать", symbol: "lock", help: access.enabled ? "Заблокировать SSH Hub" : "Включи пароль приложения в настройках защиты") { store.lockApplication() }.disabled(!access.enabled)
                     toolbarButton("Новая запись", symbol: "plus", help: "Новая запись · ⌘N") { store.newRecord() }
                 }.padding(.horizontal, 10).fixedSize(horizontal: true, vertical: true)
             }
@@ -983,6 +992,8 @@ struct AliasDetail: View {
     @EnvironmentObject var store: AliasStore
     let entry: SSHAlias
     @State private var customizingTiles = false
+    @State private var customizingGlobalTiles = false
+    @AppStorage(RecordActionDefaults.key) private var globalTiles = Data()
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
@@ -993,9 +1004,9 @@ struct AliasDetail: View {
                         recordInfo
                     }
                 }
-                HStack { Spacer(); Button("Настроить плитки…", systemImage: "slider.horizontal.3") { customizingTiles = true }.font(.caption).accessibilityIdentifier("customizeRecordTiles") }
+                HStack { Spacer(); Button("Для всех записей…", systemImage: "square.grid.2x2") { customizingGlobalTiles = true }.font(.caption).accessibilityIdentifier("customizeGlobalRecordTiles"); Button("Для этой записи…", systemImage: "slider.horizontal.3") { customizingTiles = true }.font(.caption).accessibilityIdentifier("customizeRecordTiles") }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 165), spacing: 10)], spacing: 10) {
-                    ForEach(RecordAction.layout(store.appearance(entry).actionTiles, entry: entry).filter { !$0.hidden }) { style in
+                    ForEach(RecordAction.layout(store.appearance(entry).actionTiles, global: RecordActionDefaults.decode(globalTiles), entry: entry).filter { !$0.hidden }) { style in
                         if let action = RecordAction(rawValue: style.id) {
                             tile(action.title, detail: action.detail(entry), icon: action == .connect ? entry.recordKind?.icon ?? action.icon : action.icon, color: style.tint) { run(action) }
                                 .disabled(action == .check && store.checkingID != nil)
@@ -1023,12 +1034,12 @@ struct AliasDetail: View {
                 Text(entry.localID == nil ? "SSH-алиас из " + entry.source.path.replacingOccurrences(of: NSHomeDirectory(), with: "~") : entry.sshAlias == nil ? "Запись хранится в SSH Hub." : "Запись связана с SSH-алиасом «" + (entry.sshAlias ?? "") + "».").font(.caption).foregroundStyle(.secondary)
             }.padding(24).frame(maxWidth: 850, alignment: .leading).frame(maxWidth: .infinity)
         }.sheet(isPresented: $customizingTiles) {
-            RecordActionsEditor(entry: entry, stored: store.appearance(entry).actionTiles) { tiles in
+            RecordActionsEditor(entry: entry, stored: store.appearance(entry).actionTiles, inherited: RecordActionDefaults.decode(globalTiles)) { tiles in
                 guard let current = store.aliases.first(where: { $0.favoriteID == entry.favoriteID }) else { return }
                 var appearance = store.appearance(current); appearance.actionTiles = tiles
                 store.setAppearance(appearance, for: current)
             }
-        }
+        }.sheet(isPresented: $customizingGlobalTiles) { GlobalRecordActionsEditor() }
     }
     private func run(_ action: RecordAction) {
         switch action {
@@ -1058,6 +1069,7 @@ struct AliasDetail: View {
             Button { store.stylingAlias = entry } label: { Text(store.title(entry)).font(.title2).bold().lineLimit(2) }.buttonStyle(.plain).help("Изменить название и логотип")
             Text(entry.secondaryTitle).font(.callout).foregroundStyle(.secondary).textSelection(.enabled).lineLimit(2)
             Text(entry.canSSH ? "\(entry.user) · порт \(entry.port)" : (entry.recordKind?.title ?? "Запись")).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            RecordFeatureBadges(tags: store.featureTags[entry.favoriteID, default: []])
         }
     }
     private var recordActions: some View {

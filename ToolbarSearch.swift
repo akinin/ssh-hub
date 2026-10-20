@@ -70,7 +70,7 @@ struct ToolbarSearchField: View {
     private var seeds: [SearchRecordSeed] {
         store.profileEntries.prefix(1000).map { entry in
             SearchRecordSeed(key: entry.favoriteID, title: store.title(entry),
-                detail: [entry.name, entry.host, entry.user, entry.port, store.group(entry), store.searchMetadata.tags[entry.favoriteID, default: []].joined(separator: " ")].filter { !$0.isEmpty }.joined(separator: " · "),
+                detail: [entry.name, entry.host, entry.user, entry.port, store.group(entry), store.tags(for: entry).joined(separator: " ")].filter { !$0.isEmpty }.joined(separator: " · "),
                 kind: entry.recordKind ?? .ssh)
         }
     }

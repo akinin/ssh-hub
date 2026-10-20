@@ -38,13 +38,20 @@ enum AppAccessError: LocalizedError {
 
 protocol AppAccessStorage {
     func read() throws -> Data?
+    func readInteractively() throws -> Data?
     func write(_ data: Data?) throws
 }
+extension AppAccessStorage { func readInteractively() throws -> Data? { try read() } }
 struct AppAccessKeychain: AppAccessStorage {
     private var query: [String: Any] { [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.olshaniki.sshhub.app-access.v1", kSecAttrAccount as String: Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases"] }
     func read() throws -> Data? {
+        try read(allowInteraction: false)
+    }
+    func readInteractively() throws -> Data? { try read(allowInteraction: true) }
+    private func read(allowInteraction: Bool) throws -> Data? {
         var item = query; item[kSecReturnData as String] = true
-        let context = LAContext(); context.interactionNotAllowed = true; item[kSecUseAuthenticationContext as String] = context
+        let context = LAContext(); context.interactionNotAllowed = !allowInteraction; item[kSecUseAuthenticationContext as String] = context
+        if !allowInteraction { item[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail }
         var result: CFTypeRef?; let status = SecItemCopyMatching(item as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = result as? Data else { throw AppAccessError.keychain }; return data
@@ -58,7 +65,7 @@ struct AppAccessKeychain: AppAccessStorage {
 }
 
 @MainActor final class AppAccess: ObservableObject {
-    static let shared = AppAccess(storage: AppAccessKeychain())
+    static let shared = AppAccess(storage: AppAccessKeychain(), deferredLoad: true)
     @Published private(set) var locked = false
     @Published private(set) var enabled = false
     @Published private(set) var busy = false
@@ -68,12 +75,38 @@ struct AppAccessKeychain: AppAccessStorage {
     private let storage: AppAccessStorage
     private let biometricAvailable: () -> Bool
     private let biometricEvaluate: (() async throws -> Bool)?
+    private var generation = UUID()
     private var failures = 0
     private var nextAttempt = Date.distantPast
+    private var readingKeychain = false
     var supportsTouchID: Bool { biometricAvailable() }
     var usesTouchID: Bool { verifier?.touchID == true && supportsTouchID }
-    init(storage: AppAccessStorage, biometricAvailable: @escaping () -> Bool = { let context = LAContext(); return context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) && context.biometryType == .touchID }, biometricEvaluate: (() async throws -> Bool)? = nil) {
+    var needsKeychainRetry: Bool { enabled && verifier == nil && !readingKeychain }
+    init(storage: AppAccessStorage, deferredLoad: Bool = false, biometricAvailable: @escaping () -> Bool = { let context = LAContext(); return context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) && context.biometryType == .touchID }, biometricEvaluate: (() async throws -> Bool)? = nil) {
         self.storage = storage; self.biometricAvailable = biometricAvailable; self.biometricEvaluate = biometricEvaluate
+        if deferredLoad {
+            // The login Keychain can block in securityd even with UI disabled.
+            // Show the closed gate first; never construct the record store while waiting.
+            enabled = true; locked = true; busy = true; readingKeychain = true
+            let operation = generation
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let result = Result { try storage.read() }
+                Task { @MainActor [weak self] in
+                    guard let self, self.generation == operation else { return }
+                    self.readingKeychain = false; self.busy = false
+                    do {
+                        guard let data = try result.get() else { self.enabled = false; self.locked = false; self.error = nil; return }
+                        guard data.count <= 2048, let value = try? JSONDecoder().decode(AppPasswordVerifier.self, from: data), value.valid else { throw AppAccessError.invalid }
+                        self.verifier = value; self.error = nil
+                    } catch { self.error = error.localizedDescription }
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+                guard let self, self.generation == operation, self.readingKeychain else { return }
+                self.busy = false; self.error = "Связка ключей пока не отвечает. Доступ остаётся заблокирован; дождись ответа macOS или перезапусти SSH Hub."
+            }
+            return
+        }
         do {
             guard let data = try storage.read() else { return }
             enabled = true; locked = true
@@ -81,40 +114,59 @@ struct AppAccessKeychain: AppAccessStorage {
             verifier = value
         } catch { enabled = true; locked = true; self.error = error.localizedDescription }
     }
+    func lock() {
+        guard enabled else { return }
+        generation = UUID(); context?.invalidate(); context = nil; busy = false; locked = true; error = nil
+    }
+    func retryKeychain() async {
+        guard locked, needsKeychainRetry, !busy else { return }
+        busy = true; error = nil; let operation = generation, storage = storage
+        defer { if generation == operation { busy = false } }
+        do {
+            let data = try await Task.detached { try storage.readInteractively() }.value
+            guard generation == operation else { return }
+            guard let data, data.count <= 2048, let value = try? JSONDecoder().decode(AppPasswordVerifier.self, from: data), value.valid else { throw AppAccessError.invalid }
+            verifier = value
+        } catch { if generation == operation { self.error = error.localizedDescription } }
+    }
     func passwordLogin(_ password: String) async {
         context?.invalidate(); context = nil
         guard !busy else { return }
         guard Date() >= nextAttempt else { error = "Подожди несколько секунд перед следующей попыткой."; return }
         guard let verifier else { error = AppAccessError.keychain.localizedDescription; return }
-        busy = true; defer { busy = false }
+        busy = true; let operation = generation; defer { if generation == operation { busy = false } }
         let valid = (try? await Task.detached { try verifier.matches(password) }.value) == true
+        guard generation == operation else { return }
         if valid { locked = false; error = nil; failures = 0 }
         else { failures += 1; if failures >= 5 { nextAttempt = Date().addingTimeInterval(min(30, Double(failures * 2))) }; error = AppAccessError.incorrect.localizedDescription }
     }
     func biometricLogin() async {
         guard !busy, usesTouchID else { return }
-        busy = true; let context = LAContext(); self.context = context; context.localizedFallbackTitle = "Войти по паролю"
-        defer { busy = false; self.context = nil }
+        busy = true; let operation = generation; let context = LAContext(); self.context = context; context.localizedFallbackTitle = "Войти по паролю"
+        defer { if generation == operation { busy = false; self.context = nil } }
         do {
             let accepted: Bool
             if let biometricEvaluate { accepted = try await biometricEvaluate() }
             else { accepted = try await context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Вход в SSH Hub") }
+            guard generation == operation else { return }
             if accepted { locked = false; error = nil }
             else { error = "Touch ID не подтвердил вход. Можно войти по паролю приложения." }
         }
-        catch { self.error = "Touch ID не подтвердил вход. Можно войти по паролю приложения." }
+        catch { guard generation == operation else { return }; self.error = "Touch ID не подтвердил вход. Можно войти по паролю приложения." }
     }
     func cancelBiometrics() { context?.invalidate() }
     func configure(current: String, password: String?, touchID: Bool) async throws {
         guard !locked, !busy else { throw AppAccessError.incorrect }
-        busy = true; defer { busy = false }
+        busy = true; let operation = generation; defer { if generation == operation { busy = false } }
         if let verifier { guard try await Task.detached(operation: { try verifier.matches(current) }).value else { throw AppAccessError.incorrect } }
         if let password {
             let value = try await Task.detached { try AppPasswordVerifier.make(password, touchID: touchID) }.value
+            guard generation == operation, !locked else { throw AppAccessError.incorrect }
             let data = try JSONEncoder().encode(value)
             try storage.write(data)
             verifier = value; enabled = true
         } else {
+            guard generation == operation, !locked else { throw AppAccessError.incorrect }
             try storage.write(nil)
             verifier = nil; enabled = false
         }
@@ -134,6 +186,7 @@ struct AppUnlockView: View {
                 SecureField("Пароль приложения", text: $password).textFieldStyle(.roundedBorder).frame(width: 280).onSubmit { login() }.disabled(access.busy)
             }
             Button("Войти по паролю") { access.cancelBiometrics(); if passwordMode || !access.usesTouchID { login() } else { passwordMode = true } }.disabled(access.busy)
+            if access.needsKeychainRetry { Button("Повторить доступ к Связке ключей") { Task { await access.retryKeychain() } }.disabled(access.busy) }
             if access.busy { ProgressView().controlSize(.small) }
             if let error = access.error { Text(error).font(.caption).foregroundStyle(.red).frame(maxWidth: 360) }
         }.frame(minWidth: 600, maxWidth: .infinity, minHeight: 400, maxHeight: .infinity)
@@ -155,7 +208,7 @@ struct AppAccessSettingsView: View {
             Text(access.enabled ? "Защита входа включена" : "Защита входа выключена").font(.headline)
             if access.enabled { PasswordEntryView(prompt: "Текущий пароль приложения", text: $current) }
             PasswordEntryView(prompt: "Новый пароль приложения (от 12 символов)", text: $password, onGenerated: { confirmation = $0 })
-            PasswordEntryView(prompt: "Повтори новый пароль", text: $confirmation, onGenerated: { password = $0 })
+            PasswordEntryView(prompt: "Повтори новый пароль", text: $confirmation, showsGenerator: false)
             Toggle("Разрешить вход с Touch ID вместо пароля", isOn: $touchID).disabled(!access.supportsTouchID)
             if !access.supportsTouchID { Text("Touch ID недоступен или отпечатки не настроены в macOS.").font(.caption).foregroundStyle(.secondary) }
             Text("Пароль остаётся резервным способом входа. Защита запрашивается при следующем запуске. Она закрывает доступ к интерфейсу, но не шифрует SSH-конфиг и материалы на диске.").font(.caption).foregroundStyle(.secondary)

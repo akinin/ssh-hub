@@ -8,13 +8,20 @@ enum OperationsPanel: String, Identifiable, CaseIterable {
 }
 struct InfrastructureImportTarget: Identifiable { var id = UUID(); var value: InfrastructureDiscoveredRecord }
 extension AliasStore {
+    func lockApplication() {
+        guard AppAccess.shared.enabled else { showingSettings = true; return }
+        QuickAccessController.shared.close()
+        kdbx?.cancel(); sharedCredentials?.lock()
+        stopOperations()
+        AppAccess.shared.lock()
+    }
     func reloadSearchMetadata() {
-        do { let value = try HubFeatureFile(feature: "Search", config: config.url, profile: profiles.active).load(SearchMetadata.self, fallback: SearchMetadata()); try value.validate(); searchMetadata = value }
+        do { let value = try HubFeatureFile(feature: "Search", config: config.url, profile: profiles.active).load(SearchMetadata.self, fallback: SearchMetadata()); try value.validate(); searchMetadata = value; refreshFeatureTags() }
         catch { self.error = error.localizedDescription; searchMetadata = SearchMetadata() }
     }
     func matchesSmartFolder(_ entry: SSHAlias) -> Bool {
         guard groupFilter.hasPrefix("smart:"), let id = UUID(uuidString: String(groupFilter.dropFirst(6))), let folder = searchMetadata.folders.first(where: { $0.id == id }) else { return false }
-        let tags = searchMetadata.tags[entry.favoriteID, default: []]
+        let tags = tags(for: entry)
         let text = [title(entry), entry.name, entry.host, entry.user, group(entry), tags.joined(separator: " ")].joined(separator: " ")
         return (folder.kind == nil || (entry.recordKind ?? .ssh) == folder.kind) && (folder.tag.isEmpty || tags.contains(folder.tag)) && folder.query.split(whereSeparator: \.isWhitespace).allSatisfy { text.localizedCaseInsensitiveContains(String($0)) }
     }
@@ -46,7 +53,8 @@ extension AliasStore {
     }
     func credentialVault() -> SharedCredentialVault {
         if let sharedCredentials { return sharedCredentials }
-        let value = SharedCredentialVault(config: config.url, profileID: profiles.active); value.install(); sharedCredentials = value; return value
+        let workspace = KDBXWorkspace(); kdbx = workspace
+        let value = SharedCredentialVault(config: config.url, profileID: profiles.active, kdbxSource: workspace.runtime); value.install(); sharedCredentials = value; return value
     }
     func integrationModel() -> InfrastructureIntegrationModel {
         if let infrastructure { infrastructure.entries = profileEntries; return infrastructure }
@@ -83,7 +91,7 @@ extension AliasStore {
         if clear {
             loginNotifications = nil
             operationsPanel = nil; assistantVisible = false; assistantExpanded = false; assistantCommandReview = nil; assistantProposalReview = nil; assistantRecordDraft = nil; assistantAppliedActions = []; assistant = nil; infrastructureImport = nil
-            sharedCredentials?.deactivate(); sharedCredentials = nil
+            sharedCredentials?.deactivate(); sharedCredentials = nil; kdbx?.cancel(); kdbx = nil
             infrastructure = nil; monitoring = nil; maintenance = nil
         }
     }
@@ -99,7 +107,7 @@ struct OperationsPanelView: View {
     var body: some View {
         switch panel {
         case .search: GlobalSearchView(query: $store.globalSearchQuery).environmentObject(store)
-        case .credentials: SharedCredentialsView(vault: store.credentialVault(), entries: store.profileEntries)
+        case .credentials: SharedCredentialsView(vault: store.credentialVault(), kdbx: store.kdbx, entries: store.profileEntries)
         case .integrations: InfrastructureIntegrationsView(model: store.integrationModel(), onImport: store.importInfrastructure)
         case .monitoring:
             let profile = store.profiles.active, configuration = store.config.url

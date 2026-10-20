@@ -146,10 +146,14 @@ extension AliasStore {
     func windowDidMove(_ notification: Notification) { store?.saveWorkspace() }
 }
 struct DetachedWorkspaceView: View {
+    @ObservedObject private var access = AppAccess.shared
     let tab: WorkspaceTab
     @EnvironmentObject var store: AliasStore
     @ObservedObject private var consoles = ConsoleStore.shared
     var body: some View {
+        Group { if access.locked { AppUnlockView(access: access) } else { content } }
+    }
+    private var content: some View {
         VStack(spacing: 0) {
             HStack {
                 switch tab {

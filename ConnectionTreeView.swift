@@ -111,7 +111,7 @@ struct ConnectionTreeView: NSViewRepresentable {
                 for node in nodes {
                     presentation += [node.id, node.title]
                     if let entry = node.entry {
-                        presentation += [entry.host, entry.user, entry.port, entry.authentication.rawValue, entry.options.map(\.id).joined(separator: "\n"), store.appearance(entry).logo?.base64EncodedString() ?? "", String(store.availability.selected.contains(entry.favoriteID))]
+                        presentation += [store.featureTags[entry.favoriteID, default: []].map(\.rawValue).joined(separator: ","), entry.host, entry.user, entry.port, entry.authentication.rawValue, entry.options.map(\.id).joined(separator: "\n"), store.appearance(entry).logo?.base64EncodedString() ?? "", String(store.availability.selected.contains(entry.favoriteID))]
                         if let result = store.availability.results[entry.favoriteID] { presentation += [String(result.reachable), result.detail, String(result.date.timeIntervalSince1970)] }
                     } else { presentation.append(store.folderAppearance(String(node.id.dropFirst("folder:".count))).logo?.base64EncodedString() ?? "") }
                     describe(node.children); presentation.append("end:" + node.id)
@@ -195,6 +195,12 @@ struct ConnectionTreeView: NSViewRepresentable {
                 cell.toolTip = String(item.node.id.dropFirst("folder:".count))
             }
             var views: [NSView] = [icon, text]
+            if let entry = item.node.entry {
+                for tag in store.featureTags[entry.favoriteID, default: []] {
+                    let badge = NSImageView(); badge.image = NSImage(systemSymbolName: tag.icon, accessibilityDescription: tag.title); badge.contentTintColor = .secondaryLabelColor; badge.toolTip = tag.title
+                    badge.translatesAutoresizingMaskIntoConstraints = false; badge.widthAnchor.constraint(equalToConstant: 11).isActive = true; badge.heightAnchor.constraint(equalToConstant: 11).isActive = true; views.append(badge)
+                }
+            }
             if let entry = item.node.entry, store.availability.selected.contains(entry.favoriteID) {
                 let status = NSImageView(); status.image = NSImage(systemSymbolName: "circle.fill", accessibilityDescription: "Доступность TCP")
                 status.contentTintColor = store.availability.results[entry.favoriteID].map { $0.reachable ? NSColor.systemGreen : NSColor.systemOrange } ?? .secondaryLabelColor

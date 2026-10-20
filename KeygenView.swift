@@ -62,7 +62,7 @@ struct GenerateKeyView: View {
                     TextField("Комментарий", text: $draft.comment).accessibilityIdentifier("keyComment")
                     PasswordEntryView(prompt: "Пароль ключа (необязательно)", text: $draft.passphrase, onGenerated: { draft.confirmation = $0 })
                         .accessibilityIdentifier("keyPassphrase")
-                    PasswordEntryView(prompt: "Повтори пароль", text: $draft.confirmation, onGenerated: { draft.passphrase = $0 })
+                    PasswordEntryView(prompt: "Повтори пароль", text: $draft.confirmation, showsGenerator: false)
                         .accessibilityIdentifier("keyConfirmation")
                 }.formStyle(.grouped).frame(height: 300).disabled(generating)
                 Text(directory.appendingPathComponent(draft.filename).path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))

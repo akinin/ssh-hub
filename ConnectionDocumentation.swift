@@ -51,6 +51,7 @@ struct DocumentationRepository {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         try encoder.encode(record).write(to: file, options: [.atomic])
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        NotificationCenter.default.post(name: Notification.Name("SSHHubRecordMaterialsChanged"), object: nil, userInfo: ["key": key])
     }
     private func validate(_ record: ConnectionDocument) throws {
         guard record.markdown.utf8.count <= Self.maximumBytes, record.text.utf8.count <= Self.maximumBytes,

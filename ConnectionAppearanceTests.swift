@@ -49,6 +49,20 @@ import AppKit
         check(Set(layout.map(\.id)).count == layout.count && !layout.contains(where: { $0.id == "inside" }), "only supported unique actions")
         check(ConnectionAppearance(actionTiles: custom + custom).validation != nil, "duplicate actions rejected")
         check(ConnectionAppearance(actionTiles: [RecordActionStyle(id: "connect", color: "invalid")]).validation != nil, "invalid palette rejected")
+        let global = [RecordActionStyle(id: "documentation", color: "purple"), RecordActionStyle(id: "logs", color: "orange", hidden: true), RecordActionStyle(id: "inside", color: "green")]
+        let persisted = try RecordActionDefaults.encode(global)
+        check(RecordActionDefaults.decode(persisted) == global, "global preferences persist order, color and hidden state")
+        let inherited = RecordAction.layout(nil, global: RecordActionDefaults.decode(persisted), entry: alias)
+        check(inherited.first?.id == "documentation" && inherited.first?.color == "purple" && inherited[1].hidden, "record without override inherits common layout")
+        check(RecordAction.layout(custom, global: global, entry: alias) == layout, "individual layout takes precedence without being rewritten")
+        var website = alias; website.recordKind = .website
+        let webLayout = RecordAction.layout(nil, global: global, entry: website)
+        check(webLayout.contains { $0.id == "inside" && $0.color == "green" } && !webLayout.contains { $0.id == "logs" || $0.id == "sftp" }, "global settings apply only supported actions for each record type")
+        check(RecordAction.catalog(global).count == RecordAction.allCases.count, "global editor includes actions for all types")
+        check(RecordActionDefaults.decode(try RecordActionDefaults.encode(nil)) == nil, "reset returns to built-in defaults")
+        check(RecordActionDefaults.decode(Data("broken".utf8)) == nil && RecordActionDefaults.decode(Data(repeating: 0, count: 16385)) == nil, "bounded invalid preferences fall back")
+        do { _ = try RecordActionDefaults.encode(global + global); fatalError("duplicate global actions accepted") } catch is ConfigError {}
+        check(RecordAction.layout(nil, global: global + [RecordActionStyle(id: "future_action")], entry: alias).allSatisfy { RecordAction(rawValue: $0.id) != nil }, "unknown future actions never execute")
         check(try AliasTransfer.decode(AliasTransfer(aliases: [TransferAlias(alias, group: "", favorite: false, appearance: layoutOnly)]).encode()).aliases[0].appearance == layoutOnly, "export layout metadata")
         print("PASS: display names, fallback, logo resizing/transparency, settings, rename/undo, reset, JSON compatibility and validation")
     }

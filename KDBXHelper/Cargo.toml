@@ -1,0 +1,23 @@
+[package]
+name = "ssh-hub-kdbx"
+version = "1.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+keepass = { path = "../Vendor/keepass-rs", version = "=0.17.0", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+uuid = { version = "1", features = ["serde"] }
+zeroize = "1"
+libc = "0.2"
+
+[dev-dependencies]
+keepass = { path = "../Vendor/keepass-rs", version = "=0.17.0", features = ["save_kdbx4"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = false
+panic = "abort"

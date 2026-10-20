@@ -63,21 +63,60 @@ struct PasswordStrengthView: View {
     }
 }
 
+// A Form can give SwiftUI fields trailing alignment. Keep the native password
+// editor explicitly left aligned, with a fixed control height and no Form label.
+struct LeadingSecureField: NSViewRepresentable {
+    let prompt: String
+    @Binding var text: String
+    @Environment(\.isEnabled) private var isEnabled
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+    func makeNSView(context: Context) -> NSSecureTextField {
+        let field = NSSecureTextField()
+        field.delegate = context.coordinator
+        field.alignment = .left; field.font = .systemFont(ofSize: NSFont.systemFontSize)
+        field.isBezeled = true; field.bezelStyle = .roundedBezel
+        field.cell?.usesSingleLineMode = true; field.cell?.isScrollable = true
+        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return field
+    }
+    func updateNSView(_ field: NSSecureTextField, context: Context) {
+        context.coordinator.text = $text
+        field.placeholderString = prompt; field.setAccessibilityLabel(prompt)
+        field.alignment = .left; field.isEnabled = isEnabled
+        if field.stringValue != text { field.stringValue = text }
+        (field.currentEditor() as? NSTextView)?.baseWritingDirection = .leftToRight
+    }
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var text: Binding<String>
+        init(text: Binding<String>) { self.text = text }
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSSecureTextField else { return }
+            text.wrappedValue = field.stringValue
+        }
+    }
+}
+
 struct PasswordEntryView: View {
     let prompt: String
     @Binding var text: String
     var changedAt: Date? = nil
     var savedPassword: (() throws -> String?)? = nil
     var onGenerated: ((String) -> Void)? = nil
+    var showsGenerator = true
     @State private var generator = false
     @State private var assessment: PasswordTools.Assessment?
     @State private var error: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            HStack {
-                SecureField(prompt, text: $text).textFieldStyle(.roundedBorder)
-                Button { generator = true } label: { Image(systemName: "dice") }.help("Генератор паролей").accessibilityLabel("Генератор паролей")
-            }
+            HStack(alignment: .center, spacing: 8) {
+                LeadingSecureField(prompt: prompt, text: $text).frame(height: 26)
+                if showsGenerator {
+                    Button { generator = true } label: { Image(systemName: "dice").frame(width: 20, height: 20) }
+                        .buttonStyle(.bordered).controlSize(.regular).frame(width: 36, height: 26)
+                        .help("Генератор паролей").accessibilityLabel("Генератор паролей")
+                }
+            }.frame(height: 28).environment(\.layoutDirection, .leftToRight)
             if !text.isEmpty { PasswordStrengthView(assessment: PasswordTools.assess(text)) }
             else if let assessment { PasswordStrengthView(assessment: assessment) }
             if let savedPassword, text.isEmpty {

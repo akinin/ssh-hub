@@ -241,6 +241,7 @@ struct InventoryRepository {
         let file = url(for: key)
         try data.write(to: file, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        NotificationCenter.default.post(name: Notification.Name("SSHHubRecordMaterialsChanged"), object: nil, userInfo: ["key": key])
     }
     func copy(from source: String, to destination: String) throws {
         guard FileManager.default.fileExists(atPath: url(for: source).path) else { return }

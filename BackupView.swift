@@ -82,7 +82,7 @@ struct BackupView: View {
             Text("Пароли и API-ключи из Связки ключей, включая общие учётные данные, не включаются. Файлы SSH-ключей также не включаются. SSH-алиасы восстанавливаются как отдельные записи SSH Hub. Пути к ключам могут потребовать изменения на другом Mac. Вложения — до 256 МБ на архив.").font(.caption).foregroundStyle(.secondary)
             PasswordEntryView(prompt: "Пароль архива (не менее 8 символов)", text: $password, onGenerated: { confirmation = $0 }).textFieldStyle(.roundedBorder)
             if backup == nil {
-                PasswordEntryView(prompt: "Повтори пароль для создания архива", text: $confirmation, onGenerated: { password = $0 }).textFieldStyle(.roundedBorder)
+                PasswordEntryView(prompt: "Повтори пароль для создания архива", text: $confirmation, showsGenerator: false).textFieldStyle(.roundedBorder)
                 HStack {
                     Button("Создать архив…") { export() }.disabled(busy || password.count < 8 || password != confirmation)
                     Button("Открыть архив для восстановления…") { chooseRestore() }.disabled(busy || password.count < 8)

@@ -200,6 +200,7 @@ struct RecordEditorView: View {
     private var candidate: LocalConnectionRecord {
         var value = record; value.title = appearance.trimmedName; value.aliasName = createAlias ? aliasName.trimmingCharacters(in: .whitespaces) : nil
         value.host = value.host.trimmingCharacters(in: .whitespaces); value.user = value.user.trimmingCharacters(in: .whitespaces)
+        if kind.isWeb, value.user.isEmpty, let entry = savedEntry, store.sharedCredentials?.document.bindings[entry.favoriteID] != nil, let prepared = try? SSHPasswordStore.preparedEntry(for: entry, config: store.config.url) { value.user = prepared.user }
         value.aliasSuggestion = aliasName.trimmingCharacters(in: .whitespaces)
         value.aliasSource = createAlias ? aliasSnapshot?.entry.source ?? store.config.url : nil
         return value
@@ -214,12 +215,13 @@ struct RecordEditorView: View {
         guard let original else { return false }
         return storedPassword && original.host.caseInsensitiveCompare(candidate.host) == .orderedSame && original.user == candidate.user && original.port == candidate.port && original.website == candidate.website && original.transport?.domain == candidate.transport?.domain
     }
+    private var usesSharedCredential: Bool { savedEntry.map { store.sharedCredentials?.document.bindings[$0.favoriteID] != nil } ?? false }
     private var validation: String? {
         if !ready { return "Загрузка записи…" }
         if let error = appearance.validation ?? candidate.validation { return error }
         if !AliasTransfer.validGroup(group) { return "Путь папки — до 40 символов, без переносов строк." }
         if kind.isWeb && password.utf8.count > 16384 { return "Пароль сайта — до 16 КБ." }
-        if kind.isWeb && record.transport?.webAutoLogin == true && (!keepPassword || removePassword || (password.isEmpty && !reusePassword)) { return "Для автоматического входа укажи и сохрани пароль сайта." }
+        if kind.isWeb && record.transport?.webAutoLogin == true && !usesSharedCredential && (!keepPassword || removePassword || (password.isEmpty && !reusePassword)) { return "Для автоматического входа укажи и сохрани пароль сайта." }
         if password.contains(where: { $0.isNewline || $0 == "\0" }) { return "Пароль должен занимать одну строку." }
         if createAlias { return candidate.draft.validation(existing: store.aliasNameReservations(excluding: original?.id).filter { $0.id != aliasSnapshot?.entry.id }) }
         return nil

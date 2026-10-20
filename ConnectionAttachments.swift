@@ -42,6 +42,7 @@ struct AttachmentsRepository {
         let manifest = directory.appendingPathComponent("index.json")
         try JSONEncoder().encode(values).write(to: manifest, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: manifest.path)
+        NotificationCenter.default.post(name: Notification.Name("SSHHubRecordMaterialsChanged"), object: nil, userInfo: ["key": key])
     }
     func add(_ urls: [URL], key: String) throws -> [ConnectionAttachment] {
         var values = try load(key), newItems: [ConnectionAttachment] = []

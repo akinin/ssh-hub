@@ -48,6 +48,14 @@ final class FakeAppAccessStorage: AppAccessStorage {
         require(!unlocked.enabled, "only enable after durable save")
         storage.failWrite = false
         try await unlocked.configure(current: "", password: "Synthetic test password! 482", touchID: true)
+        let deferred = AppAccess(storage: storage, deferredLoad: true, biometricAvailable: { false })
+        require(deferred.locked && deferred.busy, "deferred startup closes gate before reading")
+        try await Task.sleep(for: .milliseconds(100))
+        require(deferred.locked && !deferred.busy && !deferred.needsKeychainRetry, "loaded verifier still requires login")
+        let noProtection = AppAccess(storage: FakeAppAccessStorage(), deferredLoad: true, biometricAvailable: { false })
+        require(noProtection.locked, "unknown startup state cannot expose records")
+        try await Task.sleep(for: .milliseconds(100))
+        require(!noProtection.locked && !noProtection.enabled, "only confirmed missing verifier opens unprotected startup")
         let locked = AppAccess(storage: storage, biometricAvailable: { false })
         require(locked.enabled && locked.locked && !locked.usesTouchID, "locked on restart; password fallback without hardware")
         await locked.passwordLogin("Wrong password! 482")
@@ -63,6 +71,22 @@ final class FakeAppAccessStorage: AppAccessStorage {
         let bioSuccess = AppAccess(storage: storage, biometricAvailable: { true }, biometricEvaluate: { true })
         await bioSuccess.biometricLogin()
         require(!bioSuccess.locked, "accepted biometric opens application")
+        storage.failRead = true
+        let retry = AppAccess(storage: storage, biometricAvailable: { false })
+        require(retry.locked && retry.needsKeychainRetry, "failed Keychain read stays behind login")
+        storage.failRead = false
+        await retry.retryKeychain()
+        require(retry.locked && !retry.needsKeychainRetry, "Keychain retry never unlocks application")
+        await retry.passwordLogin("Synthetic test password! 482")
+        require(!retry.locked, "password required after verifier reload")
+        bioSuccess.lock()
+        require(bioSuccess.locked, "manual lock returns to login")
+        await bioSuccess.passwordLogin("Synthetic test password! 482")
+        require(!bioSuccess.locked, "password fallback after manual lock")
+        let staleBiometric = AppAccess(storage: storage, biometricAvailable: { true }, biometricEvaluate: { try? await Task.sleep(for: .milliseconds(100)); return true })
+        let login = Task { await staleBiometric.biometricLogin() }
+        try await Task.sleep(for: .milliseconds(20)); staleBiometric.lock(); await login.value
+        require(staleBiometric.locked && !staleBiometric.busy, "late biometric result cannot reopen manual lock")
         storage.data = Data("broken".utf8)
         require(AppAccess(storage: storage).locked, "corrupt verifier fails closed")
         storage.failRead = true

@@ -7,12 +7,29 @@ import LocalAuthentication
 import Darwin
 
 // Only references and public connection settings are Codable; passwords stay in Keychain.
+struct KDBXReference: Codable, Equatable {
+    var databaseID: UUID
+    var entryID: UUID
+}
+struct KDBXDatabaseLink: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var title: String
+    var bookmark: Data?
+    var valid: Bool { !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && title.utf8.count <= 320 && !title.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) && (bookmark?.count ?? 0) <= 65536 }
+}
+protocol KDBXCredentialSource: AnyObject {
+    func username(_ reference: KDBXReference) throws -> String
+    func password(_ reference: KDBXReference, expectedUsername: String) throws -> String
+    func lock()
+    func deactivate()
+}
 struct SharedCredentialPreset: Codable, Identifiable, Equatable {
     var id = UUID()
     var title = ""
     var username = ""
     var identityFile = ""
     var authentication: SSHAuthentication = .password
+    var kdbx: KDBXReference? = nil
     var validation: String? {
         guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, title.utf8.count <= 160,
               username.utf8.count <= 256, identityFile.utf8.count <= 4096,
@@ -28,9 +45,11 @@ struct SharedCredentialDocument: Codable, Equatable {
     var presets: [SharedCredentialPreset] = []
     var bindings: [String: UUID] = [:]
     var requiresAuthentication = true
+    var kdbxDatabases: [KDBXDatabaseLink]? = nil
     var validation: String? {
         guard presets.count <= 200, bindings.count <= 5000, Set(presets.map(\.id)).count == presets.count,
               bindings.keys.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 8192 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }) else { return "Некорректные общие учётные данные." }
+        if let links = kdbxDatabases, links.count > 20 || Set(links.map(\.id)).count != links.count || !links.allSatisfy(\.valid) { return "Некорректные подключения KeePass." }
         return presets.compactMap(\.validation).first
     }
     // A missing preset deliberately keeps a binding: it must never expose an older per-record password.
@@ -153,13 +172,14 @@ final class SharedCredentialRuntime: @unchecked Sendable {
     private var loadIssue: String?
     private var wrappers = Set<URL>()
     private var originals: [String: SSHAlias] = [:]
-    init(repository: SharedCredentialRepository, document: SharedCredentialDocument, secrets: SharedCredentialSecretStorage, loadIssue: String? = nil) {
-        self.repository = repository; self.document = document; self.secrets = secrets; self.loadIssue = loadIssue
+    private let kdbx: KDBXCredentialSource?
+    init(repository: SharedCredentialRepository, document: SharedCredentialDocument, secrets: SharedCredentialSecretStorage, loadIssue: String? = nil, kdbx: KDBXCredentialSource? = nil) {
+        self.repository = repository; self.document = document; self.secrets = secrets; self.loadIssue = loadIssue; self.kdbx = kdbx
     }
     func update(_ value: SharedCredentialDocument) { mutex.lock(); defer { mutex.unlock() }; document = value; loadIssue = nil }
     func authorize(_ context: LAContext) { mutex.lock(); defer { mutex.unlock() }; guard active else { context.invalidate(); return }; self.context?.invalidate(); self.context = context }
-    func lock() { mutex.lock(); defer { mutex.unlock() }; context?.invalidate(); context = nil; clearWrappers() }
-    func deactivate() { mutex.lock(); defer { mutex.unlock() }; active = false; lock() }
+    func lock() { mutex.lock(); defer { mutex.unlock() }; context?.invalidate(); context = nil; clearWrappers(); kdbx?.lock() }
+    func deactivate() { mutex.lock(); defer { mutex.unlock() }; active = false; lock(); kdbx?.deactivate() }
     private func clearWrappers() { for url in wrappers { try? FileManager.default.removeItem(at: url) }; wrappers.removeAll(); originals.removeAll() }
     private func matches(_ config: URL) -> Bool { config.standardizedFileURL == repository.config.standardizedFileURL }
     private func preset(_ entry: SSHAlias) throws -> SharedCredentialPreset? {
@@ -177,6 +197,10 @@ final class SharedCredentialRuntime: @unchecked Sendable {
         guard matches(config), !entry.isQuickConnection else { return .unbound }
         do {
             guard let value = try preset(entry) else { return .unbound }
+            if let reference = value.kdbx {
+                guard document.kdbxDatabases?.contains(where: { $0.id == reference.databaseID }) == true, let kdbx else { throw SharedCredentialError.invalid("Назначенная база KeePass недоступна. Подключи и разблокируй её в общих учётных данных.") }
+                return .value(try kdbx.password(reference, expectedUsername: entry.user))
+            }
             return .value(try secrets.read(scope: repository.scope, id: value.id, context: context))
         } catch { return .blocked(error.localizedDescription) }
     }
@@ -194,12 +218,18 @@ final class SharedCredentialRuntime: @unchecked Sendable {
         if entry.sharedCredentialScope != nil {
             guard let original = originals[key] else { throw SharedCredentialError.changed }; originalEntry = original
         } else { originalEntry = entry; originals[key] = entry }
+        var username = preset.username
+        if let reference = preset.kdbx {
+            guard document.kdbxDatabases?.contains(where: { $0.id == reference.databaseID }) == true, let kdbx else { throw SharedCredentialError.invalid("Назначенная база KeePass недоступна. Подключи и разблокируй её.") }
+            username = try kdbx.username(reference)
+            guard username.utf8.count <= 512, !username.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains), !entry.canSSH || username.isEmpty || SSHConfig.matches(username, "^[A-Za-z0-9_.-]+$") else { throw SharedCredentialError.invalid("Пользователь KeePass не подходит для этой записи.") }
+        }
         var result = originalEntry
         result.credentialRuntimeScope = repository.scope; result.sharedCredentialScope = repository.scope; result.preparedSSHTarget = originalEntry.sshTarget
         result.preparedConfigSource = originalEntry.connectionConfig(fallback: config)
         let auth: SSHAuthentication = preset.authentication == .automatic ? (preset.identityFile.isEmpty ? .password : .keyAndPassword) : preset.authentication
         var overrides = auth.options.map { SSHOption(key: $0.0, value: $0.1) }
-        if !preset.username.isEmpty { overrides.insert(SSHOption(key: "User", value: preset.username), at: 0) }
+        if !username.isEmpty { overrides.insert(SSHOption(key: "User", value: username), at: 0) }
         if !preset.identityFile.isEmpty { overrides += [SSHOption(key: "IdentityFile", value: preset.identityFile), SSHOption(key: "IdentitiesOnly", value: "yes")] }
         // OpenSSH accumulates IdentityFile directives across Include files. Keep the
         // same additive semantics in the effective model rather than hiding old keys.
@@ -232,14 +262,14 @@ final class SharedCredentialRuntime: @unchecked Sendable {
     @Published private(set) var authenticating = false
     private var lockObserver: NSObjectProtocol?
     private var authenticationGeneration = UUID()
-    init(config: URL, profileID: UUID, root: URL? = nil, secrets: SharedCredentialSecretStorage = SharedCredentialKeychain()) {
+    init(config: URL, profileID: UUID, root: URL? = nil, secrets: SharedCredentialSecretStorage = SharedCredentialKeychain(), kdbxSource: KDBXCredentialSource? = nil) {
         let repository = SharedCredentialRepository(config: config, profileID: profileID, root: root)
         self.repository = repository
         let loaded: SharedCredentialDocument
         let issue: String?
         do { loaded = try repository.load(); issue = nil } catch { loaded = SharedCredentialDocument(); issue = error.localizedDescription }
         document = loaded; loadError = issue; isLocked = loaded.requiresAuthentication
-        runtime = SharedCredentialRuntime(repository: repository, document: loaded, secrets: secrets, loadIssue: issue)
+        runtime = SharedCredentialRuntime(repository: repository, document: loaded, secrets: secrets, loadIssue: issue, kdbx: kdbxSource)
         lockObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.sessionDidResignActiveNotification, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.lock() } }
     }
     deinit { if let lockObserver { NSWorkspace.shared.notificationCenter.removeObserver(lockObserver) }; runtime.deactivate() }
@@ -267,6 +297,7 @@ final class SharedCredentialRuntime: @unchecked Sendable {
         if let issue = loadError { throw SharedCredentialError.invalid(issue) }
         guard !isLocked else { throw SharedCredentialError.locked }
         if let error = preset.validation { throw SharedCredentialError.invalid(error) }
+        if preset.kdbx != nil && changePassword { throw SharedCredentialError.invalid("Пароли KeePass изменяются в приложении, которое управляет базой.") }
         let old = changePassword ? try runtime.readSecret(preset.id) : nil
         var value = document
         if let index = value.presets.firstIndex(where: { $0.id == preset.id }) { value.presets[index] = preset } else { value.presets.append(preset) }
@@ -279,9 +310,21 @@ final class SharedCredentialRuntime: @unchecked Sendable {
     func remove(_ id: UUID) throws {
         if let issue = loadError { throw SharedCredentialError.invalid(issue) }
         guard !isLocked else { throw SharedCredentialError.locked }
-        let old = try runtime.readSecret(id); var value = document; value.presets.removeAll { $0.id == id }
-        try runtime.writeSecret(nil, id: id, protected: document.requiresAuthentication)
-        do { try persist(value) } catch { try? runtime.writeSecret(old, id: id, protected: document.requiresAuthentication); throw error }
+        let external = document.presets.first(where: { $0.id == id })?.kdbx != nil
+        let old = external ? nil : try runtime.readSecret(id); var value = document; value.presets.removeAll { $0.id == id }
+        if !external { try runtime.writeSecret(nil, id: id, protected: document.requiresAuthentication) }
+        do { try persist(value) } catch { if !external { try? runtime.writeSecret(old, id: id, protected: document.requiresAuthentication) }; throw error }
+    }
+    func saveDatabase(_ link: KDBXDatabaseLink) throws {
+        guard !isLocked else { throw SharedCredentialError.locked }
+        var value = document; var links = value.kdbxDatabases ?? []
+        if let index = links.firstIndex(where: { $0.id == link.id }) { links[index] = link } else { links.append(link) }
+        value.kdbxDatabases = links; try persist(value)
+    }
+    func removeDatabase(_ id: UUID) throws {
+        guard !isLocked else { throw SharedCredentialError.locked }
+        var value = document; value.kdbxDatabases = value.kdbxDatabases?.filter { $0.id != id }
+        try persist(value)
     }
     func bind(_ id: UUID?, to recordKey: String) throws {
         guard !isLocked else { throw SharedCredentialError.locked }

@@ -24,7 +24,7 @@ struct GlobalSearchView: View {
         let smart = metadata.folders.first { $0.id == folder }
         let effectiveTag = smart?.tag ?? tag, effectiveQuery = smart == nil ? query : ""
         let allowedKeys = Set(store.profileEntries.filter { entry in
-            let tags = metadata.tags[entry.favoriteID, default: []]
+            let tags = store.tags(for: entry, manual: metadata.tags[entry.favoriteID, default: []])
             let text = [store.title(entry), entry.name, entry.host, entry.user, store.group(entry), tags.joined(separator: " ")].joined(separator: " ")
             return (smart?.kind == nil || (entry.recordKind ?? .ssh) == smart!.kind!) && (effectiveTag.isEmpty || tags.contains(effectiveTag)) && (smart?.query ?? "").split(whereSeparator: \.isWhitespace).allSatisfy { text.localizedCaseInsensitiveContains(String($0)) }
         }.map(\.favoriteID))
@@ -39,7 +39,7 @@ struct GlobalSearchView: View {
             HStack { TextField("Записи, документация, команды, сохранённые логи…", text: $query).textFieldStyle(.roundedBorder).onChange(of: query) { _, _ in folder = nil }; Picker("Область", selection: $kind) { Text("Всё").tag("all"); ForEach(GlobalSearchKind.allCases) { Text($0.title).tag($0.rawValue) } }.labelsHidden().frame(width: 160) }
             HStack {
                 Picker("Умная папка", selection: $folder) { Text("Все записи").tag(nil as UUID?); ForEach(metadata.folders) { Text($0.name).tag(Optional($0.id)) } }.frame(maxWidth: 280)
-                Picker("Тег", selection: $tag) { Text("Любой").tag(""); ForEach(Array(Set(metadata.tags.values.flatMap { $0 })).sorted(), id: \.self) { Text($0).tag($0) } }.frame(maxWidth: 190).onChange(of: tag) { _, _ in folder = nil }
+                Picker("Тег", selection: $tag) { Text("Любой").tag(""); ForEach(Array(Set(store.profileEntries.flatMap { store.tags(for: $0, manual: metadata.tags[$0.favoriteID, default: []]) })).sorted(), id: \.self) { Text($0).tag($0) } }.frame(maxWidth: 190).onChange(of: tag) { _, _ in folder = nil }
                 Spacer(); if indexing { ProgressView().controlSize(.small) }
             }
             HSplitView {
@@ -64,12 +64,13 @@ struct GlobalSearchView: View {
             HStack { Text("Найдено: \(results.count) · поиск локальный" + (skipped > 0 ? " · недоступно файлов: \(skipped)" : "") + (truncated > 0 ? " · ограничено материалов: \(truncated)" : "")).font(.caption).foregroundStyle(.secondary); Spacer(); Button("Готово") { dismiss() }.keyboardShortcut(.cancelAction) }
         }.padding(20).frame(width: 920, height: 680)
             .onAppear { do { metadata = try file.load(SearchMetadata.self, fallback: SearchMetadata()); try metadata.validate() } catch { readOnly = true; self.error = error.localizedDescription }; buildIndex() }
+            .onChange(of: store.featureTags.mapValues { $0.map(\.rawValue) }) { _, _ in buildIndex() }
             .onChange(of: selected) { _, _ in editingTags = selection?.recordKey.map { metadata.tags[$0, default: []].joined(separator: ", ") } ?? "" }
             .onDisappear { indexTask?.cancel(); store.reloadSearchMetadata() }
     }
     private func buildIndex() {
         guard !indexing else { return }; indexing = true
-        let seeds = store.profileEntries.map { SearchRecordSeed(key: $0.favoriteID, title: store.title($0), detail: [$0.name, $0.host, $0.user, $0.port, store.group($0), metadata.tags[$0.favoriteID, default: []].joined(separator: " ")].filter { !$0.isEmpty }.joined(separator: " · "), kind: $0.recordKind ?? .ssh) }
+        let seeds = store.profileEntries.map { SearchRecordSeed(key: $0.favoriteID, title: store.title($0), detail: [$0.name, $0.host, $0.user, $0.port, store.group($0), store.tags(for: $0, manual: metadata.tags[$0.favoriteID, default: []]).joined(separator: " ")].filter { !$0.isEmpty }.joined(separator: " · "), kind: $0.recordKind ?? .ssh) }
         let events = SessionJournal.shared.events, library = CommandLibrary.shared.all
         indexTask = Task {
             let worker = Task.detached(priority: .userInitiated) { try GlobalSearchIndex.build(seeds, events: events, libraryCommands: library) }
