@@ -1,9 +1,12 @@
 import Foundation
+import CryptoKit
 
 // Local plan only. Opening the assistant never launches these commands or sends their output.
 enum AssistantDiagnostics {
-    static var workflow: MaintenanceWorkflow {
-        MaintenanceWorkflow(name: "Диагностика сервера", steps: [
+    static var workflow: MaintenanceWorkflow { workflow(for: .linux) }
+    static func workflow(for profile: DiagnosticProfile) -> MaintenanceWorkflow {
+        if profile != .linux { return MaintenanceWorkflow(name: "Диагностика · " + profile.title, steps: profile.steps, stopOnFailure: false) }
+        return MaintenanceWorkflow(name: "Диагностика сервера", steps: [
             MaintenanceStep(title: "Система", command: "uname -a"),
             MaintenanceStep(title: "Нагрузка и время работы", command: "uptime"),
             MaintenanceStep(title: "Память", command: "if command -v free >/dev/null 2>&1; then free -m; elif command -v vm_stat >/dev/null 2>&1; then vm_stat; else echo 'Memory utility unavailable'; fi"),
@@ -21,7 +24,9 @@ struct AssistantDiagnosticContext {
     let profileID: UUID
     let chatID: UUID
     let fingerprint: String
-    init(entry: SSHAlias, config: URL, profileID: UUID, chatID: UUID) {
+    let diagnosticProfile: DiagnosticProfile
+    init(entry: SSHAlias, config: URL, profileID: UUID, chatID: UUID, diagnosticProfile: DiagnosticProfile = .linux) {
+        self.diagnosticProfile = diagnosticProfile
         self.entry = entry; self.config = config; self.profileID = profileID; self.chatID = chatID
         fingerprint = MaintenancePlan.fingerprint(entry)
     }

@@ -51,6 +51,31 @@ import WebKit
         try check(WebLoginSelectors(username: "#a", password: "#a", submit: "#b").validation != nil && WebLoginSelectors().validation != nil, "incomplete/overlapping selectors rejected")
         record.user = "bad\nuser"; try check(record.validation != nil, "bounded one-line username")
 
+        var setupReads = 0
+        let setup = WebPageModel(entry: entry(base + "/manual"), config: config, setupOnly: true, credentialReader: { _,_ in setupReads += 1; return (user, password) })
+        let setupWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 500), styleMask: [.titled], backing: .buffered, defer: false)
+        setupWindow.isReleasedWhenClosed = false; setupWindow.contentView = setup.view
+        let picker = WebLoginPickerModel(web: setup, origin: URL(string: base + "/manual")!)
+        setup.start(); picker.start()
+        try await wait { setup.view.url?.path == "/manual" && !setup.view.isLoading }
+        // The picker captures clicks before page handlers and never reads values.
+        for (role, selector) in [("username", "#account"), ("password", "#credential"), ("submit", "#enter")] {
+            picker.role = role
+            _ = try await WebLoginPickerScript.run(in: setup.view, origin: URL(string: base)!, role: role)
+            _ = try await setup.view.callAsyncJavaScript("document.querySelector(selector).click();", arguments: ["selector": selector], in: nil, contentWorld: .defaultClient)
+        }
+        let verified = await picker.check()
+        try check(setupReads == 0 && verified == custom && picker.verified && setup.view.url?.path == "/manual", "visual selection checked without submitting")
+        let contents = try await setup.view.callAsyncJavaScript("return [...document.querySelectorAll('input')].every(e=>e.value==='');", arguments: [:], in: nil, contentWorld: .defaultClient)
+        try check(contents as? Bool == true, "visual setup does not fill/read credentials")
+        _ = try await setup.view.callAsyncJavaScript("document.querySelector('#credential').replaceWith(document.querySelector('#credential').cloneNode());", arguments: [:], in: nil, contentWorld: .page)
+        let invalidNode = await picker.check()
+        try check(invalidNode == nil && !picker.verified, "replacement of selected DOM node invalidates check even with same selector")
+        setup.address = other + "/form"; setup.start()
+        try await wait { setup.view.url?.absoluteString == other + "/form" && !setup.view.isLoading }
+        let invalidOrigin = await picker.check()
+        try check(invalidOrigin == nil && !picker.verified && picker.selectors.username.isEmpty, "navigation and different origin clear selection")
+        picker.close(); setupWindow.close()
         var reads = 0
         let model = WebPageModel(entry: entry(base + "/form", automatic: false), config: config, credentialReader: { _,_ in reads += 1; return (user, password) })
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 500), styleMask: [.titled], backing: .buffered, defer: false); window.isReleasedWhenClosed = false; window.contentView = model.view

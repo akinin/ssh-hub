@@ -35,6 +35,7 @@ import ConsoleSupport
     @Published var globalSearchQuery = ""
     @Published var assistantVisible = false
     @Published var assistantExpanded = false
+    @Published var assistantDiagnosticsSetup = false
     @Published var assistantDiagnosticReport: AssistantDiagnosticReport?
     @Published var assistantDiagnosticReview: AssistantDiagnosticReview?
     @Published var assistantCommandReview: AssistantCommandReview?

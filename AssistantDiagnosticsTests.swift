@@ -39,6 +39,38 @@ import Foundation
         try check(report.text.contains("Confirmed follow-up") && report.text.contains("df -hP"), "report includes original facts and explicitly confirmed action")
         report.append(String(repeating: "Ж\n", count: 500_000))
         try check(report.text.utf8.count < 50_000 && report.text.contains("Вывод сокращён"), "bounded report")
+        for profileKind in DiagnosticProfile.allCases {
+            let checks = AssistantDiagnostics.workflow(for: profileKind)
+            try checks.validate()
+            try check(checks.stopOnFailure == false && checks.steps.count >= 4, "bounded independent profile checks")
+            try check(checks.steps.allSatisfy { !$0.command.contains("sudo") && !$0.command.contains("restart") && !$0.command.contains("install") }, "no privilege escalation or mutations")
+        }
+        try check(AssistantDiagnostics.workflow(for: .routerOS).steps.allSatisfy { $0.command.hasPrefix("/") && $0.command.contains(" print") }, "RouterOS uses its own CLI, never Linux shell")
+        let history = DiagnosticHistory(config: config, profile: profile, root: root)
+        try check(try history.load().isEmpty, "history starts empty without writing")
+        let first = DiagnosticSnapshot(context: context, results: runner.results, error: nil)
+        try history.append(first)
+        try await Task.sleep(for: .milliseconds(2))
+        var newerResults = runner.results
+        newerResults[0].output = "changed line\nnew line"
+        let second = DiagnosticSnapshot(context: context, results: newerResults, error: "partial fixture")
+        try history.append(second)
+        let loaded = try history.load()
+        try check(loaded.count == 2 && loaded.last == second && DiagnosticHistory.previous(to: second, in: loaded) == first, "history survives reload and compares previous same endpoint/profile")
+        let otherContext = AssistantDiagnosticContext(entry: moved, config: config, profileID: profile, chatID: chat, diagnosticProfile: .docker)
+        let foreign = DiagnosticSnapshot(context: otherContext, results: runner.results, error: nil)
+        try check(DiagnosticHistory.previous(to: foreign, in: loaded) == nil && !second.comparable(to: foreign), "never compare changed endpoint/profile")
+        let diff = DiagnosticDiffLine.lines(old: "one\nold\nthree", new: "one\nnew\nthree")
+        try check(diff.filter { $0.kind == -1 }.map(\.text) == ["old"] && diff.filter { $0.kind == 1 }.map(\.text) == ["new"], "line diff marks removal and addition")
+        try check(DiagnosticDiffLine.lines(old: "", new: "").allSatisfy { $0.kind == 0 }, "identical output has no changes")
+        for _ in 0..<25 { try history.append(DiagnosticSnapshot(context: context, results: newerResults, error: nil)) }
+        try check(try history.load().count == 20, "bounded 20 snapshots per record/profile")
+        try check(try DiagnosticHistory(config: config, profile: UUID(), root: root).load().isEmpty, "workspace profile history isolated")
+        let savedHistory = try Data(contentsOf: history.file.url)
+        try Data("corrupt".utf8).write(to: history.file.url)
+        try rejects { try history.append(first) }
+        try check(try String(contentsOf: history.file.url, encoding: .utf8) == "corrupt", "corrupt history never overwritten")
+        try savedHistory.write(to: history.file.url)
         try Data("Host changed\n HostName 127.0.0.1\n".utf8).write(to: config)
         let staleRunner = MaintenanceModel(config: config, profile: profile, root: root, runStep: { _, _, _, _, _, _ in calls += 1; return ToolkitResult(status: 0, output: "unexpected", diagnostic: "", timedOut: false) })
         let before = calls; staleRunner.run(plan, current: [entry], config: config)

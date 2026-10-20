@@ -7,11 +7,11 @@ struct AssistantDiagnosticReview: Identifiable {
 }
 
 extension AliasStore {
-    func prepareAssistantDiagnostics(_ entry: SSHAlias) throws {
+    func prepareAssistantDiagnostics(_ entry: SSHAlias, profile: DiagnosticProfile = .linux) throws -> AssistantCommandReview {
         guard entry.canSSH, !entry.isQuickConnection else { throw ConfigError.message("Диагностика доступна для сохранённой SSH-записи текущего профиля.") }
-        let model = assistantModel(), context = AssistantDiagnosticContext(entry: entry, config: config.url, profileID: profiles.active, chatID: model.chat.id)
+        let model = assistantModel(), context = AssistantDiagnosticContext(entry: entry, config: config.url, profileID: profiles.active, chatID: model.chat.id, diagnosticProfile: profile)
         let prepared = try SSHPasswordStore.preparedEntry(for: entry, config: config.url)
-        assistantCommandReview = AssistantCommandReview(plan: try MaintenancePlan(workflow: AssistantDiagnostics.workflow, entries: [(prepared, title(entry))], config: config.url), chatID: model.chat.id, profileID: profiles.active, diagnostic: context)
+        return AssistantCommandReview(plan: try MaintenancePlan(workflow: AssistantDiagnostics.workflow(for: profile), entries: [(prepared, title(entry))], config: config.url), chatID: model.chat.id, profileID: profiles.active, diagnostic: context)
     }
     func validateDiagnosticReport(_ report: AssistantDiagnosticReport) throws {
         let key = report.context.entry.favoriteID
@@ -52,7 +52,7 @@ struct AssistantDiagnosticReportView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Label("Отчёт диагностики", systemImage: "doc.text.magnifyingglass").font(.title2.bold())
-            Text(review.report.title + " · " + review.report.date.formatted()).foregroundStyle(.secondary)
+            Text(review.report.context.diagnosticProfile.title + " · " + review.report.title + " · " + review.report.date.formatted()).foregroundStyle(.secondary)
             Text("Проверь и при необходимости отредактируй отчёт. Он добавится в конец документации; предыдущий текст и черновик сохранятся в истории.").font(.caption).foregroundStyle(.secondary)
             TextEditor(text: $text).font(.system(.body, design: .monospaced)).accessibilityIdentifier("assistantDiagnosticReportText")
             if let error { Text(error).font(.caption).foregroundStyle(.red) }

@@ -4,6 +4,11 @@
 
 Нативное приложение для macOS 14+ на Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
 
+## Изменения 3.3.0 (сборка 48)
+
+- WebLoginPickerScript: document-start guard в isolated defaultClient world перехватывает клики до страницы; мост передаёт только bounded locators, не значения полей. Подсветка в closed shadow overlay не перехватывает события. Узлы хранятся по ссылке, повторная проверка unique selector и той же DOM identity обязательна до Apply. Навигация инвалидирует draft/verification. setupOnly WebPageModel запрещает form/HTTP credentials и сохраняет TLS trust; отдельная nonPersistent сессия через тот же ConnectionTunnel, без direct fallback. Закрытие отменяет polling/проверку и уничтожает документ/туннель. UI Apply обновляет только draft редактора; Cancel ничего не пишет. Предварительная проверка использует прежний WebLoginForm.probe без чтения Keychain и отправки формы. CSS fallback и runtime guards сохраняются.
+- DiagnosticProfile задаёт фиксированные read-only команды Linux/PVE/Docker/Linux-OpenWrt/RouterOS; неизвестные ОС не угадывать. План выбирается и выполняется через прежний review, ИИ/документация по прежнему явному подтверждению. DiagnosticHistory — bounded 0600 HubFeatureFile по config/profile, snapshot только результатов диагностик, не follow-up actions. Fingerprint включает endpoint/record identity; сравнивать только same identity/profile/schema revision. 20 на запись/профиль,100 всего,8MB; ошибка чтения не перезаписывается. История локальная, не входит в backup/export. Исторический stdout — untrusted, ограничивать размер/controls, никогда не выполнять. Diff ограничен 300 строками/шаг, raw saved output доступен отдельно. Tests только own localhost и fake runStep.
+
 ## Изменения 3.2.0 (сборка 47)
 
 - SSHAuthenticationChecks выводит видимый Text отдельно от Toggle: RecordFieldRow применяет labelsHidden к содержимому. Не возвращать скрытые подписи checkboxes.

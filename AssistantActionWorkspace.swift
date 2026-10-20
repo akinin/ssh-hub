@@ -107,7 +107,11 @@ extension AliasStore {
             let report = runner.report + (runner.error.map { "\nОшибка: " + $0 } ?? "")
             model.appendLocal("SSH Hub · результат подтверждённой команды\n" + AssistantDiagnosticReport.clean(report, limit: 30_000))
             if let context = target.diagnostic {
-                self.assistantDiagnosticReport = AssistantDiagnosticReport(context: context, title: target.plan.targets.first?.title ?? context.entry.name, result: AssistantDiagnosticReport.output(runner.results, error: runner.error))
+                let diagnosticError = runner.error ?? (runner.status == "Завершено" ? nil : runner.status)
+                let snapshot = DiagnosticSnapshot(context: context, results: runner.results, error: diagnosticError)
+                do { try DiagnosticHistory(config: context.config, profile: profile).append(snapshot) }
+                catch { model.error = "Проверка завершена, но история не сохранена: " + error.localizedDescription }
+                self.assistantDiagnosticReport = AssistantDiagnosticReport(context: context, title: (target.plan.targets.first?.title ?? context.entry.name) + " · " + context.diagnosticProfile.title, result: AssistantDiagnosticReport.output(runner.results, error: diagnosticError))
             } else if var diagnostic = self.assistantDiagnosticReport, diagnostic.context.chatID == chat, diagnostic.context.profileID == profile,
                       target.plan.targets.count == 1, target.plan.targets.first?.id == diagnostic.context.entry.favoriteID {
                 diagnostic.append("Результат отдельно подтверждённого действия\n" + AssistantDiagnosticReport.output(runner.results, error: runner.error)); self.assistantDiagnosticReport = diagnostic

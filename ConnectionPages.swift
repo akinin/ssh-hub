@@ -29,9 +29,9 @@ import Network
     func matches(_ value: SSHAlias) -> Bool {
         entry.recordKind == value.recordKind && entry.website == value.website && entry.transport == value.transport && entry.options.map { $0.key + "=" + $0.value } == value.options.map { $0.key + "=" + $0.value }
     }
-    init(entry: SSHAlias, config: URL, restored: Bool) {
+    init(entry: SSHAlias, config: URL, restored: Bool, loginSetup: Bool = false) {
         self.entry = entry; self.config = config
-        web = entry.recordKind?.isWeb == true ? WebPageModel(entry: entry, config: config) : nil
+        web = entry.recordKind?.isWeb == true ? WebPageModel(entry: entry, config: config, setupOnly: loginSetup) : nil
         files = entry.recordKind?.isFiles == true ? RemoteFilesModel(entry: entry, config: config) : nil
         desktop = entry.recordKind?.isDesktop == true ? DesktopSession(entry: entry, config: config) : nil
         desktop?.onRequestStart = { [weak self] in self?.start() }

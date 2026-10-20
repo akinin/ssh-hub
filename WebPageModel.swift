@@ -7,6 +7,8 @@ import Network
 @MainActor final class WebPageModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
     let entry: SSHAlias
     let view: WKWebView
+    private let setupOnly: Bool
+    var onNavigation: (() -> Void)?
     private let config: URL
     private let credentials: (SSHAlias, URL) throws -> (String, String)?
     private var loginTask: Task<Void, Never>?
@@ -15,7 +17,7 @@ import Network
     private var httpAttempted = false
     private var manualLogin = false
     @Published var loginStatus: String?
-    var canLogin: Bool { guard started, !entry.isQuickConnection, let origin = WebLoginOrigin(URL(string: entry.website ?? "")) else { return false }; return WebLoginOrigin(view.url) == origin || (view.url == nil && error != nil && WebLoginOrigin(URL(string: address)) == origin) }
+    var canLogin: Bool { guard !setupOnly, started, !entry.isQuickConnection, let origin = WebLoginOrigin(URL(string: entry.website ?? "")) else { return false }; return WebLoginOrigin(view.url) == origin || (view.url == nil && error != nil && WebLoginOrigin(URL(string: address)) == origin) }
     private static func savedCredentials(_ entry: SSHAlias, _ config: URL) throws -> (String, String)? {
         let prepared = try SSHPasswordStore.preparedEntry(for: entry, config: config)
         guard !prepared.isQuickConnection, !prepared.user.isEmpty,
@@ -28,14 +30,15 @@ import Network
     @Published var started = false
     @Published var address = ""
     @Published var error: String?
-    convenience init(entry: SSHAlias, config: URL) { self.init(entry: entry, config: config, credentials: Self.savedCredentials) }
+    convenience init(entry: SSHAlias, config: URL, setupOnly: Bool = false) { self.init(entry: entry, config: config, setupOnly: setupOnly, credentials: Self.savedCredentials) }
     #if WEB_LOGIN_TEST
-    convenience init(entry: SSHAlias, config: URL, credentialReader: @escaping (SSHAlias, URL) throws -> (String, String)?) { self.init(entry: entry, config: config, credentials: credentialReader) }
+    convenience init(entry: SSHAlias, config: URL, setupOnly: Bool = false, credentialReader: @escaping (SSHAlias, URL) throws -> (String, String)?) { self.init(entry: entry, config: config, setupOnly: setupOnly, credentials: credentialReader) }
     #endif
-    private init(entry: SSHAlias, config: URL, credentials: @escaping (SSHAlias, URL) throws -> (String, String)?) {
-        self.entry = entry; self.config = config; self.credentials = credentials
+    private init(entry: SSHAlias, config: URL, setupOnly: Bool = false, credentials: @escaping (SSHAlias, URL) throws -> (String, String)?) {
+        self.entry = entry; self.config = config; self.setupOnly = setupOnly; self.credentials = credentials
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
+        if setupOnly { configuration.userContentController.addUserScript(WKUserScript(source: WebLoginPickerScript.bootstrap, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .defaultClient)) }
         view = WKWebView(frame: .zero, configuration: configuration)
         super.init(); view.navigationDelegate = self; view.uiDelegate = self; view.allowsBackForwardNavigationGestures = true
         address = entry.website ?? ""
@@ -48,14 +51,14 @@ import Network
     func stop() { started = false; cancelLogin(); loginStatus = nil; manualLogin = false; view.stopLoading(); view.loadHTMLString("", baseURL: nil) }
     private func cancelLogin() { generation = UUID(); loginTask?.cancel(); loginTask = nil }
     func login() {
-        guard canLogin else { return }
+        guard !setupOnly, canLogin else { return }
         cancelLogin(); formAttempted = false; httpAttempted = false; manualLogin = true
         if view.isLoading { return }
         // A rejected HTTP challenge needs a fresh load. Forms can be retried in place.
         if error != nil, let url = URL(string: entry.website ?? "") { error = nil; view.load(URLRequest(url: url)) } else { fillLogin() }
     }
     private func fillLogin() {
-        guard started, !entry.isQuickConnection, entry.transport?.webAutoLogin == true || manualLogin,
+        guard !setupOnly, started, !entry.isQuickConnection, entry.transport?.webAutoLogin == true || manualLogin,
               !formAttempted, loginTask == nil, let destination = URL(string: entry.website ?? ""),
               let origin = WebLoginOrigin(destination), origin == WebLoginOrigin(view.url) else { return }
         let token = generation
@@ -82,7 +85,7 @@ import Network
             } catch is CancellationError {} catch { if generation == token && started { loginStatus = "Не удалось заполнить вход. Проверь пароль в настройках записи или войди вручную." } }
         }
     }
-    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) { cancelLogin() }
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) { cancelLogin(); onNavigation?() }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { if let url = webView.url, ["http", "https"].contains(url.scheme?.lowercased() ?? "") { address = url.absoluteString }; objectWillChange.send(); fillLogin() }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { self.error = error.localizedDescription }
@@ -128,7 +131,7 @@ import Network
             else { completionHandler(.cancelAuthenticationChallenge,nil) }
             return
         }
-        guard started else { completionHandler(.cancelAuthenticationChallenge, nil); return }
+        guard started, !setupOnly else { completionHandler(.cancelAuthenticationChallenge, nil); return }
         let space = challenge.protectionSpace
         guard !space.isProxy(), [NSURLAuthenticationMethodHTTPBasic, NSURLAuthenticationMethodHTTPDigest].contains(space.authenticationMethod) else { completionHandler(.performDefaultHandling, nil); return }
         if challenge.previousFailureCount > 0 { error = "Сайт отклонил логин или пароль. Проверь данные записи и нажми «Войти» для повторной попытки."; completionHandler(.cancelAuthenticationChallenge, nil); return }

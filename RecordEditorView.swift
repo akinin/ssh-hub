@@ -187,6 +187,7 @@ struct RecordEditorView: View {
     var beforeSave: (() throws -> Void)?
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) private var dismiss
+    @State private var visualWebLogin = false
     @State private var credentialEdit = RecordCredentialEdit()
     @State private var record = LocalConnectionRecord()
     @State private var appearance = ConnectionAppearance()
@@ -281,6 +282,11 @@ struct RecordEditorView: View {
                 Button(original == nil ? "Создать запись" : "Сохранить") { save() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(validation != nil)
             }
         }.dismissOnOutsideClick().onAppear { load() }.onDisappear { password = "" }
+        .sheet(isPresented: $visualWebLogin) {
+            if let url = URL(string: target.website ?? ""), WebLoginOrigin(url) != nil {
+                WebLoginPickerView(entry: target, config: store.config.url, gateway: store.profileEntries.first { $0.favoriteID == target.transport?.tunnel?.sshID && $0.canSSH }) { settings.wrappedValue.webLoginSelectors = $0 }
+            }
+        }
     }
     private var availabilityFields: some View {
         RecordAvailabilityFields(entry: savedEntry.flatMap { $0.availabilityEndpoint?.host == target.availabilityEndpoint?.host && $0.availabilityEndpoint?.port == target.availabilityEndpoint?.port ? $0 : nil }, enabled: $monitorEnabled, interval: $monitorInterval, monitor: store.availability)
@@ -295,6 +301,7 @@ struct RecordEditorView: View {
             if reusePassword && !removePassword && !usesSharedCredential { Button("Удалить сохранённый пароль") { removePassword = true; settings.wrappedValue.webAutoLogin = false } }
             Divider()
             Toggle("Входить автоматически", isOn: Binding(get: { settings.wrappedValue.webAutoLogin == true }, set: { settings.wrappedValue.webAutoLogin = $0 })).accessibilityIdentifier("recordWebAutoLogin")
+            Button("Выбрать поля на странице…", systemImage: "cursorarrow.click") { visualWebLogin = true }.disabled(!LocalConnectionRecord.validWebsite(record.website)).accessibilityIdentifier("visualWebLoginSetup")
             Toggle("Указать поля и кнопку входа вручную", isOn: Binding(get: { settings.wrappedValue.webLoginSelectors != nil }, set: { settings.wrappedValue.webLoginSelectors = $0 ? WebLoginSelectors() : nil })).accessibilityIdentifier("manualWebLoginSelectors")
             if settings.wrappedValue.webLoginSelectors != nil {
                 VStack(alignment: .leading, spacing: 10) {

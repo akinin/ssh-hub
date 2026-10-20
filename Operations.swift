@@ -89,7 +89,7 @@ extension AliasStore {
         MonitoringInstallationModel.stopAll(); LoginNotificationModel.stopAll(); loginNotifications?.close()
         infrastructure?.stop(); monitoring?.stop(); maintenance?.stop(); sharedCredentials?.lock()
         if clear {
-            batchTarget = nil; selectedRecordKeys = []; clearUndo(); assistantDiagnosticReport = nil; assistantDiagnosticReview = nil
+            batchTarget = nil; selectedRecordKeys = []; clearUndo(); assistantDiagnosticsSetup = false; assistantDiagnosticReport = nil; assistantDiagnosticReview = nil
             loginNotifications = nil
             operationsPanel = nil; assistantVisible = false; assistantExpanded = false; assistantCommandReview = nil; assistantProposalReview = nil; assistantRecordDraft = nil; assistantAppliedActions = []; assistant = nil; infrastructureImport = nil
             sharedCredentials?.deactivate(); sharedCredentials = nil; kdbx?.cancel(); kdbx = nil
