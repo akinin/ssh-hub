@@ -8,6 +8,11 @@ struct AssistantCommandReview: Identifiable {
     var diagnostic: AssistantDiagnosticContext? = nil
 }
 extension AliasStore {
+    var assistantNeedsExpandedWindow: Bool {
+        guard var window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: { $0.canBecomeMain && !$0.isSheet }) else { return true }
+        while let parent = window.sheetParent { window = parent }
+        return window.frame.width < 1120
+    }
     func assistantModel() -> AssistantChatModel {
         if let assistant { return assistant }
         let model = AssistantChatModel(config: config.url, profile: profiles.active); assistant = model; return model
@@ -53,7 +58,7 @@ extension AliasStore {
         }
     }
     func expandAssistant() {
-        if assistantExpanded { assistantVisible = true; assistantExpanded = false }
+        if assistantExpanded { guard !assistantNeedsExpandedWindow else { return }; assistantVisible = true; assistantExpanded = false }
         else { assistantExpanded = true; assistantVisible = false }
     }
     func closeAssistant() {
@@ -69,7 +74,7 @@ struct AssistantHostView: View {
     let expanded: Bool
     @EnvironmentObject var store: AliasStore
     var body: some View {
-        AssistantChatPanelView(model: store.assistantModel(), expanded: expanded, onExpand: store.expandAssistant, onClose: store.closeAssistant, onAction: store.assistantAction,
+        AssistantChatPanelView(model: store.assistantModel(), expanded: expanded, canReturnToSidebar: !store.assistantNeedsExpandedWindow, onExpand: store.expandAssistant, onClose: store.closeAssistant, onAction: store.assistantAction,
             beforePrepare: store.refreshAssistantCatalog,
             proposalContent: { text in AnyView(AssistantProposedActionsView(text: text, applied: store.assistantAppliedActions, chatID: store.assistantModel().chat.id, onChoose: store.reviewAssistantProposal)) })
             .safeAreaInset(edge: .bottom, spacing: 0) { AssistantDiagnosticsBar(model: store.maintenanceModel()).environmentObject(store) }
@@ -142,7 +147,8 @@ private struct AssistantDiagnosticsBar: View {
                     }
                     Button("История…", systemImage: "clock.arrow.circlepath") { history = true }
                     Spacer(minLength: 0)
-                }.font(.caption).padding(9)
+                }.font(.caption).controlSize(.small).padding(.horizontal, 12).padding(.vertical, 9).frame(maxWidth: .infinity, alignment: .leading).background(.bar)
+                .overlay(alignment: .top) { Divider() }
                 .sheet(isPresented: $history) { if let entry = store.assistantEntry { DiagnosticHistoryView(entry: entry, config: store.config.url, profileID: store.profiles.active) } }
             }
             AssistantCommandStatusView(model: model)

@@ -10,18 +10,20 @@ struct DiagnosticSetupView: View {
     var body: some View {
         if let review {
             VStack(spacing: 0) {
-                Button("К профилям диагностики", systemImage: "chevron.left") { self.review = nil }.padding(10)
+                HStack { Button("Профили диагностики", systemImage: "chevron.left") { self.review = nil }.buttonStyle(.borderless); Spacer() }.padding(.horizontal, 24).padding(.top, 14)
                 MaintenanceReviewView(plan: review.plan) { store.runAssistantCommand(review); if store.maintenanceModel().busy { dismiss() } else { error = store.assistantModel().error } }
                 if let error { Text(error).foregroundStyle(.red).padding(10) }
             }
         } else {
             VStack(alignment: .leading, spacing: 18) {
-                Label("Профиль диагностики", systemImage: "stethoscope").font(.title2.bold())
-                Text(store.title(entry)).foregroundStyle(.secondary)
+                HubSheetHeader(title: "Диагностика", subtitle: store.title(entry), icon: "stethoscope")
                 Picker("Проверки", selection: $profile) { ForEach(DiagnosticProfile.allCases) { Text($0.title).tag($0) } }
                 Text(profile.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                ScrollView { VStack(alignment: .leading, spacing: 10) { ForEach(AssistantDiagnostics.workflow(for: profile).steps) { step in Label(step.title, systemImage: "checklist").frame(maxWidth: .infinity, alignment: .leading) } } }
-                Text("Далее — точные команды и подтверждение запуска. Приложение не устанавливает утилиты и не повышает права. Результат сохраняется локально в истории; документация — после отдельного просмотра.").font(.caption).foregroundStyle(.secondary)
+                Text("Проверки").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                ScrollView { VStack(alignment: .leading, spacing: 0) { ForEach(Array(AssistantDiagnostics.workflow(for: profile).steps.enumerated()), id: \.offset) { index, step in
+                    HStack(spacing: 10) { Text(String(index + 1)).font(.caption.monospacedDigit()).foregroundStyle(.secondary).frame(width: 22, height: 22).background(.quaternary, in: Circle()); Text(step.title); Spacer() }.padding(.horizontal, 12).padding(.vertical, 8)
+                } }.background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 9)) }
+                HubNotice(text: "Далее — просмотр команд и подтверждение запуска. Результат сохранится в истории; отчёт в документацию добавляется отдельно.")
                 if let error { Text(error).foregroundStyle(.red).font(.caption) }
                 HStack {
                     Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -46,11 +48,17 @@ struct DiagnosticHistoryView: View {
     private var selected: DiagnosticSnapshot? { matching.first { $0.id == selection } ?? matching.first }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack { Label("История диагностики", systemImage: "clock.arrow.circlepath").font(.title2.bold()); Spacer(); Button("Готово") { dismiss() }.keyboardShortcut(.cancelAction) }
+            HStack { HubSheetHeader(title: "История диагностики", subtitle: entry.name, icon: "clock.arrow.circlepath"); Button("Готово") { dismiss() }.keyboardShortcut(.cancelAction) }
             Picker("Профиль", selection: $profile) { ForEach(DiagnosticProfile.allCases) { Text($0.title).tag($0) } }.onChange(of: profile) { _, _ in selection = matching.first?.id }
             if let error { Text(error).foregroundStyle(.red) }
             HStack(spacing: 0) {
-                List(matching, selection: $selection) { snapshot in VStack(alignment: .leading) { Text(snapshot.date.formatted(date: .abbreviated, time: .standard)); Text("\(snapshot.steps.filter(\.passed).count) из \(snapshot.steps.count) успешно").font(.caption).foregroundStyle(.secondary) }.tag(snapshot.id) }.frame(width: 205)
+                List(matching, selection: $selection) { snapshot in
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(snapshot.date.formatted(date: .abbreviated, time: .omitted)).font(.callout.weight(.medium))
+                        Text(snapshot.date.formatted(date: .omitted, time: .standard)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        Label("\(snapshot.steps.filter(\.passed).count) из \(snapshot.steps.count)", systemImage: snapshot.error == nil && snapshot.steps.allSatisfy(\.passed) ? "checkmark.circle" : "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary)
+                    }.padding(.vertical, 5).tag(snapshot.id)
+                }.listStyle(.sidebar).frame(width: 180)
                 Divider()
                 if let selected {
                     let previous = DiagnosticHistory.previous(to: selected, in: values)
@@ -66,8 +74,9 @@ struct DiagnosticHistoryView: View {
                     }
                 } else { ContentUnavailableView("Проверок пока нет", systemImage: "stethoscope", description: Text("Запусти диагностику с выбранным профилем. История других адресов не смешивается с текущим.")) }
             }
-            Text("До 20 проверок записи для каждого профиля, до 100 в рабочем профиле. Вывод ограничен по размеру и хранится только на этом Mac.").font(.caption).foregroundStyle(.secondary)
-        }.padding(20).frame(width: 880, height: 620).onAppear {
+            Divider()
+            Text("История хранится на этом Mac · до 20 проверок записи на профиль").font(.caption).foregroundStyle(.secondary).help("До 100 проверок в рабочем профиле. Вывод ограничен по размеру.")
+        }.padding(20).frame(minWidth: 700, idealWidth: 880, maxWidth: 1100, minHeight: 500, idealHeight: 620, maxHeight: 900).onAppear {
             do { values = try DiagnosticHistory(config: config, profile: profileID).load(); profile = values.last(where: { $0.recordKey == entry.favoriteID && $0.identity == DiagnosticSnapshot.identity(entry) })?.profile ?? .linux; selection = matching.first?.id }
             catch { self.error = error.localizedDescription }
         }
@@ -82,7 +91,7 @@ private struct DiagnosticStepDiffView: View {
         VStack(alignment: .leading, spacing: 7) {
             HStack { Label(step.title, systemImage: step.passed ? "checkmark.circle" : "exclamationmark.triangle").foregroundStyle(step.passed ? Color.primary : .orange); Spacer(); if changed { Text("Изменилось").font(.caption.bold()).foregroundStyle(.orange) } }
             if let previous, previous.status != step.status { Text(previous.status + " → " + step.status).font(.caption).foregroundStyle(.orange) } else { Text(step.status).font(.caption).foregroundStyle(.secondary) }
-            Text("$ " + step.command).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+            DisclosureGroup("Команда") { Text("$ " + step.command).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 4) }.font(.caption).foregroundStyle(.secondary)
             if let previous, changed {
                 ForEach(DiagnosticDiffLine.lines(old: previous.output, new: step.output)) { line in
                     Text((line.kind < 0 ? "− " : line.kind > 0 ? "+ " : "  ") + line.text).font(.system(.caption, design: .monospaced)).foregroundStyle(line.kind < 0 ? Color.red : line.kind > 0 ? .green : .secondary).frame(maxWidth: .infinity, alignment: .leading)

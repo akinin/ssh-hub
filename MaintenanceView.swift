@@ -59,10 +59,37 @@ struct MaintenanceReviewView: View {
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("План выполнения", systemImage: "checklist").font(.title2).bold()
-            Text("\(plan.workflow.name) · серверов: \(plan.targets.count). Проверь адреса и каждую команду. Команды выполняются с правами пользователя подключения.").font(.callout)
-            ScrollView { VStack(alignment: .leading, spacing: 16) { ForEach(plan.targets) { target in VStack(alignment: .leading, spacing: 8) { Text(target.title + " · " + target.entry.user + "@" + target.entry.host + ":" + target.entry.port).font(.headline); ForEach(target.steps) { step in Text(step.step.title + " (\(step.step.timeout) с)\n$ " + step.command + (step.step.expectedText.isEmpty ? "" : "\nОжидается: " + step.step.expectedText)).font(.system(.body, design: .monospaced)).textSelection(.enabled) } } } } }
-            HStack { Spacer(); Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction); Button("Выполнить этот план") { run() }.buttonStyle(.borderedProminent) }
-        }.padding(24).frame(width: 760, height: 580)
+            HubSheetHeader(title: "План выполнения", subtitle: plan.workflow.name + " · серверов: " + String(plan.targets.count), icon: "checklist")
+            HubNotice(text: "Проверь адреса и команды. Они выполнятся с правами пользователя подключения после подтверждения.")
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    ForEach(plan.targets) { target in
+                        VStack(alignment: .leading, spacing: 10) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(target.title).font(.headline)
+                                Text(target.entry.user + "@" + target.entry.host + ":" + target.entry.port).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                            }
+                            ForEach(target.steps) { step in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack(alignment: .firstTextBaseline) {
+                                        Text(step.step.title).font(.callout.weight(.semibold))
+                                        Spacer(minLength: 8)
+                                        Text("\(step.step.timeout) с").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                    }
+                                    Text("$ " + step.command).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                                    if !step.step.expectedText.isEmpty { Text("Ожидается: " + step.step.expectedText).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+                                }.padding(12).background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
+                            }
+                        }
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Divider()
+            HStack {
+                Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Выполнить этот план", systemImage: "play.fill") { run() }.buttonStyle(.borderedProminent)
+            }
+        }.padding(24).frame(width: 760, height: 600)
     }
 }

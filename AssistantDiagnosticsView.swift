@@ -51,10 +51,10 @@ struct AssistantDiagnosticReportView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("Отчёт диагностики", systemImage: "doc.text.magnifyingglass").font(.title2.bold())
-            Text(review.report.context.diagnosticProfile.title + " · " + review.report.title + " · " + review.report.date.formatted()).foregroundStyle(.secondary)
-            Text("Проверь и при необходимости отредактируй отчёт. Он добавится в конец документации; предыдущий текст и черновик сохранятся в истории.").font(.caption).foregroundStyle(.secondary)
-            TextEditor(text: $text).font(.system(.body, design: .monospaced)).accessibilityIdentifier("assistantDiagnosticReportText")
+            HubSheetHeader(title: "Отчёт диагностики", subtitle: review.report.title + " · " + review.report.date.formatted(), icon: "doc.text.magnifyingglass")
+            HubNotice(text: "Проверь текст перед сохранением. Отчёт добавится в конец документации, предыдущая версия останется в истории.")
+            HStack { Text("Текст отчёта · Markdown").font(.caption.weight(.medium)); Spacer(); Text("\(text.utf8.count.formatted()) / 50 000 байт").font(.caption).foregroundStyle(text.utf8.count > 50_000 ? Color.red : .secondary) }
+            TextEditor(text: $text).font(.system(size: 12, design: .monospaced)).scrollContentBackground(.hidden).padding(8).background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8)).overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(.primary.opacity(0.1), lineWidth: 1) }.accessibilityIdentifier("assistantDiagnosticReportText")
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
             HStack {
                 Button("Разобрать с ИИ") {

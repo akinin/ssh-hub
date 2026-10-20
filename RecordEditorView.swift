@@ -65,21 +65,16 @@ struct RecordEditorShell<Content: View, Actions: View>: View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 if let back { Button(action: back) { Image(systemName: "chevron.left") }.buttonStyle(.plain).help("Типы записей") }
-                Image(systemName: icon).font(.title2).foregroundStyle(.blue)
-                VStack(alignment: .leading, spacing: 3) { Text(title).font(.title3).bold(); Text(subtitle).font(.caption).foregroundStyle(.secondary) }
-                Spacer(minLength: 0)
+                HubSheetHeader(title: title, subtitle: subtitle, icon: icon)
             }.padding(20)
             Divider()
             HStack(spacing: 0) {
                 VStack(spacing: 5) {
                     ForEach(sections) { section in
-                        Button { selection = section } label: {
-                            Label(section.title, systemImage: section.icon).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 9)
-                        }.buttonStyle(.plain).foregroundStyle(selection == section ? Color.white : .primary)
-                            .background(selection == section ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 7))
+                        HubSidebarItem(title: section.title, icon: section.icon, selected: selection == section) { selection = section }
                     }
                     Spacer(minLength: 0)
-                }.padding(10).frame(width: 165).background(.bar)
+                }.padding(10).frame(width: 200).background(.bar)
                 Divider()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
@@ -188,6 +183,7 @@ struct RecordEditorView: View {
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) private var dismiss
     @State private var visualWebLogin = false
+    @State private var advancedWebLogin = false
     @State private var credentialEdit = RecordCredentialEdit()
     @State private var record = LocalConnectionRecord()
     @State private var appearance = ConnectionAppearance()
@@ -302,14 +298,17 @@ struct RecordEditorView: View {
             Divider()
             Toggle("Входить автоматически", isOn: Binding(get: { settings.wrappedValue.webAutoLogin == true }, set: { settings.wrappedValue.webAutoLogin = $0 })).accessibilityIdentifier("recordWebAutoLogin")
             Button("Выбрать поля на странице…", systemImage: "cursorarrow.click") { visualWebLogin = true }.disabled(!LocalConnectionRecord.validWebsite(record.website)).accessibilityIdentifier("visualWebLoginSetup")
-            Toggle("Указать поля и кнопку входа вручную", isOn: Binding(get: { settings.wrappedValue.webLoginSelectors != nil }, set: { settings.wrappedValue.webLoginSelectors = $0 ? WebLoginSelectors() : nil })).accessibilityIdentifier("manualWebLoginSelectors")
+            Toggle("Указать поля и кнопку входа вручную", isOn: Binding(get: { settings.wrappedValue.webLoginSelectors != nil }, set: { settings.wrappedValue.webLoginSelectors = $0 ? WebLoginSelectors() : nil; advancedWebLogin = $0 })).accessibilityIdentifier("manualWebLoginSelectors")
             if settings.wrappedValue.webLoginSelectors != nil {
-                VStack(alignment: .leading, spacing: 10) {
-                    TextField("Поле логина · например, #username", text: selectorBinding(\.username)).accessibilityIdentifier("webLoginUsernameSelector")
-                    TextField("Поле пароля · например, #password", text: selectorBinding(\.password)).accessibilityIdentifier("webLoginPasswordSelector")
-                    TextField("Кнопка входа · например, button[type='submit']", text: selectorBinding(\.submit)).accessibilityIdentifier("webLoginSubmitSelector")
+                DisclosureGroup("CSS-селекторы", isExpanded: $advancedWebLogin) {
+                    VStack(alignment: .leading, spacing: 10) {
+                    RecordFieldRow("Логин") { TextField("Например, #username", text: selectorBinding(\.username)).accessibilityIdentifier("webLoginUsernameSelector") }
+                    RecordFieldRow("Пароль") { TextField("Например, #password", text: selectorBinding(\.password)).accessibilityIdentifier("webLoginPasswordSelector") }
+                    RecordFieldRow("Кнопка") { TextField("Например, button[type='submit']", text: selectorBinding(\.submit)).accessibilityIdentifier("webLoginSubmitSelector") }
                     Text("CSS-селекторы должны указывать на одно видимое поле или кнопку: #id, input[name='login']. Поля и кнопка должны принадлежать одной форме на этом сайте. CAPTCHA и одноразовые коды вводятся вручную.").font(.caption).foregroundStyle(.secondary)
-                }.textFieldStyle(.roundedBorder)
+                    }.padding(.top, 8).textFieldStyle(.roundedBorder)
+                }
+                if settings.wrappedValue.webLoginSelectors?.validation == nil { Label("Поля входа настроены", systemImage: "checkmark.circle").font(.caption).foregroundStyle(.secondary) }
             }
             Text("Во встроенной вкладке: HTTP-авторизация и формы входа. Данные передаются только адресу этой записи; CAPTCHA, двухфакторный вход и внешние SSO подтверждаются вручную. Для автоматического входа сохрани пароль записи или выбери KeePass / общий набор.").font(.caption).foregroundStyle(.secondary)
         }

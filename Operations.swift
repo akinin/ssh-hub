@@ -79,7 +79,8 @@ extension AliasStore {
         let profile = profiles.active
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
             guard self.profiles.active == profile, !self.endingWorkspace else { return }
-            self.assistantVisible = true
+            let expanded = self.assistantNeedsExpandedWindow
+            self.assistantExpanded = expanded; self.assistantVisible = !expanded
             self.refreshAssistantContext(entry)
             if !text.isEmpty { self.assistantModel().seed(question: "Объясни выбранный материал и предложи шаги проверки.", material: text) }
         }

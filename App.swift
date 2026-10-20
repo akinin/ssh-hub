@@ -756,8 +756,24 @@ struct MainView: View {
     @State private var quickAddress = ""
     @State private var quickKind: RecordKind = .ssh
     @State private var handledLaunchAction = false
+    @State private var narrowWindow = true
+    private var compactToolbar: Bool { narrowWindow && columnVisibility != .detailOnly }
     @StateObject private var sidebarController = SidebarController()
     @ObservedObject private var consoles = ConsoleStore.shared
+    private func updateToolbarMode(_ notification: Notification? = nil) {
+        guard var window = notification?.object as? NSWindow ?? NSApp.keyWindow ?? NSApp.mainWindow else { return }
+        while let parent = window.sheetParent { window = parent }
+        guard window.canBecomeMain else { return }
+        DispatchQueue.main.async { [weak window] in
+            guard let window else { return }
+            let value = window.frame.width < 1080
+            if narrowWindow != value { narrowWindow = value }
+            if window.frame.width < 1120 && store.assistantVisible {
+                store.assistantVisible = false; store.assistantExpanded = true
+            }
+        }
+    }
+
     private func quickConnect() { store.quickConnect(address: quickAddress, kind: quickKind) }
     private func presentIntegration(_ action: IntegrationAction) {
         openWindow(id: "main")
@@ -796,7 +812,7 @@ struct MainView: View {
             ToolbarItem(id: "sidebarAndSearch", placement: .navigation) { HStack(spacing: 12) { sidebarButton; globalSearchField } }
         }
     }
-    private var globalSearchField: some View { ToolbarSearchField().environmentObject(store) }
+    private var globalSearchField: some View { ToolbarSearchField().environmentObject(store).frame(width: compactToolbar ? 220 : 300) }
     private func toolbarButton(_ title: String, symbol: String, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 17)).frame(width: 28, height: 28).contentShape(Rectangle())
@@ -919,24 +935,36 @@ struct MainView: View {
                 .onChange(of: store.assistantVisible) { _, visible in if !visible && !store.assistantExpanded { store.assistant?.stop() } }
         }
         .frame(minWidth: 780, minHeight: 550)
+        .onAppear { updateToolbarMode() }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification)) { updateToolbarMode($0) }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { updateToolbarMode($0) }
         .background(WindowTitleBehavior().frame(width: 0, height: 0))
         .background(SidebarProbe(controller: sidebarController).frame(width: 0, height: 0))
         .toolbar {
             sidebarToolbar
             if #available(macOS 26.0, *) { ToolbarSpacer(.flexible, placement: .primaryAction) }
             // A single fixed-size item avoids AppKit regrouping buttons during split-view transitions.
-            ToolbarItem(id: "trailingActions", placement: .primaryAction) {
+            ToolbarItem(id: compactToolbar ? "trailingCompactActions" : "trailingActions", placement: .primaryAction) {
                 HStack(spacing: 8) {
-                    toolbarButton("Обновить", symbol: "arrow.clockwise", help: "Обновить · ⌘R") { store.reload() }
-                    toolbarButton("Палитра действий", symbol: "command", help: "Палитра действий · ⌘P") { store.showingPalette = true }
-                    ToolbarActionsMenu(actions: toolsMenuActions).frame(width: 28, height: 28)
-                    toolbarButton("Сетевые карты", symbol: "point.3.connected.trianglepath.dotted", help: "Сетевые карты · ПКМ — выбрать карту") { store.openTopology() }
-                        .contextMenu { ForEach(store.topologyMapIndex) { map in Button(map.name) { store.openTopology(mapID: map.id) } } }
-                        .onAppear { store.reloadTopologyMapIndex() }
-                        .onChange(of: store.profiles.active) { _, _ in store.reloadTopologyMapIndex() }
-                        .onChange(of: store.config.url) { _, _ in store.reloadTopologyMapIndex() }
+                    if compactToolbar {
+                        ToolbarActionsMenu(actions: [
+                            .init(title: "Обновить", symbol: "arrow.clockwise", action: { store.reload() }),
+                            .init(title: "Палитра действий…", symbol: "command", action: { store.showingPalette = true }),
+                            .init(title: "Настройки…", symbol: "gearshape", action: { store.showingSettings = true }),
+                            .divider
+                        ] + toolsMenuActions).frame(width: 28, height: 28)
+                    } else {
+                        toolbarButton("Обновить", symbol: "arrow.clockwise", help: "Обновить · ⌘R") { store.reload() }
+                        toolbarButton("Палитра действий", symbol: "command", help: "Палитра действий · ⌘P") { store.showingPalette = true }
+                        ToolbarActionsMenu(actions: toolsMenuActions).frame(width: 28, height: 28)
+                        toolbarButton("Сетевые карты", symbol: "point.3.connected.trianglepath.dotted", help: "Сетевые карты · ПКМ — выбрать карту") { store.openTopology() }
+                            .contextMenu { ForEach(store.topologyMapIndex) { map in Button(map.name) { store.openTopology(mapID: map.id) } } }
+                            .onAppear { store.reloadTopologyMapIndex() }
+                            .onChange(of: store.profiles.active) { _, _ in store.reloadTopologyMapIndex() }
+                            .onChange(of: store.config.url) { _, _ in store.reloadTopologyMapIndex() }
+                        toolbarButton("Настройки", symbol: "gearshape", help: "Настройки · ⌘,") { store.showingSettings = true }
+                    }
                     toolbarButton("ИИ-помощник", symbol: "sparkles", help: "Показать или скрыть ИИ-помощника") { if store.assistantVisible || store.assistantExpanded { store.closeAssistant() } else { store.presentAssistant() } }
-                    toolbarButton("Настройки", symbol: "gearshape", help: "Настройки · ⌘,") { store.showingSettings = true }
                     toolbarButton("Заблокировать", symbol: "lock", help: access.enabled ? "Заблокировать SSH Hub" : "Включи пароль приложения в настройках защиты") { store.lockApplication() }.disabled(!access.enabled)
                     toolbarButton("Новая запись", symbol: "plus", help: "Новая запись · ⌘N") { store.newRecord() }
                 }.padding(.horizontal, 10).fixedSize(horizontal: true, vertical: true)
@@ -1022,7 +1050,7 @@ struct AliasDetail: View {
     @AppStorage(RecordActionDefaults.key) private var globalTiles = Data()
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 20) {
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 16) { recordIcon; recordInfo.frame(minWidth: 160); Spacer(minLength: 0); recordActions }
                     VStack(alignment: .leading, spacing: 12) {
@@ -1030,8 +1058,8 @@ struct AliasDetail: View {
                         recordInfo
                     }
                 }
-                HStack { Spacer(); Button("Настроить плитки…", systemImage: "slider.horizontal.3") { customizingTiles = true }.font(.caption).accessibilityIdentifier("customizeRecordTiles") }
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 165), spacing: 10)], spacing: 10) {
+                HStack { Text("Действия").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary); Spacer(); Button("Настроить…", systemImage: "slider.horizontal.3") { customizingTiles = true }.font(.caption).help("Настроить плитки записи").accessibilityIdentifier("customizeRecordTiles") }
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 10)], spacing: 10) {
                     ForEach(RecordAction.layout(store.appearance(entry).actionTiles, global: RecordActionDefaults.decode(globalTiles), entry: entry).filter { !$0.hidden }) { style in
                         if let action = RecordAction(rawValue: style.id) {
                             tile(action.title, detail: action.detail(entry), icon: action == .connect ? entry.recordKind?.icon ?? action.icon : action.icon, color: style.tint) { run(action) }
@@ -1058,7 +1086,7 @@ struct AliasDetail: View {
                     HStack { Text(entry.command).font(.system(.caption, design: .monospaced)).textSelection(.enabled); Spacer(); Button { store.copy(entry.command) } label: { Image(systemName: "doc.on.doc") }.help("Копировать команду SSH") }.padding(12).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
                 }
                 Text(entry.localID == nil ? "SSH-алиас из " + entry.source.path.replacingOccurrences(of: NSHomeDirectory(), with: "~") : entry.sshAlias == nil ? "Запись хранится в SSH Hub." : "Запись связана с SSH-алиасом «" + (entry.sshAlias ?? "") + "».").font(.caption).foregroundStyle(.secondary)
-            }.padding(24).frame(maxWidth: 850, alignment: .leading).frame(maxWidth: .infinity)
+            }.padding(24).frame(maxWidth: 1000, alignment: .leading).frame(maxWidth: .infinity)
         }.sheet(isPresented: $customizingTiles) {
             RecordTileCustomizationView(entry: entry, stored: store.appearance(entry).actionTiles, inherited: RecordActionDefaults.decode(globalTiles)) { tiles in
                 guard let current = store.aliases.first(where: { $0.favoriteID == entry.favoriteID }) else { return }
@@ -1099,19 +1127,25 @@ struct AliasDetail: View {
         }
     }
     private var recordActions: some View {
-        HStack(spacing: 8) {
-            Button { store.toggleFavorite(entry) } label: { Image(systemName: store.isFavorite(entry) ? "star.fill" : "star").foregroundStyle(store.isFavorite(entry) ? .yellow : .secondary).frame(width: 22, height: 24) }.help("Избранное").accessibilityLabel("Избранное")
-            Button { store.duplicate(entry) } label: { Image(systemName: "plus.square.on.square").frame(width: 22, height: 24) }.help("Дублировать запись").accessibilityLabel("Дублировать запись")
-            Button { store.export(entries: [entry]) } label: { Image(systemName: "square.and.arrow.up").frame(width: 22, height: 24) }.help("Экспорт записи").accessibilityLabel("Экспорт записи")
-            Button(role: .destructive) { store.prepareDelete(entry) } label: { Image(systemName: "trash").frame(width: 22, height: 24) }.help("Удалить запись").accessibilityLabel("Удалить запись")
-        }.buttonStyle(.plain).foregroundStyle(.secondary).fixedSize()
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) {
+                Button { store.toggleFavorite(entry) } label: { Image(systemName: store.isFavorite(entry) ? "star.fill" : "star").foregroundStyle(store.isFavorite(entry) ? .yellow : .secondary).frame(width: 28, height: 28) }.help("Избранное").accessibilityLabel("Избранное")
+                Button { store.duplicate(entry) } label: { Image(systemName: "plus.square.on.square").frame(width: 28, height: 28) }.help("Дублировать запись").accessibilityLabel("Дублировать запись")
+                Button { store.export(entries: [entry]) } label: { Image(systemName: "square.and.arrow.up").frame(width: 28, height: 28) }.help("Экспорт записи").accessibilityLabel("Экспорт записи")
+                Button(role: .destructive) { store.prepareDelete(entry) } label: { Image(systemName: "trash").frame(width: 28, height: 28) }.help("Удалить запись").accessibilityLabel("Удалить запись")
+            }.buttonStyle(.plain).foregroundStyle(.secondary).fixedSize()
+            Menu {
+                Button(store.isFavorite(entry) ? "Убрать из избранного" : "В избранное", systemImage: "star") { store.toggleFavorite(entry) }
+                Button("Дублировать", systemImage: "plus.square.on.square") { store.duplicate(entry) }
+                Button("Экспортировать…", systemImage: "square.and.arrow.up") { store.export(entries: [entry]) }
+                Divider()
+                Button("Удалить…", systemImage: "trash", role: .destructive) { store.prepareDelete(entry) }
+            } label: { Image(systemName: "ellipsis.circle").frame(width: 28, height: 28) }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("Действия с записью").accessibilityLabel("Действия с записью")
+        }
     }
     private func tile(_ title: String, detail: String, icon: String, color: Color = .blue, action: @escaping () -> Void) -> some View {
-        Button(action: action) { HStack(spacing: 12) {
-            Image(systemName: icon).font(.system(size: 22)).foregroundStyle(color).frame(width: 28)
-            VStack(alignment: .leading, spacing: 4) { Text(title).font(.system(size: 13, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.85); Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
-            Spacer(minLength: 0)
-        }.padding(.horizontal, 12).frame(maxWidth: .infinity, alignment: .leading).frame(height: 60).background(color.opacity(0.06), in: RoundedRectangle(cornerRadius: 10)).contentShape(Rectangle()) }.buttonStyle(.plain)
+        RecordActionTile(title: title, detail: detail, icon: icon, color: color, action: action)
     }
     private func parameter(_ label: String, _ value: String) -> some View {
         GridRow { Text(label).foregroundStyle(.secondary); Text(value).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.font(.callout)

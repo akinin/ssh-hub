@@ -20,6 +20,7 @@ struct AssistantChatPanelView: View {
     @ObservedObject var model: AssistantChatModel
     var contextTitle: String? = nil
     var expanded = false
+    var canReturnToSidebar = true
     let onExpand: () -> Void
     let onClose: () -> Void
     let onAction: (AssistantChatAction) -> Void
@@ -88,7 +89,7 @@ struct AssistantChatPanelView: View {
             Spacer(minLength: 4)
             headerButton("bubble.left.and.bubble.right", help: "Чаты") { showingChats = true }
             headerButton("plus.bubble", help: "Новый чат") { model.newChat() }.disabled(model.busy)
-            headerButton(expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", help: expanded ? "Вернуть в боковую панель" : "Расширить чат", action: onExpand)
+            headerButton(expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", help: expanded ? (canReturnToSidebar ? "Вернуть в боковую панель" : "Боковая панель доступна в более широком окне") : "Расширить чат", action: onExpand).disabled(expanded && !canReturnToSidebar)
             headerButton("gearshape", help: "Настройки помощника") { showingSettings = true }.disabled(model.busy)
             headerButton("xmark", help: "Закрыть помощника") { model.stop(); onClose() }
         }.padding(.horizontal, 12).frame(height: WorkspaceMetrics.tabHeaderHeight).background(.bar)
@@ -103,13 +104,13 @@ struct AssistantChatPanelView: View {
                 Text("Что хочешь сделать?").font(.system(size: expanded ? 24 : 21, weight: .semibold))
                 Text(context == nil ? "Помогу с подключениями, сетью и выбранными материалами." : "Помогу с записью «\(context!)», её сетью и выбранными материалами.").font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+            LazyVGrid(columns: expanded ? [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)] : [GridItem(.flexible())], spacing: 8) {
                 ForEach(AssistantChatAction.allCases) { action in AssistantSuggestionCard(action: action) { onAction(action) }.disabled(model.busy) }
             }
             if !model.settings.enabled {
                 Button { showingSettings = true } label: { Label("Выбрать провайдера и модель", systemImage: "slider.horizontal.3").font(.caption) }.buttonStyle(.borderless)
             }
-            Text("Список записей можно включить в запрос. Отправка материалов, изменение документации и запуск команд требуют твоего действия.").font(.system(size: 10)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+            Text("Список записей можно включить в запрос. Отправка материалов, изменение документации и запуск команд требуют твоего действия.").font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }.frame(maxWidth: expanded ? 560 : .infinity, alignment: .leading).frame(maxWidth: .infinity, alignment: expanded ? .center : .leading)
     }
     private var composer: some View {
@@ -145,7 +146,7 @@ struct AssistantChatPanelView: View {
                     HStack(spacing: 3) { Image(systemName: "list.bullet.rectangle"); Text(model.includeRecordCatalog ? (model.allProfiles ? "Все записи" : "Записи") : "Без списка"); Image(systemName: "chevron.down").font(.system(size: 7)) }.font(.system(size: 10))
                 }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().disabled(model.busy).help("В запрос добавляются только имена, адреса и параметры подключения. Точный список виден перед отправкой.")
                 Spacer()
-                Text(model.isSaved ? "Чат сохранён" : "Чат не сохранён").font(.system(size: 10)).foregroundStyle(.tertiary)
+                Text(model.isSaved ? "Чат сохранён" : "Чат не сохранён").font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }.padding(12)
     }
@@ -181,10 +182,10 @@ private struct AssistantSuggestionCard: View {
                 Image(systemName: action.icon).font(.system(size: 15)).foregroundStyle(.tint).frame(width: 19).padding(.top, 1)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(action.title).font(.system(size: 12, weight: .medium)).foregroundStyle(.primary).lineLimit(2)
-                    Text(action.detail).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2)
+                    Text(action.detail).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
                 }
                 Spacer(minLength: 0)
-            }.frame(maxWidth: .infinity, minHeight: 44, alignment: .topLeading).padding(10)
+            }.frame(maxWidth: .infinity, minHeight: 50, alignment: .topLeading).padding(12)
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
             .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(.primary.opacity(0.07), lineWidth: 1) }
             .contentShape(RoundedRectangle(cornerRadius: 10))

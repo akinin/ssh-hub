@@ -187,7 +187,7 @@ private struct ToolbarSearchInput: NSViewRepresentable {
     func makeNSView(context: Context) -> ToolbarSearchTextField {
         let field = ToolbarSearchTextField()
         field.isBordered = false; field.drawsBackground = false; field.focusRingType = .none
-        field.font = .systemFont(ofSize: 13); field.placeholderString = "Поиск по записям и материалам"
+        field.font = .systemFont(ofSize: 13); field.placeholderString = "Поиск…"
         field.setAccessibilityLabel("Общий поиск в верхней панели")
         field.cell?.usesSingleLineMode = true; field.cell?.isScrollable = true
         field.delegate = context.coordinator

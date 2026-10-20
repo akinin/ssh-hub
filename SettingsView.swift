@@ -25,26 +25,15 @@ struct AppSettingsView: View {
     @State private var selectedSection = AppSettingsSection.connections
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Image(systemName: "gearshape").font(.system(size: 24)).foregroundStyle(.tint)
-                Text("Настройки").font(.title2).bold()
-                Spacer()
-            }.padding(22)
+            HubSheetHeader(title: "Настройки", subtitle: "Подключения, рабочая область и защита", icon: "gearshape").padding(20)
             Divider()
             HStack(spacing: 0) {
                 VStack(spacing: 5) {
                     ForEach(AppSettingsSection.allCases) { section in
-                        Button { selectedSection = section; error = nil } label: {
-                            HStack(spacing: 10) { Image(systemName: section.icon).frame(width: 22); Text(section.title); Spacer(minLength: 0) }
-                                .font(.system(size: 13, weight: selectedSection == section ? .semibold : .regular))
-                                .padding(.horizontal, 12).padding(.vertical, 11)
-                                .foregroundStyle(selectedSection == section ? Color.white : Color.primary)
-                                .background(selectedSection == section ? Color.accentColor : Color.clear, in: RoundedRectangle(cornerRadius: 8))
-                                .contentShape(RoundedRectangle(cornerRadius: 8))
-                        }.buttonStyle(.plain).accessibilityAddTraits(selectedSection == section ? .isSelected : [])
+                        HubSidebarItem(title: section.title, icon: section.icon, selected: selectedSection == section) { selectedSection = section; error = nil }
                     }
                     Spacer(minLength: 0)
-                }.padding(10).frame(width: 200).background(Color.primary.opacity(0.025))
+                }.padding(10).frame(width: 200).background(.bar)
                 Divider()
                 VStack(alignment: .leading, spacing: 0) {
                     Text(selectedSection.title).font(.headline).padding(.horizontal, 22).padding(.top, 20)
@@ -112,8 +101,8 @@ struct AppSettingsView: View {
                 if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
                 Spacer()
                 Button("Готово") { dismiss() }.keyboardShortcut(.defaultAction)
-            }.padding(14)
-        }.frame(width: 820, height: 580).dismissOnOutsideClick()
+            }.padding(16)
+        }.frame(width: 820, height: 600).dismissOnOutsideClick()
             .sheet(isPresented: $showingActionTiles) { GlobalRecordActionsEditor() }
             .onAppear { refreshLoginStatus() }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refreshLoginStatus() }
