@@ -221,6 +221,8 @@ struct RecordEditorView: View {
         if !ready { return "Загрузка записи…" }
         if let error = appearance.validation ?? candidate.validation { return error }
         if !AliasTransfer.validGroup(group) { return "Путь папки — до 40 символов, без переносов строк." }
+        if kind.isWeb && password.utf8.count > 16384 { return "Пароль сайта — до 16 КБ." }
+        if kind.isWeb && record.transport?.webAutoLogin == true && (!keepPassword || removePassword || (password.isEmpty && !reusePassword)) { return "Для автоматического входа укажи и сохрани пароль сайта." }
         if password.contains(where: { $0.isNewline || $0 == "\0" }) { return "Пароль должен занимать одну строку." }
         if createAlias { return candidate.draft.validation(existing: store.aliasNameReservations(excluding: original?.id).filter { $0.id != aliasSnapshot?.entry.id }) }
         return nil
@@ -250,7 +252,7 @@ struct RecordEditorView: View {
                     RecordSSHAliasFields(enabled: $createAlias, name: $aliasName, existingAlias: original?.aliasName != nil, identifier: "recordAlias")
 
                 } else if kind == .serial { SerialSettingsFields(settings: Binding(get: { record.serial ?? SerialSettings() }, set: { record.serial = $0 })) }
-                else if kind.isWeb { TextField("Адрес сайта", text: $record.website, prompt: Text("https://example.com")).textFieldStyle(.roundedBorder).accessibilityIdentifier("recordWebsite") }
+                else if kind.isWeb { webFields }
                 else if kind.isSession { transportFields }
                 else { Text("Добавь инструкции в документации и файлы во вложениях после сохранения записи.").foregroundStyle(.secondary) }
                 if [.rdp, .vnc].contains(kind) || kind.isWeb { tunnelFields }
@@ -268,12 +270,24 @@ struct RecordEditorView: View {
                 Button("Отмена", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
                 Button(original == nil ? "Создать запись" : "Сохранить") { save() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(validation != nil)
             }
-        }.dismissOnOutsideClick().onAppear { load() }
+        }.dismissOnOutsideClick().onAppear { load() }.onDisappear { password = "" }
     }
     private var availabilityFields: some View {
         RecordAvailabilityFields(entry: savedEntry.flatMap { $0.availabilityEndpoint?.host == target.availabilityEndpoint?.host && $0.availabilityEndpoint?.port == target.availabilityEndpoint?.port ? $0 : nil }, enabled: $monitorEnabled, interval: $monitorInterval, monitor: store.availability)
     }
     private var settings: Binding<ConnectionSettings> { Binding(get: { record.transport ?? ConnectionSettings() }, set: { record.transport = $0 }) }
+    private var webFields: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            RecordFieldRow("Адрес сайта") { TextField("https://example.com", text: $record.website).textFieldStyle(.roundedBorder).accessibilityIdentifier("recordWebsite") }
+            RecordFieldRow("Логин") { TextField("Имя пользователя или email", text: $record.user).textFieldStyle(.roundedBorder).accessibilityIdentifier("recordWebUser") }
+            RecordFieldRow("Пароль") { SecureField(reusePassword && !removePassword ? "Сохранён · оставь пустым" : "Пароль сайта", text: $password).textFieldStyle(.roundedBorder).accessibilityIdentifier("recordWebPassword") }
+            Toggle("Сохранить пароль в Связке ключей macOS", isOn: $keepPassword)
+            if reusePassword && !removePassword { Button("Удалить сохранённый пароль") { removePassword = true; settings.wrappedValue.webAutoLogin = false } }
+            Divider()
+            Toggle("Входить автоматически", isOn: Binding(get: { settings.wrappedValue.webAutoLogin == true }, set: { settings.wrappedValue.webAutoLogin = $0 })).accessibilityIdentifier("recordWebAutoLogin")
+            Text("Во встроенной вкладке: HTTP-авторизация и формы входа. Данные передаются только адресу этой записи; CAPTCHA, двухфакторный вход и внешние SSO подтверждаются вручную. Для автоматического входа сохрани пароль в Связке ключей.").font(.caption).foregroundStyle(.secondary)
+        }
+    }
     @ViewBuilder private var transportFields: some View {
         if kind == .webdav {
             TextField("Адрес WebDAV", text: $record.website, prompt: Text("https://cloud.example.com/remote.php/dav/files/user/")).textFieldStyle(.roundedBorder)
@@ -351,8 +365,9 @@ struct RecordEditorView: View {
         do {
             record = original ?? seed ?? LocalConnectionRecord(); record.kind = kind; group = initialGroup
             monitorInterval = store.availability.interval
-            if kind.hasPassword { record.authentication = .password }
+            if kind.hasPassword || kind.isWeb { record.authentication = .password }
             if original == nil { record.port = kind.defaultPort; if kind.hasPassword { record.authentication = .password; record.user = kind == .ftp || kind == .ftps ? "anonymous" : "" } }
+            if original == nil && seed == nil && template == nil && blueprint == nil && kind.isWeb { record.user = "" }
             if kind.isSession && kind != .ssh && kind != .serial && record.transport == nil { record.transport = ConnectionSettings() }
             if kind == .serial && record.serial == nil { record.serial = SerialSettings() }
             expected = try store.localRepository.load(); expectedConfig = store.data
@@ -401,7 +416,7 @@ struct RecordEditorView: View {
         var ssh: ConfigChange?, credentialChanged = false, previousPassword: String?
         do {
             try beforeSave?()
-            let changePassword = removePassword || (record.authentication.usesPassword && ((!keepPassword && reusePassword) || (keepPassword && !password.isEmpty)))
+            let changePassword = removePassword || ((kind.isWeb || record.authentication.usesPassword) && ((!keepPassword && reusePassword) || (keepPassword && !password.isEmpty)))
             if changePassword {
                 previousPassword = try SSHPasswordStore.storedPassword(for: target, config: store.config.url)
                 try SSHPasswordStore.set(keepPassword && !removePassword && !password.isEmpty ? password : nil, for: target, config: store.config.url); credentialChanged = true

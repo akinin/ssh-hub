@@ -1,0 +1,114 @@
+import AppKit
+import WebKit
+
+@main @MainActor enum WebLoginTests {
+    static func check(_ value: @autoclosure () -> Bool, _ message: String) throws { if !value() { throw ConfigError.message(message) } }
+    static let user = "fixture@example.test", password = "fixture-'\"\\</script>"
+    static let config = URL(fileURLWithPath: "/fixture/config")
+    static func main() {
+        let app = NSApplication.shared; app.setActivationPolicy(.prohibited)
+        var done = false, failure: String?
+        Task { do { try await run(); print("Web login tests passed: isolated WebKit, exact origins, form guards, no restore login, Keychain failure, stop and no retries") } catch { failure = error.localizedDescription }; done = true }
+        let deadline = Date().addingTimeInterval(75)
+        while !done && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+        if let failure { fputs("Web login test failed: \(failure)\n", stderr); exit(1) }
+        if !done { fputs("Web login test timed out\n", stderr); exit(1) }
+    }
+    static func wait(_ condition: @MainActor () -> Bool) async throws {
+        for _ in 0..<200 { if condition() { return }; try await Task.sleep(for: .milliseconds(25)) }
+        throw ConfigError.message("Timed out waiting for WebKit")
+    }
+    static func entry(_ url: String, automatic: Bool = true) -> SSHAlias {
+        var record = LocalConnectionRecord(); record.kind = .web; record.title = "Fixture"; record.user = user; record.website = url; record.transport = ConnectionSettings(); record.transport?.webAutoLogin = automatic
+        return record.entry(config: config, privateConfig: URL(fileURLWithPath: "/fixture/private"))
+    }
+    static func run() async throws {
+        let base = CommandLine.arguments[1], other = CommandLine.arguments[2]
+        let origin = WebLoginOrigin(URL(string: base))!
+        try check(origin == WebLoginOrigin(URL(string: base + "/path?q=1")), "origin ignores path")
+        try check(origin != WebLoginOrigin(URL(string: other)), "port scoped")
+        try check(WebLoginOrigin(URL(string: "https://example.test")) == WebLoginOrigin(URL(string: "https://EXAMPLE.test:443/path")), "canonical default port")
+        try check(WebLoginOrigin(URL(string: "https://u:p@example.test")) == nil && WebLoginOrigin(URL(string: "file:///tmp/test")) == nil, "invalid credential origins")
+        try check(WebLoginForm.originString(URL(string: "http://[::1]:8080/x")!) == "http://[::1]:8080", "IPv6 origin")
+        let space = URLProtectionSpace(host: origin.host, port: origin.port, protocol: origin.scheme, realm: "fixture", authenticationMethod: NSURLAuthenticationMethodHTTPBasic)
+        try check(origin.matches(space), "Basic origin")
+        try check(!origin.matches(URLProtectionSpace(host: origin.host, port: origin.port, protocol: "https", realm: nil, authenticationMethod: NSURLAuthenticationMethodHTTPBasic)), "scheme scoped")
+        try check(!origin.matches(URLProtectionSpace(proxyHost: origin.host, port: origin.port, type: NSURLProtectionSpaceHTTPProxy, realm: nil, authenticationMethod: NSURLAuthenticationMethodHTTPBasic)), "proxy excluded")
+        let old = try JSONDecoder().decode(ConnectionSettings.self, from: JSONEncoder().encode(ConnectionSettings()))
+        try check(old.webAutoLogin == nil, "old settings never opt in")
+        var record = LocalConnectionRecord(); record.kind = .web; record.title = "Fixture"; record.website = base; record.user = user; record.transport = old; record.transport?.webAutoLogin = true
+        let encoded = try JSONEncoder().encode(record), decoded = try JSONDecoder().decode(LocalConnectionRecord.self, from: encoded)
+        try check(decoded == record && !String(decoding: encoded, as: UTF8.self).contains(password), "public settings roundtrip without secret")
+        let original = entry(base + "/form")
+        let account = SSHPasswordStore.account(for: original, config: config)
+        var changed = original; changed.website = other + "/form"
+        try check(SSHPasswordStore.account(for: changed, config: config) != account, "changed site cannot reuse credential account")
+        changed = original; changed.options.insert(SSHOption(key: "User", value: "other"), at: 0)
+        try check(SSHPasswordStore.account(for: changed, config: config) != account && SSHPasswordStore.account(for: original, config: URL(fileURLWithPath: "/other/config")) != account, "username and config scope")
+        record.user = "bad\nuser"; try check(record.validation != nil, "bounded one-line username")
+
+        var reads = 0
+        let model = WebPageModel(entry: entry(base + "/form", automatic: false), config: config, credentialReader: { _,_ in reads += 1; return (user, password) })
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 500), styleMask: [.titled], backing: .buffered, defer: false); window.isReleasedWhenClosed = false; window.contentView = model.view
+        try await Task.sleep(for: .milliseconds(100)); try check(reads == 0 && !model.started, "construction/restoration does not start or read a password")
+        model.start(); try await wait { model.view.url?.path == "/form" && !model.view.isLoading }
+        try await Task.sleep(for: .milliseconds(300)); try check(reads == 0, "automatic login disabled")
+        model.login(); try await wait { model.view.url?.path == "/submit" && !model.view.isLoading }
+        try check(reads == 1 && !model.view.configuration.websiteDataStore.isPersistent, "manual action uses isolated session")
+        model.stop(); try check(!model.started && !model.canLogin && model.loginStatus == nil, "stop clears login state")
+        for path in ["/basic", "/delayed", "/spa", "/repeat"] {
+            var count = 0
+            let auto = WebPageModel(entry: entry(base + path), config: config, credentialReader: { _,_ in count += 1; return (user, password) })
+            window.contentView = auto.view; auto.start()
+            try await wait { count > 0 && !auto.view.isLoading }
+            try await Task.sleep(for: .milliseconds(600))
+            try check(count == 1, "one credential read per explicit session " + path)
+            if path == "/spa" { try await wait { auto.view.title == "SPA success" } }
+            if path == "/repeat" { try check(auto.view.url?.path == "/repeat-submit", "failed form stays manual") }
+            auto.stop()
+        }
+        var rejectedReads = 0
+        let rejected = WebPageModel(entry: entry(base + "/basic"), config: config, credentialReader: { _,_ in rejectedReads += 1; return (user, "incorrect-fixture") })
+        window.contentView = rejected.view; rejected.start(); try await wait { rejected.error != nil }; try await Task.sleep(for: .milliseconds(300))
+        try check(rejectedReads == 1, "HTTP refusal does not retry stored credentials"); rejected.stop()
+        var redirectReads = 0
+        let redirected = WebPageModel(entry: entry(base + "/redirect"), config: config, credentialReader: { _,_ in redirectReads += 1; return (user, password) })
+        window.contentView = redirected.view; redirected.start(); try await wait { redirected.view.url?.absoluteString == other + "/form" && !redirected.view.isLoading }
+        try await Task.sleep(for: .milliseconds(300)); try check(redirectReads == 0 && !redirected.canLogin, "redirected origin gets no credentials"); redirected.stop()
+        let blocked = WebPageModel(entry: entry(base + "/form"), config: config, credentialReader: { _,_ in throw ConfigError.message("synthetic locked preset") })
+        window.contentView = blocked.view; blocked.start(); try await wait { blocked.loginStatus != nil }; try check(blocked.view.url?.path == "/form", "locked credentials never submit or fall back"); blocked.stop()
+        var stoppedReads = 0
+        let stopped = WebPageModel(entry: entry(base + "/delayed"), config: config, credentialReader: { _,_ in stoppedReads += 1; return (user, password) })
+        window.contentView = stopped.view; stopped.start(); stopped.stop(); try await Task.sleep(for: .milliseconds(500)); try check(stoppedReads == 0, "stop before delayed form prevents read")
+
+        // Exercise the real script in the same isolated content world against synthetic DOM.
+        let view = model.view; window.contentView = view
+        view.load(URLRequest(url: URL(string: base + "/blank")!)); try await wait { view.url?.path == "/blank" && !view.isLoading }
+        let normal = #"<form method="post" action="/submit"><input name="username"><input type="password" name="password"><button type="submit">Войти</button></form>"#
+        let cases: [(String, String)] = [
+            (normal, "ready"),
+            (normal.replacingOccurrences(of: "post", with: "get"), "manual"),
+            (normal.replacingOccurrences(of: "Войти", with: "Delete account"), "manual"),
+            (normal.replacingOccurrences(of: "</form>", with: "<input name=\"code\"></form>"), "manual"),
+            (normal.replacingOccurrences(of: "/submit", with: other + "/submit"), "origin"),
+            (normal.replacingOccurrences(of: "type=\"password\"", with: "type=\"password\" autocomplete=\"new-password\""), "manual"),
+            (normal.replacingOccurrences(of: "</form>", with: "<input autocomplete=\"one-time-code\"></form>"), "manual"),
+            (normal.replacingOccurrences(of: "</form>", with: "<input type=\"password\"></form>"), "ambiguous"),
+            (normal.replacingOccurrences(of: "</form>", with: "<input data-sitekey=\"fixture\"></form>"), "manual"),
+            (normal.replacingOccurrences(of: "type=\"submit\"", with: "type=\"submit\" formaction=\"" + other + "/submit\""), "origin")
+        ]
+        for (html, expected) in cases {
+            _ = try await view.callAsyncJavaScript("document.body.innerHTML=html;", arguments: ["html": html], in: nil, contentWorld: .defaultClient)
+            let result = try await WebLoginForm.run(in: view, origin: URL(string: base)!, probe: true)
+            try check(result == expected, "form guard " + expected + " got " + result)
+        }
+        _ = try await view.callAsyncJavaScript("document.body.innerHTML=html; document.querySelector('[type=password]').addEventListener('input', ()=>document.querySelector('form').method='get');", arguments: ["html": normal], in: nil, contentWorld: .defaultClient)
+        let changedMethod = try await WebLoginForm.run(in: view, origin: URL(string: base)!, username: user, password: password, probe: false)
+        try check(changedMethod == "filled", "changed form method cannot submit password through GET")
+        // The final validation must not overwrite a username already entered by the user.
+        _ = try await view.callAsyncJavaScript("document.body.innerHTML=html; document.querySelector('[name=username]').value='another-user';", arguments: ["html": normal], in: nil, contentWorld: .defaultClient)
+        let existingUser = try await WebLoginForm.run(in: view, origin: URL(string: base)!, username: user, password: password, probe: false)
+        try check(existingUser == "manual", "existing different username preserved")
+        window.contentView = nil; window.close()
+    }
+}

@@ -52,6 +52,32 @@ import Darwin
         try check(permissions == 0o600 && rootPermissions == 0o700, "private repository and files")
         let encoded = try JSONEncoder().encode(inventory), decoded = try JSONDecoder().decode(RecordInventory.self, from: encoded)
         try InventoryRepository.validate(decoded); try check(decoded == inventory, "backup roundtrip retains all inventory data")
+        // New categories remain optional; old dictionaries and drafts retain their values.
+        var expanded = inventory
+        for field in InventoryField.allCases { expanded.manual[field] = "Value " + field.rawValue }
+        expanded.draft = expanded.manual; expanded.draft?[.notes] = "Uncommitted note"
+        let expandedDecoded = try JSONDecoder().decode(RecordInventory.self, from: JSONEncoder().encode(expanded))
+        try check(expandedDecoded == expanded, "all structured fields and draft survive archive roundtrip")
+        try check(Set(InventorySection.allCases.flatMap(\.fields)) == Set(InventoryField.allCases), "every field is accessible in a category")
+        try check(Set(InventoryDeviceType.allCases.map(\.rawValue)).count == InventoryDeviceType.allCases.count, "device types have stable distinct IDs")
+        let linuxInterfaces = "1: lo: <LOOPBACK,UP> state UNKNOWN\n1: lo inet 127.0.0.1/8 scope host\n2: eth0@if3: <UP> state UP link/ether 02:00:00:00:00:01\n2: eth0 inet6 fe80::1/64 scope link\n2: eth0 inet 192.0.2.10/24 scope global"
+        let parsedLinux = InventoryPresentation.interfaces(linuxInterfaces)
+        try check(parsedLinux.count == 2 && parsedLinux[1].name == "eth0" && parsedLinux[1].mac == "02:00:00:00:00:01" && parsedLinux[1].addresses.count == 2 && parsedLinux[1].status == "UP", "Linux links and addresses are merged")
+        var network = InventoryFields(); network[.interfaces] = linuxInterfaces
+        try check(InventoryPresentation.primaryAddress(network) == "192.0.2.10/24", "summary prefers a non-loopback IPv4")
+        network[.ipAddresses] = "198.51.100.2"; try check(InventoryPresentation.primaryAddress(network) == "198.51.100.2", "manual summary address has priority")
+        let macInterfaces = InventoryPresentation.interfaces("en0: flags=8863<UP,BROADCAST> mtu 1500\n\tether 02:00:00:00:00:02\n\tinet 192.0.2.20 netmask 0xffffff00")
+        try check(macInterfaces.count == 1 && macInterfaces[0].addresses == ["192.0.2.20"] && macInterfaces[0].status == "UP", "macOS interfaces")
+        let routerInterfaces = InventoryPresentation.interfaces("0 name=\"ether1\" mac-address=02:00:00:00:00:03\n0 address=192.0.2.30/24 interface=ether1")
+        try check(routerInterfaces.count == 1 && routerInterfaces[0].mac == "02:00:00:00:00:03" && routerInterfaces[0].addresses == ["192.0.2.30/24"], "RouterOS interfaces and IPs merged")
+        let disks = InventoryPresentation.disks("sda 100G disk Fixture SSD\nsr0 1K rom\nunknown raw text")
+        try check(disks.count == 2 && disks[0].capacity == "100G" && disks[0].detail == "Fixture SSD", "Linux disk columns")
+        let macDisks = InventoryPresentation.disks("/dev/disk0 (internal, physical):\n   0: GUID_partition_scheme *500.3 GB disk0\n   1: Apple_APFS 500.0 GB disk0s1")
+        try check(macDisks.count == 1 && macDisks[0].capacity == "500.3 GB", "macOS whole disks without invented partition data")
+        try check(InventoryPresentation.disks("Storage: 1000000 bytes").count == 1, "RouterOS storage")
+        try check(InventoryPresentation.disks("unknown").isEmpty && InventoryPresentation.interfaces("unknown").isEmpty, "unrecognized data remains raw")
+        try check(InventoryPresentation.interfaces(String(repeating: "x", count: 16385)).isEmpty, "presentation input bounded")
+        try check(InventoryPresentation.operatingSystem("ProductName: macOS\nProductVersion: 26.0\nBuildVersion: fixture") == "macOS 26.0", "OS summary formats facts without altering raw value")
         var invalid = inventory; invalid.manual[.notes] = String(repeating: "x", count: 16_385)
         try rejected({ try repository.write(invalid, for: "invalid") }, "field size limited")
         invalid = inventory; invalid.manual[.model] = "bad\u{001B}"

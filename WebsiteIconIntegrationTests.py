@@ -14,6 +14,7 @@ def chunk(kind, data):
     return struct.pack('!I', len(data)) + kind + data + struct.pack('!I', zlib.crc32(kind + data))
 png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('!IIBBBBB', 64, 32, 8, 6, 0, 0, 0)) + chunk(b'IDAT', zlib.compress((b'\0' + bytes([0, 120, 255, 255]) * 64) * 32)) + chunk(b'IEND', b'')
 ico = struct.pack('<HHH', 0, 1, 1) + struct.pack('<BBBBHHII', 64, 32, 0, 0, 1, 32, len(png), 22) + png
+svg = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 16"><path fill="#0078ff" d="M0 0H32V16H0Z"/></svg>'
 class Handler(http.server.BaseHTTPRequestHandler):
     credentials_received = False
     def log_message(self, *args): pass
@@ -36,7 +37,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_response(401); self.send_header('WWW-Authenticate', 'Basic realm="synthetic icon"'); self.end_headers(); return
         if path == '/huge-page' or path == '/icon-huge':
             self.send_response(200); self.send_header('Content-Type', 'text/html' if path == '/huge-page' else 'image/png'); self.send_header('Content-Length', '1000001'); self.end_headers(); return
-        if path in ['/icons/site.ico', '/favicon.ico']:
+        if path in ['/favicon.svg', '/icon-svg-octet']:
+            content, mime = svg, 'image/svg+xml' if path == '/favicon.svg' else 'application/octet-stream'
+        elif path in ['/svg-page', '/svg-octet-page']:
+            content, mime = ('<link rel="icon" href="%s" type="image/svg+xml">' % ('/favicon.svg' if path == '/svg-page' else '/icon-svg-octet')).encode(), 'text/html'
+        elif path in ['/icons/site.ico', '/favicon.ico']:
             content, mime = ico, 'image/x-icon'
         elif path == '/declared':
             content, mime = b'<html><head><link rel="shortcut icon" href="/icons/site.ico"></head></html>', 'text/html'

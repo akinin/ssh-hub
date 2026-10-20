@@ -4,6 +4,9 @@ import Darwin
 
 enum InventoryField: String, Codable, CaseIterable, Identifiable {
     case manufacturer, model, serial, assetTag, operatingSystem, processor, memory, disks, interfaces, location, role, owner, notes
+    case deviceType, hostName, ipAddresses, macAddresses, domain, subnet, vlan, gateway, dnsServers, dhcpServer, dhcpRange, firewall, virtualMachine, hypervisor, virtualizationType
+    case socketType, socketCount, physicalCores, logicalCores, monitors, software, licenses
+    case site, building, room, rack, rackUnit, department, email, phone, purchaseDate, purchaseVendor, purchaseCost, warrantyUntil, purchaseInvoice
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -20,9 +23,90 @@ enum InventoryField: String, Codable, CaseIterable, Identifiable {
         case .role: return "Назначение"
         case .owner: return "Ответственный"
         case .notes: return "Заметки"
+        case .deviceType: return "Тип устройства"
+        case .hostName: return "Имя узла"
+        case .ipAddresses: return "IP-адреса"
+        case .macAddresses: return "MAC-адреса"
+        case .domain: return "Домен"
+        case .subnet: return "Подсеть / IP-диапазон"
+        case .vlan: return "VLAN ID"
+        case .gateway: return "Шлюз"
+        case .dnsServers: return "DNS-серверы"
+        case .dhcpServer: return "DHCP-сервер"
+        case .dhcpRange: return "Диапазон DHCP"
+        case .firewall: return "Брандмауэр"
+        case .virtualMachine: return "Виртуальная машина"
+        case .hypervisor: return "Сервер виртуализации"
+        case .virtualizationType: return "Тип виртуализации"
+        case .socketType: return "Тип сокета"
+        case .socketCount: return "Количество сокетов"
+        case .physicalCores: return "Физические ядра"
+        case .logicalCores: return "Логические ядра"
+        case .monitors: return "Мониторы"
+        case .software: return "Установленное ПО"
+        case .licenses: return "Лицензии"
+        case .site: return "Площадка"
+        case .building: return "Здание"
+        case .room: return "Помещение"
+        case .rack: return "Стойка"
+        case .rackUnit: return "Юнит в стойке"
+        case .department: return "Организация / отдел"
+        case .email: return "Электронная почта"
+        case .phone: return "Телефон"
+        case .purchaseDate: return "Дата покупки"
+        case .purchaseVendor: return "Поставщик"
+        case .purchaseCost: return "Стоимость"
+        case .warrantyUntil: return "Гарантия до"
+        case .purchaseInvoice: return "Заказ / счёт"
         }
     }
-    var multiline: Bool { [.disks, .interfaces, .notes].contains(self) }
+    var multiline: Bool { [.disks, .interfaces, .notes, .operatingSystem, .processor, .ipAddresses, .macAddresses, .monitors, .software, .licenses].contains(self) }
+}
+
+enum InventorySection: String, CaseIterable, Identifiable {
+    case summary, network, software, hardware, location, contact, purchase
+    var id: String { rawValue }
+    var title: String { switch self { case .summary: return "Сводка"; case .network: return "Сеть"; case .software: return "ПО"; case .hardware: return "Оборудование"; case .location: return "Расположение"; case .contact: return "Контакт"; case .purchase: return "Покупка" } }
+    var icon: String { switch self { case .summary: return "doc.text.image"; case .network: return "network"; case .software: return "opticaldisc"; case .hardware: return "cpu"; case .location: return "building.2"; case .contact: return "person.crop.circle"; case .purchase: return "tag" } }
+    var fields: [InventoryField] {
+        switch self {
+        case .summary: return [.deviceType, .role, .assetTag, .notes]
+        case .network: return [.hostName, .ipAddresses, .macAddresses, .domain, .interfaces, .virtualMachine, .hypervisor, .virtualizationType, .subnet, .vlan, .gateway, .dnsServers, .dhcpServer, .dhcpRange, .firewall]
+        case .software: return [.operatingSystem, .software, .licenses]
+        case .hardware: return [.manufacturer, .model, .serial, .processor, .socketType, .socketCount, .physicalCores, .logicalCores, .memory, .monitors, .disks]
+        case .location: return [.location, .site, .building, .room, .rack, .rackUnit]
+        case .contact: return [.owner, .department, .email, .phone]
+        case .purchase: return [.purchaseDate, .purchaseVendor, .purchaseCost, .warrantyUntil, .purchaseInvoice]
+        }
+    }
+}
+
+enum InventoryDeviceType: String, CaseIterable, Identifiable {
+    case unspecified, laptop, tablet, desktop, server, phone, wirelessRouter, firewall, router, networkSwitch, rack, nas, san, accessPoint, cloud, camera, keyboard, monitor, mouse, printer, other
+    var id: String { rawValue }
+    var category: String {
+        switch self {
+        case .unspecified: return "Общие"
+        case .laptop, .tablet, .desktop, .server, .phone: return "Компьютеры"
+        case .wirelessRouter, .firewall, .router, .networkSwitch, .rack, .nas, .san, .accessPoint, .cloud: return "Сетевое оборудование"
+        case .camera, .keyboard, .monitor, .mouse, .printer: return "Периферия"
+        case .other: return "Другое"
+        }
+    }
+    var title: String {
+        switch self {
+        case .unspecified: return "Неопределено"; case .laptop: return "Ноутбук"; case .tablet: return "Планшет"; case .desktop: return "Рабочая станция"; case .server: return "Сервер"; case .phone: return "Телефон"
+        case .wirelessRouter: return "Беспроводной маршрутизатор"; case .firewall: return "Брандмауэр"; case .router: return "Маршрутизатор"; case .networkSwitch: return "Коммутатор"; case .rack: return "Стойка"; case .nas: return "NAS"; case .san: return "SAN"; case .accessPoint: return "Точка доступа"; case .cloud: return "Облачный ресурс"
+        case .camera: return "Камера"; case .keyboard: return "Клавиатура"; case .monitor: return "Монитор"; case .mouse: return "Мышь"; case .printer: return "Принтер"; case .other: return "Другое устройство"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .unspecified, .server, .rack: return "server.rack"; case .laptop: return "laptopcomputer"; case .tablet: return "ipad"; case .desktop: return "desktopcomputer"; case .phone: return "iphone"
+        case .wirelessRouter, .accessPoint: return "wifi"; case .firewall: return "shield.lefthalf.filled"; case .router: return "network"; case .networkSwitch: return "point.3.connected.trianglepath.dotted"; case .nas: return "externaldrive"; case .san: return "externaldrive.connected.to.line.below"; case .cloud: return "cloud"
+        case .camera: return "camera"; case .keyboard: return "keyboard"; case .monitor: return "display"; case .mouse: return "computermouse"; case .printer: return "printer"; case .other: return "shippingbox"
+        }
+    }
 }
 
 // Missing fields decode as empty; facts and manual inventory use the same names,
@@ -181,6 +265,87 @@ struct InventoryRepository {
               inventory.modified.map({ $0.timeIntervalSince1970.isFinite }) ?? true,
               inventory.snapshots.count <= 20, Set(inventory.snapshots.map(\.id)).count == inventory.snapshots.count,
               inventory.snapshots.allSatisfy({ validFields($0.facts) && $0.date.timeIntervalSince1970.isFinite && ($0.source.map { $0.utf8.count <= 512 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) } ?? true) }) else { throw InventoryError.invalidData }
+    }
+}
+
+struct InventoryInterfaceInfo: Identifiable, Equatable {
+    var name: String
+    var addresses: [String] = []
+    var mac = ""
+    var status = ""
+    var id: String { name }
+}
+struct InventoryDiskInfo: Identifiable, Equatable {
+    var name: String
+    var capacity: String
+    var detail: String
+    var id: String { name }
+}
+enum InventoryPresentation {
+    private static func match(_ pattern: String, _ text: String) -> [String]? {
+        guard let regex = try? NSRegularExpression(pattern: pattern), let result = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else { return nil }
+        return (1..<result.numberOfRanges).map { index in Range(result.range(at: index), in: text).map { String(text[$0]) } ?? "" }
+    }
+    private static func property(_ name: String, _ text: String) -> String? {
+        guard let pair = match(#"(?:^|\s)"# + name + #"=(?:"([^"]*)"|(\S+))"#, text) else { return nil }
+        return pair.first(where: { !$0.isEmpty })
+    }
+    static func interfaces(_ text: String) -> [InventoryInterfaceInfo] {
+        guard text.utf8.count <= 16_384 else { return [] }
+        var rows: [InventoryInterfaceInfo] = [], current: Int?
+        for raw in text.split(separator: "\n").prefix(256) {
+            let line = String(raw), trimmed = line.trimmingCharacters(in: .whitespaces)
+            var name: String?
+            if let linux = match(#"^\d+:\s+([^\s:]+)"#, line) { name = linux[0].components(separatedBy: "@")[0] }
+            else if let router = property("interface", line) ?? property("name", line) { name = router }
+            else if let mac = match(#"^([A-Za-z][A-Za-z0-9_.-]*):\s+flags="#, line) { name = mac[0] }
+            if let name, !name.isEmpty {
+                if let index = rows.firstIndex(where: { $0.name == name }) { current = index }
+                else if rows.count < 128 { rows.append(InventoryInterfaceInfo(name: name)); current = rows.count - 1 }
+            } else if !line.hasPrefix(" ") && !line.hasPrefix("\t") && !trimmed.hasPrefix("inet") && !trimmed.hasPrefix("ether") { current = nil }
+            guard let index = current else { continue }
+            if let mac = match(#"(?:link/ether|ether)\s+([0-9A-Fa-f:]{17})"#, line)?.first ?? property("mac-address", line), !mac.isEmpty { rows[index].mac = mac }
+            if let address = match(#"\binet6?\s+([^\s]+)"#, line)?.first ?? property("address", line), !rows[index].addresses.contains(address), rows[index].addresses.count < 16 { rows[index].addresses.append(address) }
+            if let state = match(#"\bstate\s+(UP|DOWN|UNKNOWN)\b"#, line)?.first { rows[index].status = state == "UP" ? "UP" : state == "DOWN" ? "DOWN" : "" }
+            else if line.contains("flags="), line.contains("<UP,") || line.contains(",UP,") || line.contains("<UP>") { rows[index].status = "UP" }
+        }
+        return rows
+    }
+    static func disks(_ text: String) -> [InventoryDiskInfo] {
+        guard text.utf8.count <= 16_384 else { return [] }
+        var rows: [InventoryDiskInfo] = [], macDisk: (String, String)?
+        for raw in text.split(separator: "\n").prefix(256) {
+            let line = String(raw).trimmingCharacters(in: .whitespaces)
+            if let linux = match(#"^(\S+)\s+([0-9.]+[KMGTPE]?i?B?)\s+(disk|part|rom|loop|lvm|crypt|raid\d*)\b\s*(.*)$"#, line) {
+                if !rows.contains(where: { $0.name == linux[0] }) { rows.append(InventoryDiskInfo(name: linux[0], capacity: linux[1], detail: linux[3].isEmpty ? linux[2] : linux[3])) }
+            } else if let header = match(#"^/dev/(disk[0-9]+)\s*(.*):$"#, line) { macDisk = (header[0], header[1]) }
+            else if let disk = macDisk, let size = match(#"\*?([0-9.]+\s+[KMGTPE]?B)\s+(disk[0-9]+)$"#, line), size[1] == disk.0, !rows.contains(where: { $0.name == disk.0 }) {
+                rows.append(InventoryDiskInfo(name: disk.0, capacity: size[0], detail: disk.1))
+            } else if let router = match(#"^Storage:\s+([0-9]+) bytes$"#, line), let bytes = Int64(router[0]) {
+                rows.append(InventoryDiskInfo(name: "Хранилище", capacity: ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file), detail: "RouterOS"))
+            }
+            if rows.count == 128 { break }
+        }
+        return rows
+    }
+    static func firstLine(_ value: String) -> String { value.split(separator: "\n").first.map(String.init) ?? "" }
+    static func primaryAddress(_ fields: InventoryFields) -> String {
+        let manual = firstLine(fields[.ipAddresses]); if !manual.isEmpty { return manual }
+        let addresses = interfaces(fields[.interfaces]).flatMap(\.addresses)
+        let usable = addresses.filter { value in
+            let address = value.components(separatedBy: "/")[0].lowercased()
+            return !address.hasPrefix("127.") && address != "::1" && !address.hasPrefix("fe80:") && !address.hasPrefix("169.254.")
+        }
+        return usable.first(where: { !$0.contains(":") }) ?? usable.first ?? addresses.first ?? ""
+    }
+    static func operatingSystem(_ value: String) -> String {
+        if let name = match(#"(?m)^ProductName:\s*(.+)$"#, value)?.first {
+            return name + (match(#"(?m)^ProductVersion:\s*(.+)$"#, value)?.first.map { " " + $0 } ?? "")
+        }
+        return firstLine(value)
+    }
+    static func logicalCores(_ fields: InventoryFields) -> String {
+        fields[.logicalCores].isEmpty ? (match(#"(?:CPU threads:\s*|cores:\s*)([0-9]+)"#, fields[.processor])?.first ?? "") : fields[.logicalCores]
     }
 }
 

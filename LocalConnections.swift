@@ -70,6 +70,8 @@ struct LocalConnectionRecord: Codable, Identifiable, Equatable {
         if kind == .ssh { return draft.validation(existing: []) }
         if kind.isWeb || kind == .webdav, !Self.validWebsite(website) { return "Укажи полный адрес: https://example.com." }
         if let error = transport?.validation { return error }
+        if kind.isWeb, user.utf8.count > 1024 || user.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) { return "Логин сайта должен занимать одну строку, до 1024 байт." }
+        if kind.isWeb, transport?.webAutoLogin == true, user.trimmingCharacters(in: .whitespaces).isEmpty { return "Укажи логин для автоматического входа." }
         if [.rdp, .vnc, .telnet, .ftp, .ftps, .mosh].contains(kind) || (kind == .adb && transport?.adbNetwork == true) {
             guard SSHConfig.matches(host, "^[A-Za-z0-9_:.%\\-]+$"), !host.hasPrefix("-"), let number = UInt16(port), number > 0 else { return "Укажи имя или IP сервера и порт 1–65535." }
         }

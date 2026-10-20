@@ -33,6 +33,30 @@ import AppKit
             let bitmap = NSBitmapImageRep(data: data)!
             check(bitmap.pixelsWide == 64 && bitmap.pixelsHigh == 32, "icon dimensions preserved")
         }
+        for path in ["/svg-page", "/svg-octet-page", "/favicon.svg"] {
+            let data = try await WebsiteIcon.load(base + path), bitmap = NSBitmapImageRep(data: data)!
+            check(ConnectionAppearance.validLogo(data) && bitmap.pixelsWide == 256 && bitmap.pixelsHigh == 128, "SVG link, direct SVG and generic MIME render a bounded PNG with vector aspect ratio")
+            let pixel = bitmap.colorAt(x: 128, y: 64)!.usingColorSpace(.deviceRGB)!
+            check(pixel.blueComponent > 0.9 && pixel.alphaComponent > 0.9, "SVG rasterization contains the declared artwork")
+        }
+        let unsafeSVG = [
+            "<svg xmlns='http://www.w3.org/2000/svg' onload='alert(1)'/>",
+            "<svg><script>alert(1)</script></svg>",
+            "<svg><image href='https://example.test/private'/></svg>",
+            "<svg><foreignObject><p>HTML</p></foreignObject></svg>",
+            "<!DOCTYPE svg [<!ENTITY x SYSTEM 'file:///etc/passwd'>]><svg><title>&x;</title></svg>",
+            "<svg><path style='fill:url(https://example.test/image)' d='M0 0H24V24Z'/></svg>",
+            "<svg><use href='#recursive'/></svg>",
+            "<svg width='1e100' height='1e100'/>",
+            "<svg><animate attributeName='x'/></svg>",
+            "<?xml-stylesheet href='https://example.test/style.css'?><svg/>",
+            "<svg><path style='fill:var(--external)'/></svg>"
+        ]
+        for value in unsafeSVG {
+            do { _ = try WebsiteIcon.normalizeIcon(Data(value.utf8), mimeType: "image/svg+xml"); fatalError("unsafe SVG accepted") } catch {}
+        }
+        let styled = Data("<?xml version='1.0' encoding='UTF-8'?><svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><rect width='24' height='24' style='fill:#0078ff;opacity:1'/></svg>".utf8)
+        check(ConnectionAppearance.validLogo(try WebsiteIcon.normalizeIcon(styled, mimeType: "image/svg+xml")), "self-contained inline SVG paint styles supported")
         for path in ["/huge-page", "/stream", "/bad-page", "/bad-image", "/auth", "/redirect-cross", "/loop"] {
             await reject { _ = try await WebsiteIcon.load(base + path) }
         }
@@ -55,6 +79,6 @@ import AppKit
         for path in ["/auth", "/huge-page", "/redirect-other"] {
             await reject { _ = try await WebsiteIcon.load(tls + path, acceptingCertificatesFor: [origin, other]) }
         }
-        print("Website icon checks passed: declared/fallback ICO, PNG normalization, URL restrictions, no cookies/auth, redirects/bounds/cancellation, self-signed TLS explicit retry, exact host/port scope and no persisted trust")
+        print("Website icon checks passed: SVG rasterization and active/external content rejection, declared/fallback ICO, PNG normalization, URL restrictions, no cookies/auth, redirects/bounds/cancellation, self-signed TLS explicit retry, exact host/port scope and no persisted trust")
     }
 }

@@ -99,6 +99,7 @@ struct ConnectionSettings: Codable, Equatable {
     var ftpsImplicit = false
     var certificateAuthority = ""
     var tunnel: RecordTunnelSettings? = nil
+    var webAutoLogin: Bool? = nil
     var rdpClipboard: Bool? = nil
     var rdpSharedFolder: String? = nil
     var rdpMonitors: Int? = nil

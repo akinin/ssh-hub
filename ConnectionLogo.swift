@@ -74,6 +74,14 @@ private final class WebsiteIconPolicy: NSObject, URLSessionTaskDelegate {
     }
 }
 enum WebsiteIcon {
+    static func normalizeIcon(_ data: Data, mimeType: String?) throws -> Data {
+        guard data.count <= 1_000_000 else { throw ConfigError.message("Файл иконки слишком большой.") }
+        let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if mimeType == "image/svg+xml" || text?.hasPrefix("<svg") == true || text?.hasPrefix("<?xml") == true {
+            return try WebsiteIconSVG.normalize(data)
+        }
+        return try ConnectionLogo.normalize(data)
+    }
     static func address(_ text: String) throws -> URL {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard text.utf8.count <= 4096, !text.contains(where: { $0.isWhitespace || $0 == "\0" }),
@@ -136,7 +144,7 @@ enum WebsiteIcon {
     static func load(_ text: String, acceptingCertificatesFor acceptedOrigins: Set<WebsiteIconOrigin> = []) async throws -> Data {
         let url = try address(text), deadline = Date().addingTimeInterval(25)
         let (pageData, response) = try await fetch(url, maximum: 1_000_000, timeout: 8, acceptedOrigins: acceptedOrigins)
-        if response.mimeType?.hasPrefix("image/") == true { return try ConnectionLogo.normalize(pageData) }
+        if response.mimeType?.hasPrefix("image/") == true { return try normalizeIcon(pageData, mimeType: response.mimeType) }
         guard response.mimeType == "text/html" || response.mimeType == "application/xhtml+xml",
               let html = String(data: pageData, encoding: .utf8) ?? String(data: pageData, encoding: .isoLatin1) else { throw ConfigError.message("По этому адресу нет HTML-страницы или изображения.") }
         let page = response.url ?? url
@@ -147,13 +155,80 @@ enum WebsiteIcon {
             guard remaining > 0 else { break }
             do {
                 let (data, iconResponse) = try await fetch(candidate, maximum: 524_288, timeout: min(6, remaining), acceptedOrigins: acceptedOrigins)
-                guard iconResponse.mimeType?.hasPrefix("image/") == true || ["application/octet-stream", "application/ico"].contains(iconResponse.mimeType ?? "") else { continue }
-                let png = try ConnectionLogo.normalize(data); try Task.checkCancellation(); return png
+                let png = try normalizeIcon(data, mimeType: iconResponse.mimeType); try Task.checkCancellation(); return png
             } catch is CancellationError { throw CancellationError() }
             catch let failure as WebsiteIconCertificateFailure { certificateFailure = certificateFailure ?? failure }
             catch { if Task.isCancelled { throw CancellationError() } }
         }
         if let certificateFailure { throw certificateFailure }
         throw ConfigError.message("Иконка сайта не найдена. Можно указать другой адрес или выбрать изображение с Mac.")
+    }
+}
+
+// SVG is decoded by AppKit only after validating a bounded, self-contained
+// vector document. Scripts, external resources, entities and animation never
+// reach the native renderer.
+private final class WebsiteIconSVG: NSObject, XMLParserDelegate {
+    private var valid = true
+    private var depth = 0
+    private var nodes = 0
+    private var numbers = 0
+    private let elements: Set<String> = ["svg", "g", "path", "rect", "circle", "ellipse", "line", "polyline", "polygon", "defs", "linearGradient", "radialGradient", "stop", "clipPath", "mask", "use", "title", "desc"]
+    private let attributes: Set<String> = ["xmlns", "xmlns:xlink", "version", "id", "class", "viewBox", "preserveAspectRatio", "width", "height", "x", "y", "x1", "y1", "x2", "y2", "cx", "cy", "r", "rx", "ry", "d", "points", "transform", "gradientTransform", "gradientUnits", "spreadMethod", "offset", "fill", "fill-rule", "fill-opacity", "stroke", "stroke-width", "stroke-opacity", "stroke-linecap", "stroke-linejoin", "stroke-miterlimit", "stroke-dasharray", "stroke-dashoffset", "opacity", "stop-color", "stop-opacity", "clip-path", "clip-rule", "mask", "maskUnits", "maskContentUnits", "href", "xlink:href", "style", "color"]
+    private let styles: Set<String> = ["fill", "fill-rule", "fill-opacity", "stroke", "stroke-width", "stroke-opacity", "stroke-linecap", "stroke-linejoin", "stroke-miterlimit", "stroke-dasharray", "stroke-dashoffset", "opacity", "stop-color", "stop-opacity", "clip-path", "clip-rule", "mask", "color"]
+    private let numberPattern = try! NSRegularExpression(pattern: #"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?"#)
+    private func reject(_ parser: XMLParser) { valid = false; parser.abortParsing() }
+    private func safeValue(_ value: String) -> Bool {
+        let lowered = value.lowercased().filter { !$0.isWhitespace }
+        guard value.utf8.count <= 100_000, !value.contains("\\"), !lowered.contains("@"), !lowered.contains("://"), !lowered.contains("data:"), !lowered.contains("javascript:"), !lowered.contains("var("), !lowered.contains("expression("), !lowered.contains("/*") else { return false }
+        let urls = try! NSRegularExpression(pattern: #"url\(\s*['"]?#[A-Za-z_][A-Za-z0-9_.-]*['"]?\s*\)"#, options: .caseInsensitive)
+        let stripped = urls.stringByReplacingMatches(in: value, range: NSRange(value.startIndex..., in: value), withTemplate: "")
+        return !stripped.lowercased().contains("url(")
+    }
+    func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes values: [String: String]) {
+        depth += 1; nodes += 1
+        guard depth <= 32, nodes <= 2000, elements.contains(name), depth != 1 || name == "svg", values.count <= 64 else { reject(parser); return }
+        for (key, value) in values {
+            guard attributes.contains(key) else { reject(parser); return }
+            if key == "xmlns" || key == "xmlns:xlink" {
+                guard value == (key == "xmlns" ? "http://www.w3.org/2000/svg" : "http://www.w3.org/1999/xlink") else { reject(parser); return }
+                continue
+            }
+            guard safeValue(value) else { reject(parser); return }
+            if key == "href" || key == "xlink:href" {
+                // Disallow use references as well: recursive local use graphs
+                // can expand far beyond the source document's size.
+                reject(parser); return
+            }
+            if key == "style" {
+                for declaration in value.split(separator: ";") {
+                    let pair = declaration.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    guard pair.count == 2, styles.contains(pair[0]), safeValue(pair[1]) else { reject(parser); return }
+                }
+            }
+            if !["id", "class"].contains(key) {
+                let matches = numberPattern.matches(in: value, range: NSRange(value.startIndex..., in: value))
+                numbers += matches.count
+                guard numbers <= 8192, matches.allSatisfy({ match in guard let range = Range(match.range, in: value), let number = Double(value[range]) else { return false }; return number.isFinite && abs(number) <= 1_000_000 }) else { reject(parser); return }
+            }
+        }
+    }
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName: String?) { depth -= 1 }
+    func parser(_ parser: XMLParser, foundCharacters string: String) { if string.utf8.count > 4096 { reject(parser) } }
+    func parser(_ parser: XMLParser, foundProcessingInstructionWithTarget target: String, data: String?) { reject(parser) }
+    static func normalize(_ data: Data) throws -> Data {
+        guard data.count <= 524_288, let text = String(data: data, encoding: .utf8), !text.lowercased().contains("<!doctype"), !text.lowercased().contains("<!entity"), !text.contains("<?xml-stylesheet") else { throw ConfigError.message("SVG содержит неподдерживаемые внешние ресурсы или слишком большой.") }
+        let validator = WebsiteIconSVG(), parser = XMLParser(data: data)
+        parser.shouldResolveExternalEntities = false; parser.externalEntityResolvingPolicy = .never; parser.delegate = validator
+        guard parser.parse(), validator.valid, validator.nodes > 0, let image = NSImage(data: data), image.size.width.isFinite, image.size.height.isFinite, image.size.width > 0, image.size.height > 0, image.size.width <= 1_000_000, image.size.height <= 1_000_000 else { throw ConfigError.message("Не удалось прочитать безопасное SVG-изображение.") }
+        let scale = 256 / max(image.size.width, image.size.height)
+        let width = max(1, Int((image.size.width * scale).rounded())), height = max(1, Int((image.size.height * scale).rounded()))
+        guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0), let context = NSGraphicsContext(bitmapImageRep: bitmap) else { throw ConfigError.message("Не удалось подготовить SVG-иконку.") }
+        NSGraphicsContext.saveGraphicsState(); defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = context
+        let bounds = NSRect(x: 0, y: 0, width: width, height: height)
+        context.cgContext.clear(bounds); image.draw(in: bounds)
+        guard let png = bitmap.representation(using: .png, properties: [:]) else { throw ConfigError.message("Не удалось преобразовать SVG в PNG.") }
+        return try ConnectionLogo.normalize(png)
     }
 }
