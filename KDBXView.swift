@@ -18,12 +18,13 @@ struct KDBXVaultsView: View {
             else { content.frame(width: 740, height: 520) }
         }.sheet(item: $unlocking) { link in KDBXUnlockView(link: link, workspace: workspace) }
         .sheet(item: $managing) { link in KDBXEntriesView(link: link, workspace: workspace) }
+        .task(id: links.map(\.id)) { await workspace.refreshRemembered(links) }
     }
     private var content: some View {
         VStack(alignment: .leading, spacing: 16) {
             if !embedded { Label("Базы KeePass", systemImage: "lock.rectangle.stack").font(.title2.bold()) }
             if let profileName { Text("Профиль: " + profileName).font(.callout).foregroundStyle(.secondary) }
-            Text("Подключи базу KeePassXC или KeePass. KDBX 4.0 и 4.1 можно редактировать; KDBX 3.1 доступен для чтения. Мастер-пароль не сохраняется.").font(.callout).foregroundStyle(.secondary)
+            Text("Подключи базу KeePassXC или KeePass. KDBX 4.0 и 4.1 можно редактировать; KDBX 3.1 доступен для чтения. Для совместной разблокировки можно сохранить ключи базы в Связке ключей macOS.").font(.callout).foregroundStyle(.secondary)
             if vault.isLocked {
                 HStack {
                     Label("Учётные данные заблокированы", systemImage: "lock.shield")
@@ -49,14 +50,17 @@ struct KDBXVaultsView: View {
                                     Text(workspace.runtime.catalog(link.id).map { "Открыта · записей: \($0.count)" } ?? "Заблокирована").font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                if workspace.runtime.catalog(link.id) == nil { Button("Открыть…") { unlocking = link }.disabled(workspace.busy != nil || vault.isLocked || link.bookmark == nil) }
+                                if workspace.runtime.catalog(link.id) == nil { Button("Открыть…") { unlocking = link }.disabled(workspace.busy != nil || (vault.isLocked && !workspace.allowsRemembering) || link.bookmark == nil) }
                                 else {
                                     if workspace.runtime.canWrite(link.id) { Button("Записи…", systemImage: "list.bullet.rectangle") { managing = link }.disabled(workspace.busy != nil) }
                                     else { Text("Только чтение").font(.caption).foregroundStyle(.secondary) }
                                     Button { workspace.runtime.lock(link.id) } label: { Image(systemName: "lock") }.help("Заблокировать базу").disabled(workspace.busy != nil)
                                 }
                                 Button { choose(link) } label: { Image(systemName: "folder") }.help("Выбрать файл заново").disabled(vault.isLocked)
-                                Button(role: .destructive) { do { try vault.removeDatabase(link.id); workspace.runtime.lock(link.id) } catch { self.error = error.localizedDescription } } label: { Image(systemName: "link.badge.plus").rotationEffect(.degrees(45)) }.help("Отключить базу от SSH Hub; файл останется на месте").disabled(vault.isLocked)
+                                Button(role: .destructive) { Task { do { try await workspace.forget(link.id); try vault.removeDatabase(link.id); workspace.runtime.lock(link.id) } catch { self.error = error.localizedDescription } } } label: { Image(systemName: "link.badge.plus").rotationEffect(.degrees(45)) }.help("Отключить базу от SSH Hub; файл останется на месте").disabled(vault.isLocked)
+                            }
+                            if workspace.remembered.contains(link.id) {
+                                HStack { Label("Разблокируется вместе с SSH Hub", systemImage: "key.fill").font(.caption).foregroundStyle(.secondary); Spacer(); Button("Забыть ключи") { Task { do { try await workspace.forget(link.id) } catch { self.error = error.localizedDescription } } }.font(.caption).disabled(vault.isLocked || workspace.busy != nil) }
                             }
                             if link.bookmark == nil { Text("После восстановления архива выбери файл базы заново.").font(.caption).foregroundStyle(.orange) }
                         }.padding(12).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 9))
@@ -73,18 +77,19 @@ struct KDBXVaultsView: View {
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         panel.title = "Подключить базу KeePass"; panel.allowedContentTypes = [UTType(filenameExtension: "kdbx") ?? .data]
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do { let link = try KDBXWorkspace.link(url, replacing: replacing); try vault.saveDatabase(link); workspace.runtime.lock(link.id); error = nil }
+        do { let link = try KDBXWorkspace.link(url, replacing: replacing); try vault.saveDatabase(link); workspace.runtime.lock(link.id); if replacing != nil { Task { do { try await workspace.forget(link.id) } catch { self.error = error.localizedDescription } } }; error = nil }
         catch { self.error = error.localizedDescription }
     }
 }
 
-private struct KDBXUnlockView: View {
+struct KDBXUnlockView: View {
     let link: KDBXDatabaseLink
     @ObservedObject var workspace: KDBXWorkspace
     @Environment(\.dismiss) private var dismiss
     @State private var password = ""
     @State private var usePassword = true
     @State private var keyFile: URL?
+    @State private var remember = true
     var body: some View {
         VStack(alignment: .leading, spacing: 15) {
             Label(link.title, systemImage: "lock.open").font(.title2.bold())
@@ -96,7 +101,8 @@ private struct KDBXUnlockView: View {
                 Button("Ключевой файл…") { let panel = NSOpenPanel(); panel.canChooseDirectories = false; if panel.runModal() == .OK { keyFile = panel.url } }
                 if keyFile != nil { Button { keyFile = nil } label: { Image(systemName: "xmark") }.help("Убрать ключевой файл") }
             }
-            Text("Ключи базы остаются только в памяти обработчика до блокировки. Мастер-пароль и ключевой файл потребуется указать снова после её закрытия.").font(.caption).foregroundStyle(.secondary)
+            Toggle("Разблокировать вместе с SSH Hub", isOn: $remember).toggleStyle(.checkbox).disabled(!workspace.allowsRemembering)
+            Text(workspace.allowsRemembering ? "Ключи базы сохранятся в Связке ключей только на этом Mac. При входе по паролю приложения или Touch ID база откроется автоматически. Файл ключа должен оставаться доступным." : "Для совместной разблокировки сначала включи авторизацию SSH Hub в настройках. Без неё ключи базы не сохраняются.").font(.caption).foregroundStyle(.secondary)
             if let error = workspace.error { Text(error).font(.caption).foregroundStyle(.red) }
             HStack {
                 if workspace.busy != nil { ProgressView().controlSize(.small); Text("Открываем базу…").font(.caption) }
@@ -104,10 +110,11 @@ private struct KDBXUnlockView: View {
                 Button("Отмена") { workspace.cancel(); password = ""; dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Открыть") {
                     let value = usePassword ? password : nil; password = ""
-                    Task { await workspace.open(link, password: value, keyFile: keyFile); if workspace.runtime.catalog(link.id) != nil { dismiss() } }
+                    Task { await workspace.open(link, password: value, keyFile: keyFile, remember: remember && workspace.allowsRemembering); if workspace.runtime.catalog(link.id) != nil { dismiss() } }
                 }.buttonStyle(.borderedProminent).disabled(workspace.busy != nil || (!usePassword && keyFile == nil))
             }
         }.padding(22).frame(width: 540).interactiveDismissDisabled(workspace.busy != nil)
+            .onAppear { remember = workspace.allowsRemembering }
             .onDisappear { password = ""; if workspace.busy != nil { workspace.cancel() } }
     }
 }

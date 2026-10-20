@@ -1,6 +1,8 @@
 import Foundation
 import AppKit
 import Darwin
+import Security
+import LocalAuthentication
 
 struct KDBXEntryInfo: Decodable, Identifiable, Equatable {
     var id: UUID
@@ -11,7 +13,7 @@ struct KDBXEntryInfo: Decodable, Identifiable, Equatable {
     var modified: Double?
     var valid: Bool { title.utf8.count <= 512 && username.utf8.count <= 512 && group.utf8.count <= 2048 && [title,username,group].allSatisfy { !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) } && modified.map(\.isFinite) != false }
 }
-struct KDBXGroupInfo: Decodable, Identifiable { var id: UUID; var title: String }
+struct KDBXGroupInfo: Decodable, Identifiable { var id: UUID; var title: String; var name: String? = nil; var parent: UUID? = nil }
 struct KDBXEntryDraft: Codable {
     var title = ""
     var username = ""
@@ -142,6 +144,9 @@ final class KDBXRuntime: KDBXCredentialSource, @unchecked Sendable {
     private let mutex = NSLock()
     private var sessions: [UUID: Session] = [:]
     private var active = true
+    private var lockGeneration = UUID()
+    var isActive: Bool { mutex.lock(); defer { mutex.unlock() }; return active }
+    var lockStamp: UUID { mutex.lock(); defer { mutex.unlock() }; return lockGeneration }
     var changed: (() -> Void)?
     func begin(_ id: UUID, client: KDBXClient) throws -> UUID {
         mutex.lock(); guard active else { mutex.unlock(); client.stop(); throw KDBXError.failure("locked") }
@@ -151,6 +156,8 @@ final class KDBXRuntime: KDBXCredentialSource, @unchecked Sendable {
     }
     func accept(_ id: UUID, generation: UUID, entries: [KDBXEntryInfo], writable: Bool = false, groups: [KDBXGroupInfo] = []) throws {
         guard entries.count <= 2000, entries.allSatisfy(\.valid), Set(entries.map(\.id)).count == entries.count else { throw KDBXError.failure("catalog_limit") }
+        guard groups.count <= 2000, Set(groups.map(\.id)).count == groups.count,
+              groups.allSatisfy({ $0.title.utf8.count <= 2048 && ($0.name?.utf8.count ?? 0) <= 320 && !$0.title.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) && $0.parent != $0.id }) else { throw KDBXError.failure("catalog_limit") }
         mutex.lock(); defer { mutex.unlock() }
         guard active, sessions[id]?.generation == generation, sessions[id]?.client.running == true else { throw KDBXError.failure("locked") }
         sessions[id]?.entries = entries; sessions[id]?.writable = writable; sessions[id]?.groups = groups
@@ -177,7 +184,7 @@ final class KDBXRuntime: KDBXCredentialSource, @unchecked Sendable {
         }
     }
     func lock(_ id: UUID) { mutex.lock(); let value = sessions.removeValue(forKey: id); mutex.unlock(); value?.client.stop(); changed?() }
-    func lock() { mutex.lock(); let values = Array(sessions.values); sessions.removeAll(); mutex.unlock(); values.forEach { $0.client.stop() }; changed?() }
+    func lock() { mutex.lock(); lockGeneration = UUID(); let values = Array(sessions.values); sessions.removeAll(); mutex.unlock(); values.forEach { $0.client.stop() }; changed?() }
     func deactivate() { mutex.lock(); active = false; mutex.unlock(); lock() }
     func username(_ reference: KDBXReference) throws -> String {
         guard let entry = catalog(reference.databaseID)?.first(where: { $0.id == reference.entryID }) else { throw KDBXError.failure("locked") }
@@ -198,6 +205,51 @@ final class KDBXRuntime: KDBXCredentialSource, @unchecked Sendable {
     }
 }
 
+// Device-local opt-in unlock material. Never part of metadata, exports or backups.
+protocol KDBXUnlockStorage: AnyObject {
+    func contains(_ id: UUID) throws -> Bool
+    func read(_ id: UUID) throws -> Data?
+    func write(_ id: UUID, data: Data?) throws
+}
+final class KDBXUnlockKeychain: KDBXUnlockStorage {
+    let scope: String
+    init(scope: String) { self.scope = (Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases") + ":" + scope }
+    private func query(_ id: UUID, interactive: Bool = false) -> [String: Any] {
+        let context = LAContext(); context.interactionNotAllowed = !interactive
+        return [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.olshaniki.sshhub.kdbx-unlock.v1", kSecAttrAccount as String: scope + ":" + id.uuidString.lowercased(), kSecUseAuthenticationContext as String: context]
+    }
+    func contains(_ id: UUID) throws -> Bool {
+        var item = query(id); item[kSecReturnAttributes as String] = true
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(item as CFDictionary, &result)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw SharedCredentialError.keychain }
+        return status == errSecSuccess
+    }
+    func read(_ id: UUID) throws -> Data? {
+        var item = query(id); item[kSecReturnData as String] = true
+        var result: CFTypeRef?; let status = SecItemCopyMatching(item as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess, let data = result as? Data, data.count <= 150_000 else { throw SharedCredentialError.keychain }; return data
+    }
+    func write(_ id: UUID, data: Data?) throws {
+        guard let data else { let status = SecItemDelete(query(id, interactive: true) as CFDictionary); guard status == errSecSuccess || status == errSecItemNotFound else { throw SharedCredentialError.keychain }; return }
+        guard data.count <= 150_000 else { throw SharedCredentialError.keychain }
+        var status = SecItemUpdate(query(id, interactive: true) as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if status == errSecItemNotFound {
+            var item = query(id, interactive: true); item[kSecValueData as String] = data
+            item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            item[kSecAttrLabel as String] = "SSH Hub · Разблокировка KeePass"
+            status = SecItemAdd(item as CFDictionary, nil)
+        }
+        guard status == errSecSuccess else { throw SharedCredentialError.keychain }
+    }
+}
+private struct KDBXUnlockMaterial: Codable {
+    var databaseBookmark: Data
+    var password: String?
+    var keyBookmark: Data?
+}
+
 @MainActor final class KDBXWorkspace: ObservableObject {
     let runtime = KDBXRuntime()
     @Published private(set) var busy: UUID?
@@ -205,18 +257,28 @@ final class KDBXRuntime: KDBXCredentialSource, @unchecked Sendable {
     private var pending: KDBXClient?
     private var generation = UUID()
     let executable: URL
-    init(executable: URL? = nil) {
+    private let unlockStorage: KDBXUnlockStorage?
+    private let authorized: () -> Bool
+    @Published private(set) var remembered = Set<UUID>()
+    private var restoring = false
+    private var lockObserver: NSObjectProtocol?
+    var allowsRemembering: Bool { unlockStorage != nil && runtime.isActive && authorized() }
+    init(executable: URL? = nil, unlockStorage: KDBXUnlockStorage? = nil, authorized: @escaping () -> Bool = { false }) {
+        self.unlockStorage = unlockStorage; self.authorized = authorized
         self.executable = executable ?? Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/SSHKDBX")
         runtime.changed = { [weak self] in DispatchQueue.main.async { self?.objectWillChange.send() } }
+        lockObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.sessionDidResignActiveNotification, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.cancel() } }
     }
-    deinit { pending?.stop(); runtime.deactivate() }
+    deinit { if let lockObserver { NSWorkspace.shared.notificationCenter.removeObserver(lockObserver) }; pending?.stop(); runtime.deactivate() }
     static func link(_ url: URL, replacing: KDBXDatabaseLink? = nil) throws -> KDBXDatabaseLink {
         let values = try url.resourceValues(forKeys: [.isRegularFileKey,.isSymbolicLinkKey,.fileSizeKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true, (values.fileSize ?? 0) <= 67_108_864 else { throw KDBXError.failure("file_limit") }
         return KDBXDatabaseLink(id: replacing?.id ?? UUID(), title: replacing?.title ?? url.deletingPathExtension().lastPathComponent, bookmark: try url.bookmarkData())
     }
-    func open(_ link: KDBXDatabaseLink, password: String?, keyFile: URL?) async {
+    func open(_ link: KDBXDatabaseLink, password: String?, keyFile: URL?, remember: Bool = false, applicationUnlock: Bool = false) async {
         guard busy == nil else { return }
+        guard !applicationUnlock || authorized() else { return }
+        guard !remember || allowsRemembering else { error = "Для сохранения ключей базы включи авторизацию SSH Hub."; return }
         busy = link.id; error = nil; let operation = generation
         do {
             guard let bookmark = link.bookmark else { throw KDBXError.failure("file_unavailable") }
@@ -229,14 +291,58 @@ final class KDBXRuntime: KDBXCredentialSource, @unchecked Sendable {
             if let password { fields["master_password"] = password }
             if let keyFile { fields["key_path"] = keyFile.path }
             let result = try await Task.detached { try client.request("open", fields: fields, timeout: 30) }.value
-            guard generation == operation else { throw KDBXError.failure("locked") }
+            guard generation == operation, !applicationUnlock || authorized() else { throw KDBXError.failure("locked") }
             let data = try JSONSerialization.data(withJSONObject: result["entries"] ?? [])
             let entries = try JSONDecoder().decode([KDBXEntryInfo].self, from: data)
             let groups = try JSONDecoder().decode([KDBXGroupInfo].self, from: JSONSerialization.data(withJSONObject: result["groups"] ?? []))
             try runtime.accept(link.id, generation: token, entries: entries, writable: result["writable"] as? Bool == true, groups: groups)
             pending = nil; objectWillChange.send()
+            if remember {
+                guard allowsRemembering, let unlockStorage else { throw KDBXError.failure("locked") }
+                let material = KDBXUnlockMaterial(databaseBookmark: bookmark, password: password, keyBookmark: try keyFile?.bookmarkData())
+                let data = try JSONEncoder().encode(material)
+                try await Task.detached { try unlockStorage.write(link.id, data: data) }.value
+                guard generation == operation, authorized() else { throw KDBXError.failure("locked") }
+                remembered.insert(link.id)
+            }
         } catch { runtime.lock(link.id); if generation == operation { self.error = (error as? KDBXError)?.localizedDescription ?? "Не удалось открыть базу KeePass. Проверь файл и повтори." } }
         if generation == operation { busy = nil; pending = nil }
+    }
+    func refreshRemembered(_ links: [KDBXDatabaseLink]) async {
+        guard let unlockStorage else { return }; let operation = generation
+        let ids = await Task.detached { Set(links.compactMap { (try? unlockStorage.contains($0.id)) == true ? $0.id : nil }) }.value
+        if generation == operation { remembered = ids }
+    }
+    func forget(_ id: UUID) async throws {
+        guard let unlockStorage else { return }
+        try await Task.detached { try unlockStorage.write(id, data: nil) }.value
+        remembered.remove(id)
+    }
+    // Called only on a completed app login (or entry into an already authorized profile).
+    // Manual database lock never triggers this method.
+    func restoreRemembered(_ links: [KDBXDatabaseLink]) async {
+        guard allowsRemembering, !restoring, busy == nil, let unlockStorage else { return }
+        restoring = true; let operation = generation, stamp = runtime.lockStamp
+        defer { restoring = false }
+        for link in links {
+            guard generation == operation, runtime.lockStamp == stamp, runtime.isActive, authorized(), !Task.isCancelled else { return }
+            guard runtime.catalog(link.id) == nil else { continue }
+            do {
+                let data = try await Task.detached { try unlockStorage.read(link.id) }.value
+                guard generation == operation, runtime.lockStamp == stamp, runtime.isActive, authorized(), !Task.isCancelled else { return }
+                guard let data else { continue }
+                remembered.insert(link.id)
+                let material = try JSONDecoder().decode(KDBXUnlockMaterial.self, from: data)
+                guard material.databaseBookmark == link.bookmark else { throw KDBXError.failure("file_changed") }
+                var keyFile: URL?
+                if let bookmark = material.keyBookmark {
+                    var stale = false
+                    keyFile = try URL(resolvingBookmarkData: bookmark, options: [.withoutUI,.withoutMounting], relativeTo: nil, bookmarkDataIsStale: &stale)
+                    guard keyFile?.isFileURL == true else { throw KDBXError.failure("file_unavailable") }
+                }
+                await open(link, password: material.password, keyFile: keyFile, applicationUnlock: true)
+            } catch { if generation == operation { self.error = "Не удалось автоматически открыть «" + link.title + "». Открой базу вручную и обнови сохранённые ключи." } }
+        }
     }
     func loadDraft(database: UUID, entry: UUID) async throws -> KDBXEntryDraft {
         let runtime = runtime

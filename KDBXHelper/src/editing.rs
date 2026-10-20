@@ -51,7 +51,7 @@ fn find_mut<'a>(n: &'a mut Node, name: &str, id: uuid::Uuid) -> Option<&'a mut N
         .find_map(|n| find_mut(n, name, id))
 }
 pub fn groups(root: &Node) -> Vec<Value> {
-    fn visit(n: &Node, path: String, trash: &str, out: &mut Vec<Value>) {
+    fn visit(n: &Node, path: String, parent: Option<uuid::Uuid>, trash: &str, out: &mut Vec<Value>) {
         if n.name == "Group" {
             if n.child("UUID").map(Node::text).as_deref() == Some(trash) {
                 return;
@@ -65,7 +65,7 @@ pub fn groups(root: &Node) -> Vec<Value> {
                 .take(80)
                 .collect();
             let path = if path.is_empty() {
-                name
+                name.clone()
             } else {
                 format!("{path}/{name}")
             };
@@ -73,17 +73,17 @@ pub fn groups(root: &Node) -> Vec<Value> {
                 return;
             }
             if let Some(id) = uid(n) {
-                out.push(json!({"id":id,"title":if path.is_empty(){"Корень базы"}else{&path}}));
+                out.push(json!({"id":id,"title":if path.is_empty(){"Корень базы"}else{&path},"name":if name.is_empty(){"Без названия"}else{&name},"parent":parent}));
             }
             for c in n.children().filter(|n| n.name == "Group") {
-                visit(c, path.clone(), trash, out);
+                visit(c, path.clone(), uid(n), trash, out);
             }
         } else {
             for c in n
                 .children()
                 .filter(|n| n.name == "Root" || n.name == "Group")
             {
-                visit(c, path.clone(), trash, out);
+                visit(c, path.clone(), parent, trash, out);
             }
         }
     }
@@ -93,7 +93,7 @@ pub fn groups(root: &Node) -> Vec<Value> {
         .map(Node::text)
         .unwrap_or_default();
     let mut result = vec![];
-    visit(root, String::new(), &trash, &mut result);
+    visit(root, String::new(), None, &trash, &mut result);
     result
 }
 fn checked(v: &Vault) -> Result<(), &'static str> {

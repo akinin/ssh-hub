@@ -39,15 +39,17 @@ struct KDBXEntriesView: View {
     }
 }
 
-private struct KDBXEditView: View {
+struct KDBXEditView: View {
     let link: KDBXDatabaseLink
     let entryID: UUID?
     @ObservedObject var workspace: KDBXWorkspace
+    var initialDraft: KDBXEntryDraft? = nil
     let onSaved: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var draft: KDBXEntryDraft?
     @State private var error: String?
     @State private var loading = true
+    @State private var choosingGroup = false
     private func field(_ path: WritableKeyPath<KDBXEntryDraft, String>) -> Binding<String> { Binding(get: { draft?[keyPath: path] ?? "" }, set: { draft?[keyPath: path] = $0 }) }
     var body: some View {
         VStack(alignment: .leading, spacing: 15) {
@@ -57,7 +59,11 @@ private struct KDBXEditView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
                         labeled("Название") { TextField("Название записи", text: field(\.title)).textFieldStyle(.roundedBorder) }
-                        labeled("Группа") { Picker("Группа", selection: Binding(get: { self.draft?.groupID ?? draft.groupID }, set: { self.draft?.groupID = $0 })) { ForEach(workspace.runtime.groups(link.id)) { Text($0.title).tag($0.id) } }.labelsHidden() }
+                        labeled("Группа") {
+                            Button { choosingGroup = true } label: {
+                                HStack { Image(systemName: "folder"); Text(workspace.runtime.groups(link.id).first { $0.id == draft.groupID }?.title ?? "Выбрать группу").lineLimit(2); Spacer(); Image(systemName: "chevron.right") }
+                            }.buttonStyle(.bordered).frame(maxWidth: .infinity)
+                        }
                         labeled("Логин") { TextField("Имя пользователя", text: field(\.username)).textFieldStyle(.roundedBorder) }
                         labeled("Пароль") { PasswordEntryView(prompt: "Пароль записи KeePass", text: field(\.password)) }
                         labeled("Адрес") { TextField("URL", text: field(\.url)).textFieldStyle(.roundedBorder) }
@@ -86,14 +92,65 @@ private struct KDBXEditView: View {
                 do {
                     let value: KDBXEntryDraft
                     if let entryID { value = try await workspace.loadDraft(database: link.id, entry: entryID) }
-                    else { guard let group = workspace.runtime.groups(link.id).first else { throw KDBXError.failure("invalid_group") }; value = KDBXEntryDraft(groupID: group.id) }
+                    else { guard let group = workspace.runtime.groups(link.id).first else { throw KDBXError.failure("invalid_group") }; var fresh = initialDraft ?? KDBXEntryDraft(groupID: group.id); fresh.groupID = group.id; value = fresh }
                     guard !Task.isCancelled, workspace.runtime.canWrite(link.id) else { return }
                     draft = value
                 } catch { self.error = error.localizedDescription }
                 loading = false
             }
+            .sheet(isPresented: $choosingGroup) {
+                KDBXGroupPicker(groups: workspace.runtime.groups(link.id), selected: draft?.groupID) { draft?.groupID = $0 }
+            }
             .onDisappear { draft = nil }
             .onChange(of: workspace.runtime.canWrite(link.id)) { _, available in if !available { draft = nil } }
     }
     private func labeled<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View { VStack(alignment: .leading, spacing: 5) { Text(title).font(.caption.weight(.medium)).foregroundStyle(.secondary); content() } }
+}
+
+// UUID relationships, not path splitting: a KeePass folder name may itself contain "/".
+struct KDBXGroupPicker: View {
+    let groups: [KDBXGroupInfo]
+    let selected: UUID?
+    let onSelect: (UUID) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    @State private var expanded = Set<UUID>()
+    @State private var choice: UUID?
+    private var rows: [(group: KDBXGroupInfo, depth: Int)] {
+        if !query.isEmpty { return groups.filter { $0.title.localizedCaseInsensitiveContains(query) }.map { ($0, 0) } }
+        var result: [(KDBXGroupInfo, Int)] = [], seen = Set<UUID>()
+        var stack = groups.filter { $0.parent == nil }.reversed().map { ($0, 0) }
+        while let (group, depth) = stack.popLast() {
+            guard seen.insert(group.id).inserted else { continue }
+            result.append((group, depth))
+            if expanded.contains(group.id) { stack.append(contentsOf: groups.filter { $0.parent == group.id }.reversed().map { ($0, depth + 1) }) }
+        }
+        return result
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HubSheetHeader(title: "Группа KeePass", subtitle: "Выбери папку для записи", icon: "folder")
+            TextField("Поиск группы", text: $query).textFieldStyle(.roundedBorder)
+            List(selection: $choice) {
+                ForEach(rows, id: \.group.id) { row in
+                    HStack(spacing: 7) {
+                        if query.isEmpty {
+                            Button { if !expanded.insert(row.group.id).inserted { expanded.remove(row.group.id) } } label: { Image(systemName: expanded.contains(row.group.id) ? "chevron.down" : "chevron.right").font(.caption).frame(width: 16) }
+                                .buttonStyle(.plain).opacity(groups.contains { $0.parent == row.group.id } ? 1 : 0).accessibilityLabel("Раскрыть группу")
+                        }
+                        Image(systemName: "folder").foregroundStyle(.tint)
+                        Text(query.isEmpty ? (row.group.parent == nil && row.group.title == "Корень базы" ? "Корень базы" : row.group.name ?? row.group.title) : row.group.title).lineLimit(2)
+                    }.padding(.leading, CGFloat(min(row.depth, 20)) * 15).padding(.vertical, 3).tag(row.group.id)
+                }
+            }.listStyle(.inset)
+            if rows.isEmpty { Text("Группы не найдены").foregroundStyle(.secondary) }
+            HStack { Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction); Spacer(); Button("Выбрать") { if let choice { onSelect(choice); dismiss() } }.buttonStyle(.borderedProminent).disabled(choice == nil) }
+        }.padding(22).frame(width: 580, height: 490)
+            .onAppear {
+                choice = selected
+                var id = selected, seen = Set<UUID>()
+                while let current = id, seen.insert(current).inserted { expanded.insert(current); id = groups.first { $0.id == current }?.parent }
+                if selected == nil { expanded.formUnion(groups.filter { $0.parent == nil }.map(\.id)) }
+            }
+    }
 }

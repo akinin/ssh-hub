@@ -201,8 +201,10 @@ final class SharedCredentialRuntime: @unchecked Sendable {
         self.repository = repository; self.document = document; self.secrets = secrets; self.loadIssue = loadIssue; self.kdbx = kdbx
     }
     func update(_ value: SharedCredentialDocument) { mutex.lock(); defer { mutex.unlock() }; document = value; loadIssue = nil }
+    private var applicationKDBXAuthorized = false
+    func authorizeKeePassAfterApplicationLogin() { mutex.lock(); defer { mutex.unlock() }; guard active else { return }; applicationKDBXAuthorized = true }
     func authorize(_ context: LAContext) { mutex.lock(); defer { mutex.unlock() }; guard active else { context.invalidate(); return }; self.context?.invalidate(); self.context = context }
-    func lock() { mutex.lock(); defer { mutex.unlock() }; context?.invalidate(); context = nil; clearWrappers(); kdbx?.lock() }
+    func lock() { mutex.lock(); defer { mutex.unlock() }; context?.invalidate(); context = nil; applicationKDBXAuthorized = false; clearWrappers(); kdbx?.lock() }
     func deactivate() { mutex.lock(); defer { mutex.unlock() }; active = false; lock(); kdbx?.deactivate() }
     private func clearWrappers() { for url in wrappers { try? FileManager.default.removeItem(at: url) }; wrappers.removeAll(); originals.removeAll() }
     private func matches(_ config: URL) -> Bool { config.standardizedFileURL == repository.config.standardizedFileURL }
@@ -212,7 +214,7 @@ final class SharedCredentialRuntime: @unchecked Sendable {
         if let scope = entry.credentialRuntimeScope ?? entry.sharedCredentialScope, scope != repository.scope { throw SharedCredentialError.inactive }
         guard !entry.isQuickConnection, document.hasBinding(SharedCredentialRepository.recordKey(entry)) else { return nil }
         guard let value = document.preset(for: SharedCredentialRepository.recordKey(entry)) else { throw SharedCredentialError.missing }
-        guard !document.requiresAuthentication || context != nil else { throw SharedCredentialError.locked }; return value
+        guard !document.requiresAuthentication || context != nil || (value.kdbx != nil && applicationKDBXAuthorized) else { throw SharedCredentialError.locked }; return value
     }
     func isBound(_ entry: SSHAlias, config: URL) -> Bool { mutex.lock(); defer { mutex.unlock() }; return !entry.isQuickConnection && matches(config) && document.hasBinding(SharedCredentialRepository.recordKey(entry)) }
     func password(_ entry: SSHAlias, config: URL) -> SSHSharedPasswordResolution {
@@ -304,6 +306,9 @@ final class SharedCredentialRuntime: @unchecked Sendable {
     }
     func deactivate() { authenticationGeneration = UUID(); runtime.deactivate(); isLocked = document.requiresAuthentication }
     func lock() { authenticationGeneration = UUID(); runtime.lock(); isLocked = document.requiresAuthentication }
+    // App login authorizes only KeePass references. Shared Keychain credentials and
+    // metadata administration retain their separate macOS authentication gate.
+    func authorizeAfterApplicationLogin() { runtime.authorizeKeePassAfterApplicationLogin() }
     func unlock() async throws {
         guard !authenticating else { return }; authenticating = true; defer { authenticating = false }
         let generation = authenticationGeneration

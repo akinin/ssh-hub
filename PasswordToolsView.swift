@@ -105,12 +105,19 @@ struct PasswordEntryView: View {
     var onGenerated: ((String) -> Void)? = nil
     var showsGenerator = true
     @State private var generator = false
+    @State private var revealed = false
     @State private var assessment: PasswordTools.Assessment?
     @State private var error: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .center, spacing: 8) {
-                LeadingSecureField(prompt: prompt, text: $text).frame(height: 26)
+                Group {
+                    if revealed { TextField(prompt, text: $text).textFieldStyle(.roundedBorder).multilineTextAlignment(.leading) }
+                    else { LeadingSecureField(prompt: prompt, text: $text) }
+                }.frame(height: 26)
+                Button { revealed.toggle() } label: { Image(systemName: revealed ? "eye.slash" : "eye").frame(width: 20, height: 20) }
+                    .buttonStyle(.bordered).frame(width: 36, height: 26)
+                    .help(revealed ? "Скрыть пароль" : "Показать пароль").accessibilityLabel(revealed ? "Скрыть пароль" : "Показать пароль")
                 if showsGenerator {
                     Button { generator = true } label: { Image(systemName: "dice").frame(width: 20, height: 20) }
                         .buttonStyle(.bordered).controlSize(.regular).frame(width: 36, height: 26)
@@ -126,7 +133,8 @@ struct PasswordEntryView: View {
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
         }.sheet(isPresented: $generator) { PasswordGeneratorView { value in text = value; onGenerated?(value) } }
             .onChange(of: text) { _, _ in assessment = nil; error = nil }
-            .onChange(of: prompt) { _, _ in assessment = nil; error = nil }
+            .onChange(of: prompt) { _, _ in assessment = nil; error = nil; revealed = false }
+            .onDisappear { revealed = false }
             .onChange(of: savedPassword != nil) { _, _ in assessment = nil; error = nil }
     }
 }

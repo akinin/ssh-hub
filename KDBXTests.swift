@@ -6,6 +6,15 @@ private final class MemorySecrets: SharedCredentialSecretStorage {
     func read(scope: String, id: UUID, context: LAContext?) throws -> String? { reads += 1; return "unwanted-fallback" }
     func write(_ password: String?, scope: String, id: UUID, protected: Bool, context: LAContext?) throws {}
 }
+private final class MemoryUnlock: KDBXUnlockStorage {
+    private let lock = NSLock()
+    private var items: [UUID: Data] = [:]
+    var reads = 0
+    var delay: TimeInterval = 0
+    func contains(_ id: UUID) throws -> Bool { lock.lock(); defer { lock.unlock() }; return items[id] != nil }
+    func read(_ id: UUID) throws -> Data? { lock.lock(); reads += 1; let value = items[id], delay = delay; lock.unlock(); if delay > 0 { Thread.sleep(forTimeInterval: delay) }; return value }
+    func write(_ id: UUID, data: Data?) throws { lock.lock(); defer { lock.unlock() }; items[id] = data }
+}
 @main enum KDBXTests {
     static func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws { guard try value() else { throw NSError(domain: message, code: 1) } }
     static func fails(_ action: () throws -> Void) { do { try action(); fatalError("Expected rejection") } catch {} }
@@ -35,6 +44,20 @@ private final class MemorySecrets: SharedCredentialSecretStorage {
         document.bindings[SharedCredentialRepository.recordKey(entry)] = preset.id; try repository.write(document, expected: .init())
         let vault = SharedCredentialVault(config: config, profileID: profile, root: repository.root, secrets: backend, kdbxSource: workspace.runtime)
         vault.install()
+        var protectedDocument = document; protectedDocument.requiresAuthentication = true
+        let appRuntime = SharedCredentialRuntime(repository: repository, document: protectedDocument, secrets: backend, kdbx: workspace.runtime)
+        fails { _ = try appRuntime.preparedEntry(entry, config: config) }
+        appRuntime.authorizeKeePassAfterApplicationLogin()
+        let appPrepared = try appRuntime.preparedEntry(entry, config: config)
+        if case .value(let secret) = appRuntime.password(appPrepared, config: config) { try check(secret == "synthetic-fixture-secret", "app authorization permits KeePass reference") } else { fatalError("KeePass app authorization failed") }
+        var localDocument = protectedDocument; localDocument.presets[0].kdbx = nil; appRuntime.update(localDocument)
+        let readsBeforeLocal = backend.reads
+        fails { _ = try appRuntime.preparedEntry(entry, config: config) }
+        if case .blocked = appRuntime.password(entry, config: config) {} else { fatalError("app login broadened shared Keychain access") }
+        try check(backend.reads == readsBeforeLocal, "app authorization never bypasses shared Keychain gate")
+        appRuntime.update(protectedDocument); appRuntime.lock()
+        fails { _ = try appRuntime.preparedEntry(entry, config: config) }
+        await workspace.open(link, password: "synthetic master", keyFile: nil)
         let prepared = try SSHPasswordStore.preparedEntry(for: entry, config: config)
         try check(try SSHPasswordStore.password(for: prepared, config: config) == "synthetic-fixture-secret" && backend.reads == 0, "external binding bypasses Keychain")
         try check(try Data(contentsOf: path) == before, "base stays read-only")
@@ -70,6 +93,58 @@ private final class MemorySecrets: SharedCredentialSecretStorage {
         workspace.runtime.deactivate()
         await workspace.open(link, password: "synthetic master", keyFile: nil)
         try check(workspace.runtime.catalog(link.id) == nil, "inactive profile cannot reopen")
+        let autoPath = root.appendingPathComponent("auto.kdbx"); try Data(contentsOf: source).write(to: autoPath)
+        let autoLink = try KDBXWorkspace.link(autoPath), memory = MemoryUnlock()
+        var authorized = false
+        let automatic = KDBXWorkspace(executable: helper, unlockStorage: memory, authorized: { authorized })
+        await automatic.open(autoLink, password: "synthetic master", keyFile: nil, remember: true)
+        try check(automatic.runtime.catalog(autoLink.id) == nil && !(try memory.contains(autoLink.id)), "cannot remember without app authorization")
+        authorized = true
+        await automatic.open(autoLink, password: "wrong", keyFile: nil, remember: true)
+        try check(!(try memory.contains(autoLink.id)), "wrong master never remembered")
+        await automatic.open(autoLink, password: "synthetic master", keyFile: nil, remember: true)
+        try check(try memory.contains(autoLink.id), "explicit opt-in stores only via injected secret backend")
+        automatic.cancel(); authorized = false
+        let reads = memory.reads
+        await automatic.restoreRemembered([autoLink])
+        try check(memory.reads == reads && automatic.runtime.catalog(autoLink.id) == nil, "closed app gate never reads unlock material")
+        authorized = true
+        await automatic.restoreRemembered([autoLink])
+        try check(automatic.runtime.catalog(autoLink.id)?.count == 1, "app login opens remembered base")
+        automatic.runtime.lock(autoLink.id)
+        try check(automatic.runtime.catalog(autoLink.id) == nil, "manual database lock stays locked")
+        var wrongLink = autoLink; wrongLink.bookmark = try path.bookmarkData()
+        await automatic.restoreRemembered([wrongLink])
+        try check(automatic.runtime.catalog(autoLink.id) == nil, "relinked file cannot receive old master")
+        memory.delay = 0.15
+        let restore = Task { await automatic.restoreRemembered([autoLink]) }
+        try await Task.sleep(for: .milliseconds(30)); automatic.cancel(); authorized = false
+        await restore.value
+        try check(automatic.runtime.catalog(autoLink.id) == nil, "lock cancels delayed Keychain restore")
+        authorized = true
+        let vaultLock = Task { await automatic.restoreRemembered([autoLink]) }
+        try await Task.sleep(for: .milliseconds(30)); automatic.runtime.lock()
+        await vaultLock.value
+        try check(automatic.runtime.catalog(autoLink.id) == nil, "vault lock cancels pending remembered unlock")
+        let inactiveWorkspace = KDBXWorkspace(executable: helper, unlockStorage: memory, authorized: { true })
+        inactiveWorkspace.runtime.deactivate(); let inactiveReads = memory.reads
+        await inactiveWorkspace.restoreRemembered([autoLink])
+        try check(memory.reads == inactiveReads, "inactive profile never reads remembered material")
+        memory.delay = 0; authorized = true
+        let delayedHelper = root.appendingPathComponent("delayed-helper")
+        // Own executable path is shell-quoted; no credentials in argv, env or files.
+        let quotedHelper = "'" + helper.path.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+        try Data(("#!/bin/sh\nsleep 0.2\nexec " + quotedHelper + "\n").utf8).write(to: delayedHelper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: delayedHelper.path)
+        let delayed = KDBXWorkspace(executable: delayedHelper, unlockStorage: memory, authorized: { authorized })
+        let inFlight = Task { await delayed.restoreRemembered([autoLink]) }
+        try await Task.sleep(for: .milliseconds(70)); authorized = false
+        await inFlight.value
+        try check(delayed.runtime.catalog(autoLink.id) == nil, "revoked app authorization rejects in-flight helper response")
+        delayed.cancel(); authorized = true
+        try await automatic.forget(autoLink.id)
+        await automatic.restoreRemembered([autoLink])
+        try check(!(try memory.contains(autoLink.id)) && automatic.runtime.catalog(autoLink.id) == nil, "forget prevents later auto unlock")
         let blockedHelper = root.appendingPathComponent("silent-helper")
         try Data("#!/bin/sh\nexec /bin/sleep 30\n".utf8).write(to: blockedHelper)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: blockedHelper.path)

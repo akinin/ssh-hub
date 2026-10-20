@@ -114,3 +114,21 @@ fn fixture(cipher: OuterCipherConfig) -> Vec<u8> {
     std::fs::remove_file(&path).unwrap();symlink(dir.join("target"),&path).unwrap();assert!(save(&mut vault,Some(id),&draft).is_err());assert!(!dir.join("target").exists());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test] fn group_catalog_preserves_hierarchy_and_literal_slash() {
+    use keepass::preserving::{Document,Node,Item};
+    let key=DatabaseKey::new().with_password("synthetic master");
+    let mut doc=Document::open(&fixture(OuterCipherConfig::AES256),&key).unwrap();
+    let root=doc.root.child("Root").unwrap().child("Group").unwrap();
+    let root_id=root.child("UUID").unwrap().text();
+    let mut child=Node::new("Group");
+    let child_id=uuid::Uuid::new_v4();
+    let mut id=Node::new("UUID"); id.set_text(&keepass::preserving::uuid_text(child_id),false);
+    let mut name=Node::new("Name");name.set_text("Folder/with slash",false);
+    child.items.push(Item::Node(id));child.items.push(Item::Node(name));
+    let root=doc.root.child_mut("Root").unwrap().child_mut("Group").unwrap();root.items.push(Item::Node(child));
+    let catalog=editing::groups(&doc.root);
+    let item=catalog.iter().find(|g|g["id"]==child_id.to_string()).unwrap();
+    assert_eq!(item["name"],"Folder/with slash");
+    assert_eq!(item["parent"],keepass::preserving::uuid_from_text(&root_id).unwrap().to_string());
+}

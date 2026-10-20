@@ -22,6 +22,7 @@ import ConsoleSupport
     } }
     @Published var selectedRecordKeys = Set<String>()
     @Published var batchTarget: RecordBatchTarget?
+    @Published var keePassTransfer: SSHAlias?
     @Published var undoBatchChange: (RecordBatchPlan, RecordBatchTarget)?
     @Published var pages: [EntryPage] = []
     @Published var workspace = WorkspaceLayout() { didSet { saveWorkspace() } }
@@ -560,13 +561,13 @@ import ConsoleSupport
                 if access.locked { AppUnlockView(access: access) }
                 else if let store { MainView().environmentObject(store) }
                 else { ProgressView().frame(minWidth: 600, minHeight: 400) }
-            }.onAppear { initializeStore() }.onChange(of: access.locked) { _, _ in initializeStore() }
+            }.onAppear { initializeStore() }.onChange(of: access.locked) { _, _ in initializeStore(restore: true) }
         }
             .defaultSize(width: 960, height: 640)
             .windowResizability(.contentMinSize)
             .commands { HubCommands(session: session) }
     }
-    private func initializeStore() { if !access.locked { session.start() } }
+    private func initializeStore(restore: Bool = false) { if !access.locked { let starting = session.store == nil; session.start(); if starting || restore { session.store?.unlockRememberedKDBX() } } }
 }
 
 struct HubCommands: Commands {
@@ -986,6 +987,7 @@ struct MainView: View {
         .sheet(isPresented: $store.showingBackup) { BackupView().environmentObject(store) }
         .sheet(isPresented: $store.showingTemplates) { TemplatesView().environmentObject(store) }
         .sheet(isPresented: $store.showingAvailability) { AvailabilityView(monitor: store.availability).environmentObject(store) }
+        .sheet(item: $store.keePassTransfer) { KDBXTransferView(entry: $0, vault: store.credentialVault(), workspace: store.kdbx!).environmentObject(store) }
         .sheet(item: $store.operationsPanel) { OperationsPanelView(panel: $0).environmentObject(store) }
         .sheet(item: $store.loginNotifications) { model in LoginNotificationsView(model: model).onDisappear { model.close() } }
         .sheet(isPresented: $store.assistantExpanded, onDismiss: { if !store.assistantVisible { store.assistant?.stop() } }) { AssistantHostView(expanded: true).environmentObject(store).frame(width: 900, height: 720) }
@@ -1139,11 +1141,13 @@ struct AliasDetail: View {
                 Button { store.toggleFavorite(entry) } label: { Image(systemName: store.isFavorite(entry) ? "star.fill" : "star").foregroundStyle(store.isFavorite(entry) ? .yellow : .secondary).frame(width: 28, height: 28) }.help("Избранное").accessibilityLabel("Избранное")
                 Button { store.duplicate(entry) } label: { Image(systemName: "plus.square.on.square").frame(width: 28, height: 28) }.help("Дублировать запись").accessibilityLabel("Дублировать запись")
                 Button { store.export(entries: [entry]) } label: { Image(systemName: "square.and.arrow.up").frame(width: 28, height: 28) }.help("Экспорт записи").accessibilityLabel("Экспорт записи")
+                Button { store.keePassTransfer = entry } label: { Image(systemName: "key").frame(width: 28, height: 28) }.help("Передать в KeePass").accessibilityLabel("Передать в KeePass")
                 Button(role: .destructive) { store.prepareDelete(entry) } label: { Image(systemName: "trash").frame(width: 28, height: 28) }.help("Удалить запись").accessibilityLabel("Удалить запись")
             }.buttonStyle(.plain).foregroundStyle(.secondary).fixedSize()
             Menu {
                 Button(store.isFavorite(entry) ? "Убрать из избранного" : "В избранное", systemImage: "star") { store.toggleFavorite(entry) }
                 Button("Дублировать", systemImage: "plus.square.on.square") { store.duplicate(entry) }
+                Button("Передать в KeePass…", systemImage: "key") { store.keePassTransfer = entry }
                 Button("Экспортировать…", systemImage: "square.and.arrow.up") { store.export(entries: [entry]) }
                 Divider()
                 Button("Удалить…", systemImage: "trash", role: .destructive) { store.prepareDelete(entry) }

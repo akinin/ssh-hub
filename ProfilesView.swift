@@ -16,7 +16,7 @@ extension AliasStore {
         ToolkitSession.stopAll()
         closeAllTabs(force: true); tabStyles = [:]; selected = nil
         profiles.active = id; persistProfiles(); query = ""; groupFilter = "all"
-        _ = credentialVault(); reloadSearchMetadata()
+        _ = credentialVault(); unlockRememberedKDBX(); reloadSearchMetadata()
         restoreWorkspace(); restoringWorkspace = false
         if pages.isEmpty && ConsoleStore.shared.sessions.isEmpty, let first = profileEntries.first { showDashboard(first) }
         saveWorkspace()

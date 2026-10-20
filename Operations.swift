@@ -53,8 +53,17 @@ extension AliasStore {
     }
     func credentialVault() -> SharedCredentialVault {
         if let sharedCredentials { return sharedCredentials }
-        let workspace = KDBXWorkspace(); kdbx = workspace
+        let scope = SharedCredentialRepository(config: config.url, profileID: profiles.active).scope
+        let workspace = KDBXWorkspace(unlockStorage: KDBXUnlockKeychain(scope: scope), authorized: { AppAccess.shared.enabled && !AppAccess.shared.locked }); kdbx = workspace
         let value = SharedCredentialVault(config: config.url, profileID: profiles.active, kdbxSource: workspace.runtime); value.install(); sharedCredentials = value; return value
+    }
+    func unlockRememberedKDBX() {
+        guard AppAccess.shared.enabled, !AppAccess.shared.locked, !endingWorkspace else { return }
+        let vault = credentialVault()
+        vault.authorizeAfterApplicationLogin()
+        let links = vault.document.kdbxDatabases ?? []
+        guard let workspace = kdbx else { return }
+        Task { await workspace.restoreRemembered(links) }
     }
     func integrationModel() -> InfrastructureIntegrationModel {
         if let infrastructure { infrastructure.entries = profileEntries; return infrastructure }
@@ -86,6 +95,7 @@ extension AliasStore {
         }
     }
     func stopOperations(clear: Bool = false) {
+        keePassTransfer = nil
         AssistantAPI.stopAll(); assistant?.stop(); assistantCommandTask?.cancel(); assistantCommandTask = nil; assistantCommandRunID = nil
         MonitoringInstallationModel.stopAll(); LoginNotificationModel.stopAll(); loginNotifications?.close()
         infrastructure?.stop(); monitoring?.stop(); maintenance?.stop(); sharedCredentials?.lock()

@@ -282,7 +282,7 @@ struct ConnectionTreeView: NSViewRepresentable {
                     menu.addItem(.separator()); add("Документация", "documentation"); add("Вложения", "attachments"); add("Редактировать…", "edit"); add("Название и логотип…", "appearance"); add("Переместить в папку…", "group")
                     add(store.isFavorite(entry) ? "Убрать из избранного" : "В избранное", "favorite")
                     if entry.canSSH { add("Сохранить как шаблон", "template") }
-                    add("Дублировать…", "duplicate"); if entry.canSSH { add("Копировать команду", "copy") }; add("Экспорт…", "export")
+                    add("Дублировать…", "duplicate"); if entry.canSSH { add("Копировать команду", "copy") }; add("Экспорт…", "export"); add("Передать в KeePass…", "keePass")
                     menu.addItem(.separator()); add("Удалить…", "delete")
                 } else { add("Новая запись…", "record"); menu.addItem(.separator()); add("Логотип папки…", "folderLogo"); add("Вложенная папка…", "subfolder") }
             }
@@ -315,6 +315,7 @@ struct ConnectionTreeView: NSViewRepresentable {
                 case "duplicate": store.duplicate(entry)
                 case "copy": store.copy(entry.command)
                 case "export": store.export(entries: [entry])
+                case "keePass": store.keePassTransfer = entry
                 case "delete": store.prepareDelete(entry)
                 default: break
                 }
