@@ -31,6 +31,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if route == "/delayed": return self.send('<div id="root"></div><script>setTimeout(()=>document.getElementById("root").innerHTML=' + json.dumps(form) + ',300)</script>')
         if route == "/spa": return self.send('<input name="username"><input name="password" type="password"><button type="button" onclick="fetch(\'/submit\',{method:\'POST\',headers:{\'Content-Type\':\'application/x-www-form-urlencoded\'},body:new URLSearchParams({username:document.querySelector(\'[name=username]\').value,password:document.querySelector(\'[name=password]\').value})}).then(()=>document.title=\'SPA success\')">Login</button>')
         if route == "/repeat": return self.send(form.replace('/submit', '/repeat-submit'))
+        if route == "/manual": return self.send('<form action="/submit" method="post"><input id="account" name="username"><input id="credential" name="password" type="password"><button id="enter" type="submit">Continue to dashboard</button></form><form><input type="password"></form>')
         if route == "/form": return self.send(form)
         if route == "/blank": return self.send("<h1>Blank</h1>")
         return self.send("unknown", 404)
@@ -48,7 +49,7 @@ for server in servers: threading.Thread(target=server.serve_forever, daemon=True
 try:
     subprocess.run([sys.argv[1], "http://127.0.0.1:" + str(servers[0].server_port), second_url], check=True, timeout=90)
     assert state["basic"] == 1, "single Basic authentication"
-    assert len(state["posts"]) == 4, "normal, delayed, SPA and one failed form attempt only"
+    assert len(state["posts"]) == 5, "normal, delayed, SPA, manual selectors and one failed form attempt only"
     assert all(x["fields"] == {"username": [USER], "password": [PASSWORD]} for x in state["posts"]), "argument values preserved"
     assert sum(x["path"] == "/repeat-submit" for x in state["posts"]) == 1, "no retry loop"
     print("Web login loopback integration passed: Basic, POST, delayed form, one attempt, exact credentials")

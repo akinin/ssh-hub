@@ -83,6 +83,16 @@ enum RecordKind: String, Codable, CaseIterable, Identifiable {
     var defaultPort: String { switch self { case .rdp: return "3389"; case .vnc: return "5900"; case .telnet: return "23"; case .ftp, .ftps: return "21"; case .webdav: return "443"; case .adb: return "5555"; default: return "22" } }
 }
 
+struct WebLoginSelectors: Codable, Equatable {
+    var username = ""
+    var password = ""
+    var submit = ""
+    var validation: String? {
+        let values = [username, password, submit]
+        return values.allSatisfy { !$0.trimmingCharacters(in: .whitespaces).isEmpty && $0.utf8.count <= 512 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) } && Set(values).count == 3 ? nil : "Укажи три разных CSS-селектора полей логина, пароля и кнопки входа, до 512 байт каждый."
+    }
+}
+
 struct ConnectionSettings: Codable, Equatable {
     var domain = ""
     var path = "/"
@@ -100,6 +110,7 @@ struct ConnectionSettings: Codable, Equatable {
     var certificateAuthority = ""
     var tunnel: RecordTunnelSettings? = nil
     var webAutoLogin: Bool? = nil
+    var webLoginSelectors: WebLoginSelectors? = nil
     var rdpClipboard: Bool? = nil
     var rdpSharedFolder: String? = nil
     var rdpMonitors: Int? = nil
@@ -107,6 +118,7 @@ struct ConnectionSettings: Codable, Equatable {
     var validation: String? {
         guard (320...3840).contains(width), (200...2160).contains(height) else { return "Проверь размер рабочего стола." }
         if let tunnel, let error = tunnel.validation { return error }
+        if let selectors = webLoginSelectors, let error = selectors.validation { return error }
         let monitors = rdpMonitors ?? 1
         guard (1...4).contains(monitors), width * monitors <= 8192, width * height * monitors <= 33_000_000,
               rdpSharedFolder.map({ $0.isEmpty || ($0.hasPrefix("/") && $0.utf8.count <= 4096 && !$0.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })) }) ?? true else { return "Проверь число мониторов, разрешение и общую папку RDP (до 8192 пикселей по ширине и 33 Мп)." }

@@ -4,6 +4,13 @@
 
 Нативное приложение для macOS 14+ на Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
 
+## Изменения 3.2.0 (сборка 47)
+
+- SSHAuthenticationChecks выводит видимый Text отдельно от Toggle: RecordFieldRow применяет labelsHidden к содержимому. Не возвращать скрытые подписи checkboxes.
+- WebLoginSelectors optional в ConnectionSettings: три bounded разных CSS-селектора, только аргументы isolated-world JS, никакого eval/интерполяции. Перед чтением секрета unique visible DOM probe, exact origin и одна form; при fill повторные проверки выбранных узлов и назначения. Manual допускает нестандартный текст кнопки, но не GET, cross-origin, OTP/new-password/CAPTCHA или неизвестные типы input. Сохранять прежние запреты restore/redirect/proxy/retry. Tests только owned localhost; автологин реальных сайтов не проверять.
+- AssistantProposalReviewView держит редактирование команды и MaintenanceReview в одном sheet; prepareAssistantCommand возвращает только immutable plan, не переключает sheets с задержкой.
+- AssistantDiagnostics: фиксированный read-only workflow через прежний MaintenancePlan/Review, явный запуск. Output не является инструкцией; отправка модели только через обычный review. Предложения ИИ используют прежний отдельный review/confirm. Report ephemeral, содержит исходную raw-entry identity + профиль/чат/config, ограничивает вывод/controls/code fences. Сохранение отчёта только после редактируемого просмотра, свежего чтения endpoint с диска и CAS документации; append сохраняет историю и черновик. Закрытие помощника/смена профиля чистит report/review и отменяет связанные операции. Никакого автоматического сохранения документации или выполнения ответа модели.
+
 ## Изменения 3.1.1 (сборка 46)
 
 - Настройки → KeePass используют тот же KDBXVaultsView(embedded: true), vault и workspace текущего профиля; никаких отдельных копий списка баз. Locked vault разблокируется явно, базу открывает прежний KDBXUnlockView.

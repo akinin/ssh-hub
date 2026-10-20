@@ -84,6 +84,8 @@ swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$b
 maintenance_sources=(SSHConfig.swift ConfigChanges.swift WorkspaceProfiles.swift ConnectionAppearance.swift ConnectionTree.swift AliasTransfer.swift LocalConnections.swift SavedCommands.swift HubFeatureStorage.swift SSHCredentials.swift ToolkitRuntime.swift Tunnels.swift ConnectionProbe.swift TerminalLauncher.swift PublicKeys.swift SSHLoginPolicy.swift Maintenance.swift)
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" "${maintenance_sources[@]}" MaintenanceTests.swift -o "$build_dir/maintenance-tests" -framework AppKit -framework Security -framework LocalAuthentication
 "$build_dir/maintenance-tests"
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" "${maintenance_sources[@]}" AssistantDiagnostics.swift AssistantDiagnosticsTests.swift -o "$build_dir/assistant-diagnostics-tests" -framework AppKit -framework Security -framework LocalAuthentication
+"$build_dir/assistant-diagnostics-tests"
 infrastructure_sources=(SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift LocalConnections.swift RecordInventory.swift TopologyData.swift TopologyRecordSeed.swift ConnectionProbe.swift Tunnels.swift SSHCredentials.swift ToolkitRuntime.swift SSHLoginPolicy.swift InfrastructureIntegrations.swift)
 swiftc -parse-as-library -swift-version 5 -D INFRASTRUCTURE_TEST -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" "${infrastructure_sources[@]}" InfrastructureIntegrationsView.swift InfrastructureIntegrationTests.swift -o "$build_dir/infrastructure-tests" -framework AppKit -framework Security -framework LocalAuthentication
 "$build_dir/infrastructure-tests"

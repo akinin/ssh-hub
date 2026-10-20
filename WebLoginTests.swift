@@ -45,6 +45,10 @@ import WebKit
         try check(SSHPasswordStore.account(for: changed, config: config) != account, "changed site cannot reuse credential account")
         changed = original; changed.options.insert(SSHOption(key: "User", value: "other"), at: 0)
         try check(SSHPasswordStore.account(for: changed, config: config) != account && SSHPasswordStore.account(for: original, config: URL(fileURLWithPath: "/other/config")) != account, "username and config scope")
+        let custom = WebLoginSelectors(username: "#account", password: "#credential", submit: "#enter")
+        record.transport?.webLoginSelectors = custom
+        try check(record.transport?.validation == nil && (try? JSONDecoder().decode(LocalConnectionRecord.self, from: JSONEncoder().encode(record)))?.transport?.webLoginSelectors == custom, "manual selectors public roundtrip")
+        try check(WebLoginSelectors(username: "#a", password: "#a", submit: "#b").validation != nil && WebLoginSelectors().validation != nil, "incomplete/overlapping selectors rejected")
         record.user = "bad\nuser"; try check(record.validation != nil, "bounded one-line username")
 
         var reads = 0
@@ -67,6 +71,12 @@ import WebKit
             if path == "/repeat" { try check(auto.view.url?.path == "/repeat-submit", "failed form stays manual") }
             auto.stop()
         }
+        var manualEntry = entry(base + "/manual"); manualEntry.transport?.webLoginSelectors = custom
+        var customReads = 0
+        let configured = WebPageModel(entry: manualEntry, config: config, credentialReader: { _,_ in customReads += 1; return (user, password) })
+        window.contentView = configured.view; configured.start()
+        try await wait { configured.view.url?.path == "/submit" && !configured.view.isLoading }
+        try check(customReads == 1, "explicit selectors submit unusual form exactly once"); configured.stop()
         var rejectedReads = 0
         let rejected = WebPageModel(entry: entry(base + "/basic"), config: config, credentialReader: { _,_ in rejectedReads += 1; return (user, "incorrect-fixture") })
         window.contentView = rejected.view; rejected.start(); try await wait { rejected.error != nil }; try await Task.sleep(for: .milliseconds(300))
@@ -105,6 +115,29 @@ import WebKit
         _ = try await view.callAsyncJavaScript("document.body.innerHTML=html; document.querySelector('[type=password]').addEventListener('input', ()=>document.querySelector('form').method='get');", arguments: ["html": normal], in: nil, contentWorld: .defaultClient)
         let changedMethod = try await WebLoginForm.run(in: view, origin: URL(string: base)!, username: user, password: password, probe: false)
         try check(changedMethod == "filled", "changed form method cannot submit password through GET")
+        let unusual = #"<form method="post" action="/submit"><input id="account"><input id="credential" type="password"><button id="enter" type="submit">Continue to dashboard</button></form><form><input type="password"></form>"#
+        let customCases: [(String, WebLoginSelectors, String)] = [
+            (unusual, custom, "ready"),
+            (unusual, .init(username: "[", password: "#credential", submit: "#enter"), "selectors"),
+            (unusual, .init(username: "input", password: "#credential", submit: "#enter"), "waiting"),
+            (unusual.replacingOccurrences(of: "method=\"post\"", with: "method=\"get\""), custom, "manual"),
+            (unusual.replacingOccurrences(of: "/submit", with: other + "/submit"), custom, "origin"),
+            (unusual.replacingOccurrences(of: "id=\"credential\"", with: "id=\"credential\" autocomplete=\"new-password\""), custom, "manual"),
+            (unusual.replacingOccurrences(of: "<button id", with: "<input name=\"otp\"><button id"), custom, "manual"),
+            (unusual.replacingOccurrences(of: "<button id", with: "<div data-sitekey=\"fixture\"></div><button id"), custom, "manual"),
+            (unusual.replacingOccurrences(of: "<input id=\"account\">", with: "<input id=\"account\" form=\"other\">"), custom, "manual")
+        ]
+        for (html, selectors, expected) in customCases {
+            _ = try await view.callAsyncJavaScript("document.body.innerHTML=html;", arguments: ["html": html], in: nil, contentWorld: .defaultClient)
+            let result = try await WebLoginForm.run(in: view, origin: URL(string: base)!, probe: true, selectors: selectors)
+            try check(result == expected, "manual selector guard " + expected + " got " + result)
+        }
+        _ = try await view.callAsyncJavaScript("document.body.innerHTML=html; document.querySelector('#account').addEventListener('input', ()=>document.querySelector('#enter').id='replaced');", arguments: ["html": unusual], in: nil, contentWorld: .defaultClient)
+        let replaced = try await WebLoginForm.run(in: view, origin: URL(string: base)!, username: user, password: password, probe: false, selectors: custom)
+        try check(replaced == "filled", "manual selector mutation cannot submit stale element")
+        _ = try await view.callAsyncJavaScript("document.body.innerHTML=html; document.querySelector('[name=username]').addEventListener('input', ()=>document.querySelector('button').setAttribute('form','other'));", arguments: ["html": normal + "<form id='other' method='get'></form>"], in: nil, contentWorld: .defaultClient)
+        let reassociated = try await WebLoginForm.run(in: view, origin: URL(string: base)!, username: user, password: password, probe: false)
+        try check(reassociated == "filled", "button reassociated with another form cannot submit")
         // The final validation must not overwrite a username already entered by the user.
         _ = try await view.callAsyncJavaScript("document.body.innerHTML=html; document.querySelector('[name=username]').value='another-user';", arguments: ["html": normal], in: nil, contentWorld: .defaultClient)
         let existingUser = try await WebLoginForm.run(in: view, origin: URL(string: base)!, username: user, password: password, probe: false)

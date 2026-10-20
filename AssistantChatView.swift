@@ -3,16 +3,16 @@ import AppKit
 import Darwin
 
 enum AssistantChatAction: String, CaseIterable, Identifiable {
-    case network, uptime, scan, ssh, logs, documentation
+    case diagnostics, network, uptime, scan, ssh, logs, documentation
     var id: String { rawValue }
     var title: String {
-        switch self { case .network: return "Проверить сеть"; case .uptime: return "Время работы"; case .scan: return "Сканировать порты"; case .ssh: return "Подключиться по SSH"; case .logs: return "Разобрать логи"; case .documentation: return "Кратко о документации" }
+        switch self { case .diagnostics: return "Диагностика сервера"; case .network: return "Проверить сеть"; case .uptime: return "Время работы"; case .scan: return "Сканировать порты"; case .ssh: return "Подключиться по SSH"; case .logs: return "Разобрать логи"; case .documentation: return "Кратко о документации" }
     }
     var detail: String {
-        switch self { case .network: return "Доступность и диагностика"; case .uptime: return "Команда для сервера"; case .scan: return "Открыть инструменты"; case .ssh: return "Открыть сеанс записи"; case .logs: return "Выбрать текст для анализа"; case .documentation: return "Объяснить выбранный материал" }
+        switch self { case .diagnostics: return "План проверок, разбор и отчёт"; case .network: return "Доступность и диагностика"; case .uptime: return "Команда для сервера"; case .scan: return "Открыть инструменты"; case .ssh: return "Открыть сеанс записи"; case .logs: return "Выбрать текст для анализа"; case .documentation: return "Объяснить выбранный материал" }
     }
     var icon: String {
-        switch self { case .network: return "network"; case .uptime: return "clock"; case .scan: return "antenna.radiowaves.left.and.right"; case .ssh: return "terminal"; case .logs: return "doc.text.magnifyingglass"; case .documentation: return "text.book.closed" }
+        switch self { case .diagnostics: return "stethoscope"; case .network: return "network"; case .uptime: return "clock"; case .scan: return "antenna.radiowaves.left.and.right"; case .ssh: return "terminal"; case .logs: return "doc.text.magnifyingglass"; case .documentation: return "text.book.closed" }
     }
 }
 

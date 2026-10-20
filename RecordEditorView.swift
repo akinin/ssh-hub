@@ -295,8 +295,22 @@ struct RecordEditorView: View {
             if reusePassword && !removePassword && !usesSharedCredential { Button("Удалить сохранённый пароль") { removePassword = true; settings.wrappedValue.webAutoLogin = false } }
             Divider()
             Toggle("Входить автоматически", isOn: Binding(get: { settings.wrappedValue.webAutoLogin == true }, set: { settings.wrappedValue.webAutoLogin = $0 })).accessibilityIdentifier("recordWebAutoLogin")
+            Toggle("Указать поля и кнопку входа вручную", isOn: Binding(get: { settings.wrappedValue.webLoginSelectors != nil }, set: { settings.wrappedValue.webLoginSelectors = $0 ? WebLoginSelectors() : nil })).accessibilityIdentifier("manualWebLoginSelectors")
+            if settings.wrappedValue.webLoginSelectors != nil {
+                VStack(alignment: .leading, spacing: 10) {
+                    TextField("Поле логина · например, #username", text: selectorBinding(\.username)).accessibilityIdentifier("webLoginUsernameSelector")
+                    TextField("Поле пароля · например, #password", text: selectorBinding(\.password)).accessibilityIdentifier("webLoginPasswordSelector")
+                    TextField("Кнопка входа · например, button[type='submit']", text: selectorBinding(\.submit)).accessibilityIdentifier("webLoginSubmitSelector")
+                    Text("CSS-селекторы должны указывать на одно видимое поле или кнопку: #id, input[name='login']. Поля и кнопка должны принадлежать одной форме на этом сайте. CAPTCHA и одноразовые коды вводятся вручную.").font(.caption).foregroundStyle(.secondary)
+                }.textFieldStyle(.roundedBorder)
+            }
             Text("Во встроенной вкладке: HTTP-авторизация и формы входа. Данные передаются только адресу этой записи; CAPTCHA, двухфакторный вход и внешние SSO подтверждаются вручную. Для автоматического входа сохрани пароль записи или выбери KeePass / общий набор.").font(.caption).foregroundStyle(.secondary)
         }
+    }
+    private func selectorBinding(_ path: WritableKeyPath<WebLoginSelectors, String>) -> Binding<String> {
+        Binding(get: { settings.wrappedValue.webLoginSelectors?[keyPath: path] ?? "" }, set: { value in
+            var selectors = settings.wrappedValue.webLoginSelectors ?? WebLoginSelectors(); selectors[keyPath: path] = value; settings.wrappedValue.webLoginSelectors = selectors
+        })
     }
     @ViewBuilder private var transportFields: some View {
         if kind == .webdav {

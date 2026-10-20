@@ -44,6 +44,7 @@ struct AssistantProposalReviewView: View {
     @State private var confirmedShell = false
     @State private var error: String?
     @State private var sessionRevision = UUID()
+    @State private var commandPlan: AssistantCommandReview?
 
     init(review: AssistantProposalReview) {
         self.review = review
@@ -76,6 +77,32 @@ struct AssistantProposalReviewView: View {
     }
     var body: some View {
         let _ = sessionRevision
+        Group {
+            if let commandPlan {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack {
+                        Button("К предложению", systemImage: "chevron.left") { self.commandPlan = nil; error = nil }
+                        if let error { Text(error).font(.caption).foregroundStyle(.red) }
+                        Spacer()
+                    }.padding(.horizontal, 24).padding(.top, 14)
+                    MaintenanceReviewView(plan: commandPlan.plan) {
+                        store.runAssistantCommand(commandPlan)
+                        if store.maintenanceModel().busy { store.assistantProposalReview = nil; dismiss() }
+                        else { error = store.assistant?.error ?? "План требует повторного просмотра." }
+                    }
+                }.frame(width: 780, height: 630)
+            } else { proposalBody }
+        }
+        .onAppear { selectedSessionID = matchingSessions.first(where: ready)?.id; confirmedShell = false }
+        .onChange(of: selectedSessionID) { _, _ in confirmedShell = false; error = nil }
+        .onChange(of: command) { _, _ in error = nil }
+        .onChange(of: proposedText) { _, _ in error = nil }
+        .onChange(of: consoles.sessions.map(\.id)) { _, _ in if !matchingSessions.contains(where: { $0.id == selectedSessionID }) { selectedSessionID = nil; confirmedShell = false } }
+        .onReceive(sessionUpdates) { changedID in
+            DispatchQueue.main.async { if selectedSessionID == changedID { confirmedShell = false }; sessionRevision = UUID() }
+        }
+    }
+    private var proposalBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
@@ -94,15 +121,6 @@ struct AssistantProposalReviewView: View {
             Divider()
             footer
         }.frame(width: 780, height: 600)
-        .onAppear { selectedSessionID = matchingSessions.first(where: ready)?.id; confirmedShell = false }
-        .onChange(of: selectedSessionID) { _, _ in confirmedShell = false; error = nil }
-        .onChange(of: command) { _, _ in error = nil }
-        .onChange(of: proposedText) { _, _ in error = nil }
-        .onChange(of: consoles.sessions.map(\.id)) { _, _ in if !matchingSessions.contains(where: { $0.id == selectedSessionID }) { selectedSessionID = nil; confirmedShell = false } }
-        .onReceive(sessionUpdates) { changedID in
-            // objectWillChange arrives before the session updates its properties.
-            DispatchQueue.main.async { if selectedSessionID == changedID { confirmedShell = false }; sessionRevision = UUID() }
-        }
     }
     private var header: some View {
         HStack(spacing: 12) {
@@ -165,7 +183,7 @@ struct AssistantProposalReviewView: View {
                 } else { Text("Сначала открой локальную консоль записи, затем вернись к предложению.").font(.caption).foregroundStyle(.secondary) }
             }
             Divider()
-            Button { do { try store.prepareAssistantCommand(review, command: command) } catch { self.error = error.localizedDescription } } label: { Label("Подготовить выполнение через SSH…", systemImage: "checklist") }
+            Button { do { commandPlan = try store.prepareAssistantCommand(review, command: command) } catch { self.error = error.localizedDescription } } label: { Label("Подготовить выполнение через SSH…", systemImage: "checklist") }
                 .disabled(!permitsConsole || !review.entry.canSSH || !AssistantProposal.commandIsValid(command))
             Text("Откроется отдельный план с адресом сервера и командой для подтверждения выполнения.").font(.caption).foregroundStyle(.secondary)
         }

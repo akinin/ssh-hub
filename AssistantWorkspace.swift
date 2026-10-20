@@ -5,6 +5,7 @@ struct AssistantCommandReview: Identifiable {
     var plan: MaintenancePlan
     var chatID: UUID?
     var profileID: UUID?
+    var diagnostic: AssistantDiagnosticContext? = nil
 }
 extension AliasStore {
     func assistantModel() -> AssistantChatModel {
@@ -24,6 +25,8 @@ extension AliasStore {
         let model = assistantModel()
         guard let entry = assistantEntry else { model.error = "Выбери запись в текущем профиле."; return }
         switch action {
+        case .diagnostics:
+            do { try prepareAssistantDiagnostics(entry) } catch { model.error = error.localizedDescription }
         case .network:
             guard let endpoint = entry.availabilityEndpoint else { model.error = "У записи нет адреса и TCP-порта для проверки."; return }
             model.checkAvailability(host: endpoint.host, port: endpoint.port, title: title(entry))
@@ -55,7 +58,7 @@ extension AliasStore {
     }
     func closeAssistant() {
         assistantVisible = false; assistantExpanded = false; assistant?.stop()
-        assistantProposalReview = nil; assistantRecordDraft = nil; assistantCommandReview = nil
+        assistantProposalReview = nil; assistantRecordDraft = nil; assistantCommandReview = nil; assistantDiagnosticReport = nil; assistantDiagnosticReview = nil
         if assistantCommandTask != nil {
             if maintenance?.executionID == assistantCommandRunID { maintenance?.stop() }
             assistantCommandTask?.cancel(); assistantCommandTask = nil; assistantCommandRunID = nil
@@ -69,7 +72,8 @@ struct AssistantHostView: View {
         AssistantChatPanelView(model: store.assistantModel(), expanded: expanded, onExpand: store.expandAssistant, onClose: store.closeAssistant, onAction: store.assistantAction,
             beforePrepare: store.refreshAssistantCatalog,
             proposalContent: { text in AnyView(AssistantProposedActionsView(text: text, applied: store.assistantAppliedActions, chatID: store.assistantModel().chat.id, onChoose: store.reviewAssistantProposal)) })
-            .safeAreaInset(edge: .bottom, spacing: 0) { AssistantCommandStatusView(model: store.maintenanceModel()) }
+            .safeAreaInset(edge: .bottom, spacing: 0) { AssistantDiagnosticsBar(model: store.maintenanceModel()).environmentObject(store) }
+            .sheet(item: $store.assistantDiagnosticReview) { AssistantDiagnosticReportView(review: $0).environmentObject(store) }
             .sheet(item: $store.assistantProposalReview) { AssistantProposalReviewView(review: $0).environmentObject(store) }
             .sheet(item: $store.assistantRecordDraft) { target in
                 RecordEditorView(kind: target.seed.kind, seed: target.seed, onSaved: { entry in store.assistantRecordCreated(entry, draft: target) }, beforeSave: {
@@ -119,6 +123,25 @@ private struct AssistantCommandStatusView: View {
                 Spacer(minLength: 4)
                 Button("Остановить", systemImage: "stop.fill") { model.stop() }.controlSize(.small)
             }.padding(9).background(.bar)
+        }
+    }
+}
+
+private struct AssistantDiagnosticsBar: View {
+    @ObservedObject var model: MaintenanceModel
+    @EnvironmentObject private var store: AliasStore
+    var body: some View {
+        VStack(spacing: 0) {
+            if store.assistantEntry?.canSSH == true {
+                HStack {
+                    Button("Диагностика…", systemImage: "stethoscope") { store.assistantAction(.diagnostics) }.disabled(model.busy)
+                    if let report = store.assistantDiagnosticReport, report.context.chatID == store.assistant?.chat.id, report.context.entry.favoriteID == store.assistantEntry?.favoriteID {
+                        Button("Отчёт…", systemImage: "doc.text") { store.reviewDiagnosticReport() }.help("Просмотреть и сохранить отчёт в документацию")
+                    }
+                    Spacer(minLength: 0)
+                }.font(.caption).padding(9)
+            }
+            AssistantCommandStatusView(model: model)
         }
     }
 }

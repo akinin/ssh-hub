@@ -169,8 +169,14 @@ struct SSHAuthenticationChecks: View {
     @Binding var selection: SSHAuthentication
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Toggle("Использовать SSH-ключ", isOn: Binding(get: { selection.usesKey }, set: { selection = .selected(key: $0, password: selection.usesPassword) })).toggleStyle(.checkbox)
-            Toggle("Использовать пароль", isOn: Binding(get: { selection.usesPassword }, set: { selection = .selected(key: selection.usesKey, password: $0) })).toggleStyle(.checkbox)
+            HStack(spacing: 8) {
+                Toggle("Использовать SSH-ключ", isOn: Binding(get: { selection.usesKey }, set: { selection = .selected(key: $0, password: selection.usesPassword) })).toggleStyle(.checkbox).labelsHidden()
+                Text("Использовать SSH-ключ").onTapGesture { selection = .selected(key: !selection.usesKey, password: selection.usesPassword) }
+            }
+            HStack(spacing: 8) {
+                Toggle("Использовать пароль", isOn: Binding(get: { selection.usesPassword }, set: { selection = .selected(key: selection.usesKey, password: $0) })).toggleStyle(.checkbox).labelsHidden()
+                Text("Использовать пароль").onTapGesture { selection = .selected(key: selection.usesKey, password: !selection.usesPassword) }
+            }
             if selection == .automatic { Text("Без галочек — обычный автоматический выбор OpenSSH.").font(.caption).foregroundStyle(.secondary) }
             if selection == .keyAndPassword { Text("Сначала ключ, затем пароль, если сервер его запросит.").font(.caption).foregroundStyle(.secondary) }
         }

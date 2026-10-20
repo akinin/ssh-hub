@@ -66,14 +66,14 @@ import Network
                 // Some panels create their form after the main document finishes loading.
                 for _ in 0..<20 {
                     guard !Task.isCancelled, generation == token, started, origin == WebLoginOrigin(view.url) else { return }
-                    let status = try await WebLoginForm.run(in: view, origin: destination, probe: true)
+                    let status = try await WebLoginForm.run(in: view, origin: destination, probe: true, selectors: entry.transport?.webLoginSelectors)
                     guard !Task.isCancelled, generation == token, started, origin == WebLoginOrigin(view.url) else { return }
                     if status == "waiting" { try await Task.sleep(for: .milliseconds(250)); continue }
                     guard status == "ready" else { loginStatus = "Войди вручную: форма требует подтверждения или не распознана."; return }
                     formAttempted = true // A rejected password must never cause an automatic retry loop.
                     guard let (username, secret) = try credentials(entry, config) else { loginStatus = "Сохрани логин и пароль в настройках записи."; return }
                     guard !Task.isCancelled, generation == token, started, origin == WebLoginOrigin(view.url) else { return }
-                    let result = try await WebLoginForm.run(in: view, origin: destination, username: username, password: secret, probe: false)
+                    let result = try await WebLoginForm.run(in: view, origin: destination, username: username, password: secret, probe: false, selectors: entry.transport?.webLoginSelectors)
                     guard !Task.isCancelled, generation == token, started else { return }
                     loginStatus = result == "submitted" ? nil : "Проверь форму и заверши вход вручную."
                     return

@@ -66,16 +66,12 @@ extension AliasStore {
         assistantProposalReview = nil
         if profileEntries.contains(where: { $0.favoriteID == entry.favoriteID }) { showDocumentation(entry) }
     }
-    func prepareAssistantCommand(_ review: AssistantProposalReview, command: String) throws {
+    func prepareAssistantCommand(_ review: AssistantProposalReview, command: String) throws -> AssistantCommandReview {
         let entry = try validateAssistantReview(review)
         guard entry.canSSH, profileEntries.contains(where: { $0.favoriteID == entry.favoriteID }), AssistantProposal.commandIsValid(command) else { throw ConfigError.message("Выбери текущий профиль SSH-записи и команду в одну строку до 4 КБ.") }
         let prepared = try SSHPasswordStore.preparedEntry(for: entry, config: config.url)
         let workflow = MaintenanceWorkflow(name: "Команда помощника", steps: [MaintenanceStep(title: "Команда после просмотра", command: command)])
-        let target = AssistantCommandReview(plan: try MaintenancePlan(workflow: workflow, entries: [(prepared, title(entry))], config: config.url), chatID: review.chatID, profileID: review.profileID)
-        assistantProposalReview = nil
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            guard let self, self.profiles.active == review.profileID, self.assistant?.chat.id == review.chatID else { return }; self.assistantCommandReview = target
-        }
+        return AssistantCommandReview(plan: try MaintenancePlan(workflow: workflow, entries: [(prepared, title(entry))], config: config.url), chatID: review.chatID, profileID: review.profileID)
     }
     func pasteAssistantCommand(_ review: AssistantProposalReview, command: String, sessionID: UUID, confirmedShell: Bool) throws {
         let entry = try validateAssistantReview(review)
@@ -93,6 +89,10 @@ extension AliasStore {
     func runAssistantCommand(_ target: AssistantCommandReview) {
         let model = assistantModel(), runner = maintenanceModel()
         guard !runner.busy, target.profileID == nil || target.profileID == profiles.active, target.chatID == nil || target.chatID == model.chat.id else { model.error = "Сценарий уже выполняется или контекст команды изменился."; return }
+        if let context = target.diagnostic {
+            do { try context.validate(entry: assistantEntry, config: config.url, profileID: profiles.active, chatID: model.chat.id) }
+            catch { model.error = error.localizedDescription; return }
+        }
         runner.run(target.plan, current: profileEntries, config: config.url)
         guard runner.busy else { model.error = runner.error ?? "План требует повторного просмотра."; return }
         model.appendLocal("SSH Hub · подтверждённая команда выполняется. Результат появится в чате; остановить выполнение можно кнопкой ниже.")
@@ -105,8 +105,14 @@ extension AliasStore {
             while runner.busy && runner.executionID == token && !Task.isCancelled { try? await Task.sleep(for: .milliseconds(150)) }
             guard !Task.isCancelled, runner.executionID == token, let self, let model, self.profiles.active == profile, self.assistant === model, model.chat.id == chat else { return }
             let report = runner.report + (runner.error.map { "\nОшибка: " + $0 } ?? "")
-            model.appendLocal("SSH Hub · результат подтверждённой команды\n" + report)
-            if !model.busy && model.draft.isEmpty && model.material.isEmpty { model.seed(question: "Разбери результат команды, объясни проблемы и предложи дальнейшие действия.", material: report) }
+            model.appendLocal("SSH Hub · результат подтверждённой команды\n" + AssistantDiagnosticReport.clean(report, limit: 30_000))
+            if let context = target.diagnostic {
+                self.assistantDiagnosticReport = AssistantDiagnosticReport(context: context, title: target.plan.targets.first?.title ?? context.entry.name, result: AssistantDiagnosticReport.output(runner.results, error: runner.error))
+            } else if var diagnostic = self.assistantDiagnosticReport, diagnostic.context.chatID == chat, diagnostic.context.profileID == profile,
+                      target.plan.targets.count == 1, target.plan.targets.first?.id == diagnostic.context.entry.favoriteID {
+                diagnostic.append("Результат отдельно подтверждённого действия\n" + AssistantDiagnosticReport.output(runner.results, error: runner.error)); self.assistantDiagnosticReport = diagnostic
+            }
+            if !model.busy && model.draft.isEmpty && model.material.isEmpty { model.seed(question: target.diagnostic == nil ? "Разбери результат команды, объясни проблемы и предложи дальнейшие действия." : AssistantDiagnostics.question, material: target.diagnostic == nil ? report : (self.assistantDiagnosticReport?.text ?? report)) }
             if !self.assistantExpanded { self.assistantVisible = true }
         }
     }
