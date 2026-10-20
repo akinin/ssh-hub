@@ -36,12 +36,14 @@ import AppKit
     }
     func change(_ field: InventoryField, value: String) {
         guard loadSucceeded else { return }
-        var fields = record.fields; fields[field] = value; record.draft = fields; notice = ""
+        var fields = record.fields; fields[field] = value; record.draft = fields; selected.remove(field); notice = ""
         persist()
     }
-    func save() {
+    func save(_ proposal: InventoryApplyProposal? = nil) {
         guard loadSucceeded else { return }
-        var saved = record; saved.save()
+        var saved = record
+        if let proposal { var fields = saved.fields; fields.apply(proposal.snapshot.facts, fields: proposal.fields); saved.draft = fields }
+        saved.save()
         do { try repository.write(saved, for: key); record = saved; notice = "Инвентаризация сохранена"; error = nil }
         catch { self.error = error.localizedDescription }
     }
@@ -90,25 +92,28 @@ import AppKit
                 guard generation == token else { return }
                 var updated = record; updated.append(snapshot)
                 try repository.write(updated, for: key); record = updated
-                selected = Set(snapshot.facts.populated); notice = "Снимок сохранён. Выбери поля и примени их к карточке; ручные данные пока не изменены."
+                selected = Set(snapshot.facts.populated); notice = "Снимок сохранён. Выбери поля и нажми «Сохранить»; ручные данные пока не изменены."
             } catch { if generation == token { self.error = error is CancellationError ? "Сбор отменён" : error.localizedDescription } }
             if generation == token { worker = nil; login?.stop(); login = nil; busy = false; task = nil }
         }
     }
 }
 
-private enum InventoryMode: String, CaseIterable { case manual = "Карточка", collected = "Сведения", history = "История" }
-
 struct RecordInventoryView: View {
     @ObservedObject var model: InventoryModel
-    @State private var mode: InventoryMode = .manual
+    var appearance = ConnectionAppearance()
+    var title = ""
+    @State private var showingHistory = false
     @State private var section: InventorySection = .summary
     @State private var snapshotID: UUID?
     @State private var confirmingApply = false
     @State private var pendingApply: InventoryApplyProposal?
     @State private var confirmingDiscard = false
     private var snapshot: InventorySnapshot? { model.record.snapshots.first { $0.id == snapshotID } ?? model.record.snapshots.last }
-    private var replacementCount: Int { guard let snapshot else { return 0 }; return model.selected.filter { !snapshot.facts[$0].isEmpty && !model.record.fields[$0].isEmpty && model.record.fields[$0] != snapshot.facts[$0] }.count }
+    private var suggested: Set<InventoryField> { guard let snapshot else { return [] }; return Set(InventorySection.allCases.flatMap(\.fields).filter { !snapshot.facts[$0].isEmpty && snapshot.facts[$0] != fields[$0] }) }
+    private var selection: Set<InventoryField> { model.selected.intersection(suggested) }
+    private var replacementCount: Int { selection.filter { !fields[$0].isEmpty }.count }
+    private var preview: InventoryFields { InventoryPresentation.preview(current: fields, facts: snapshot?.facts) }
     private var fields: InventoryFields { model.record.fields }
     private var device: InventoryDeviceType { InventoryDeviceType(rawValue: fields[.deviceType]) ?? .unspecified }
     var body: some View {
@@ -116,13 +121,13 @@ struct RecordInventoryView: View {
             VStack(spacing: 0) {
                 toolbar(width: geometry.size.width)
                 Divider()
-                if geometry.size.width < 700 && mode != .history {
+                if geometry.size.width < 700 && !showingHistory {
                     Picker("Раздел карточки", selection: $section) { ForEach(InventorySection.allCases) { Label($0.title, systemImage: $0.icon).tag($0) } }
                         .pickerStyle(.menu).padding(.horizontal, 14).padding(.vertical, 8)
                     Divider()
                 }
                 HStack(spacing: 0) {
-                    if geometry.size.width >= 700 && mode != .history { sidebar; Divider() }
+                    if geometry.size.width >= 700 && !showingHistory { sidebar; Divider() }
                     ScrollView {
                         VStack(alignment: .leading, spacing: 18) {
                             if let error = model.error { Label(error, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.red).textSelection(.enabled) }
@@ -131,41 +136,43 @@ struct RecordInventoryView: View {
                                 Button("Повторить чтение") { model.reload() }
                             } else {
                                 if !model.notice.isEmpty { Text(model.notice).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
-                                switch mode {
-                                case .manual: manualFields
-                                case .collected: collectedFields
-                                case .history: history
-                                }
+                                if showingHistory { history } else { manualFields }
                             }
                         }.frame(maxWidth: 1100, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading).padding(20)
                     }.frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
                 }
-                if mode == .collected, let snapshot, model.loadSucceeded { Divider(); applyBar(snapshot) }
+                if !showingHistory, let snapshot, model.loadSucceeded, !suggested.isEmpty { Divider(); applyBar(snapshot) }
             }.frame(width: geometry.size.width, height: geometry.size.height)
         }
-        .confirmationDialog("Применить сведения к карточке?", isPresented: $confirmingApply, titleVisibility: .visible, presenting: pendingApply) { proposal in
-            Button("Применить выбранные поля") { model.apply(proposal); pendingApply = nil; mode = .manual }
+        .confirmationDialog("Сохранить инвентаризацию?", isPresented: $confirmingApply, titleVisibility: .visible, presenting: pendingApply) { proposal in
+            Button("Сохранить") { model.save(proposal); pendingApply = nil; showingHistory = false }
             Button("Отмена", role: .cancel) { pendingApply = nil }
-        } message: { proposal in Text(proposal.replacements.isEmpty ? "Выбранные непустые значения заполнят черновик. Остальные поля сохранятся. Для принятия изменений нажми «Сохранить»." : "Будут заменены заполненные поля: \(proposal.replacements.count). Сними выбор нужных полей, чтобы оставить прежние значения. Изменения попадут в черновик до нажатия «Сохранить».") }
+        } message: { proposal in Text("Сохранятся ручные изменения и выбранные полученные значения: \(proposal.fields.count). Будут заменены заполненные поля: \(proposal.replacements.count). Остальные поля сохранятся.") }
         .confirmationDialog("Отменить изменения инвентаризации?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
             Button("Отменить изменения", role: .destructive) { model.discard() }
             Button("Продолжить редактирование", role: .cancel) {}
         }
-        .onChange(of: model.record.snapshots.last?.id) { _, latest in guard let latest else { return }; snapshotID = latest; mode = .collected; section = .summary }
+        .onChange(of: model.record.snapshots.last?.id) { _, latest in guard let latest else { return }; snapshotID = latest; showingHistory = false }
     }
     private func toolbar(width: CGFloat) -> some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) { saveButton; Spacer(minLength: 8); modePicker; collectionMenu; moreMenu }
-            VStack(spacing: 8) { HStack { saveButton; Spacer(); collectionMenu; moreMenu }; modePicker }
+            HStack(spacing: 12) { saveButton; Spacer(minLength: 8); historyButton; collectionMenu; moreMenu }
+            VStack(spacing: 8) { HStack { saveButton; Spacer(); moreMenu }; HStack { historyButton; Spacer(); collectionMenu } }
         }.controlSize(.small).padding(.horizontal, 12).padding(.vertical, 8)
     }
     private var saveButton: some View {
-        Button { model.save() } label: { Label(model.record.hasChanges ? "Сохранить изменения" : "Сохранить", systemImage: "square.and.arrow.down") }
-            .disabled(!model.loadSucceeded || !model.record.hasChanges).accessibilityLabel("Сохранить инвентаризацию")
+        Button {
+            if let snapshot, !selection.isEmpty {
+                let proposal = InventoryApplyProposal(snapshot: snapshot, fields: selection, current: fields)
+                if proposal.replacements.isEmpty { model.save(proposal) }
+                else { pendingApply = proposal; confirmingApply = true }
+            } else { model.save() }
+        } label: { Label("Сохранить", systemImage: "square.and.arrow.down") }
+            .disabled(!model.loadSucceeded || model.busy || (!model.record.hasChanges && selection.isEmpty)).accessibilityLabel("Сохранить инвентаризацию")
     }
-    private var modePicker: some View {
-        Picker("Режим инвентаризации", selection: $mode) { ForEach(InventoryMode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
-            .labelsHidden().pickerStyle(.segmented).frame(width: 245)
+    private var historyButton: some View {
+        Button { showingHistory.toggle() } label: { Label(showingHistory ? "К карточке" : "История", systemImage: showingHistory ? "arrow.left" : "clock.arrow.circlepath") }
+            .accessibilityIdentifier("inventoryHistory")
     }
     private var moreMenu: some View {
         Menu { Button("Отменить изменения") { confirmingDiscard = true }.disabled(!model.record.hasChanges) }
@@ -181,18 +188,18 @@ struct RecordInventoryView: View {
             }
         }
     }
-    private func startCollection(_ source: InventoryCollector) { model.collector = source; snapshotID = nil; mode = .collected; section = .summary; model.collect() }
+    private func startCollection(_ source: InventoryCollector) { model.collector = source; snapshotID = nil; showingHistory = false; model.collect() }
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(mode == .manual ? "КАРТОЧКА УСТРОЙСТВА" : "ПОЛУЧЕННЫЕ СВЕДЕНИЯ").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary).padding(.horizontal, 10).padding(.bottom, 9)
+            Text("ИНВЕНТАРИЗАЦИЯ").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary).padding(.horizontal, 10).padding(.bottom, 9)
             ForEach(InventorySection.allCases) { item in
                 Button { section = item } label: {
                     HStack(spacing: 10) {
                         Image(systemName: item.icon).frame(width: 20)
                         Text(item.title).lineLimit(1)
                         Spacer(minLength: 0)
-                        if mode == .collected, item != .summary, let snapshot {
-                            let count = item.fields.filter { !snapshot.facts[$0].isEmpty }.count
+                        if snapshot != nil {
+                            let count = item.fields.filter { suggested.contains($0) }.count
                             if count > 0 { Text("\(count)").font(.caption).opacity(0.7) }
                         }
                     }.font(.callout).padding(.horizontal, 10).padding(.vertical, 9).contentShape(Rectangle())
@@ -201,7 +208,7 @@ struct RecordInventoryView: View {
                 }.buttonStyle(.plain)
             }
             Spacer(minLength: 20)
-            if mode == .manual {
+            Group {
                 Label(model.record.hasChanges ? "Есть черновик" : "Карточка сохранена", systemImage: model.record.hasChanges ? "pencil.circle" : "checkmark.circle")
                     .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 10)
             }
@@ -210,7 +217,9 @@ struct RecordInventoryView: View {
     private var manualFields: some View {
         VStack(alignment: .leading, spacing: 18) {
             heading(section.title, subtitle: model.record.hasChanges ? "Черновик сохраняется между запусками. Прими изменения кнопкой «Сохранить»." : model.record.modified.map { "Изменено: " + $0.formatted() } ?? "Заполни сведения об устройстве или получи их через сбор.")
-            if section == .summary { identity; overview(fields) }
+            identity
+            if let snapshot { snapshotSummary(snapshot) }
+            if section == .summary { overview(preview) }
             ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
                 card(group.0) {
                     if group.1.contains(.processor) { fieldEditor(.processor) }
@@ -231,12 +240,11 @@ struct RecordInventoryView: View {
         case .hardware: return [("Устройство", [.manufacturer, .model, .serial]), ("Процессор и память", [.processor, .memory, .socketType, .socketCount, .physicalCores, .logicalCores]), ("Накопители и мониторы", [.disks, .monitors])]
         case .software: return [("Операционная система / прошивка", [.operatingSystem]), ("Программное обеспечение", [.software]), ("Лицензии", [.licenses])]
         case .location: return [("Расположение устройства", [.location, .site, .building, .room]), ("Размещение в стойке", [.rack, .rackUnit])]
-        case .contact: return [("Ответственный и организация", [.owner, .department]), ("Связь", [.email, .phone])]
         case .purchase: return [("Приобретение", [.purchaseDate, .purchaseVendor, .purchaseCost, .purchaseInvoice]), ("Гарантия", [.warrantyUntil])]
         }
     }
     private func binding(_ field: InventoryField) -> Binding<String> { Binding(get: { model.record.fields[field] }, set: { model.change(field, value: $0) }) }
-    @ViewBuilder private func fieldEditor(_ field: InventoryField) -> some View {
+    @ViewBuilder private func fieldEditor(_ field: InventoryField, includeSuggestion: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(field.title).font(.caption).foregroundStyle(.secondary)
             if field == .deviceType { devicePicker }
@@ -247,6 +255,7 @@ struct RecordInventoryView: View {
                     .textFieldStyle(.roundedBorder).lineLimit(field.multiline ? 2...6 : 1...1).accessibilityLabel(field.title)
                     .disabled([.hypervisor, .virtualizationType].contains(field) && fields[.virtualMachine] != "true")
             }
+            if includeSuggestion { factSuggestion(field) }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
     private func placeholder(_ field: InventoryField) -> String {
@@ -273,21 +282,22 @@ struct RecordInventoryView: View {
     }
     private var identity: some View {
         HStack(spacing: 16) {
-            Image(systemName: device.icon).font(.system(size: 34)).foregroundStyle(.tint).frame(width: 64, height: 64).background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
+            ConnectionIcon(appearance: appearance, size: 64, symbol: device.icon).accessibilityLabel("Логотип записи").accessibilityIdentifier("inventoryRecordLogo")
             VStack(alignment: .leading, spacing: 5) {
-                Text(fields[.model].isEmpty ? model.entry.name : fields[.model]).font(.title2.bold()).textSelection(.enabled)
-                Text([fields[.manufacturer], fields[.role].isEmpty ? model.entry.host : fields[.role]].filter { !$0.isEmpty }.joined(separator: " · ")).foregroundStyle(.secondary).textSelection(.enabled)
+                Text(title.isEmpty ? appearance.title(fallback: model.entry.name) : title).font(.title2.bold()).textSelection(.enabled)
+                Text([fields[.model], fields[.manufacturer], fields[.role].isEmpty ? model.entry.host : fields[.role]].filter { !$0.isEmpty }.joined(separator: " · ")).foregroundStyle(.secondary).textSelection(.enabled)
             }.frame(maxWidth: .infinity, alignment: .leading)
         }
     }
     private func overview(_ values: InventoryFields) -> some View {
         let ip = InventoryPresentation.primaryAddress(values)
-        let items = [("ОС", InventoryPresentation.operatingSystem(values[.operatingSystem]), "desktopcomputer"), ("Процессор", InventoryPresentation.firstLine(values[.processor]), "cpu"), ("Память", values[.memory], "memorychip"), ("Сеть", ip, "network")]
+        let items = [("ОС", InventoryPresentation.operatingSystem(values[.operatingSystem]), "desktopcomputer", values[.operatingSystem] != fields[.operatingSystem]), ("Процессор", InventoryPresentation.firstLine(values[.processor]), "cpu", values[.processor] != fields[.processor]), ("Память", values[.memory], "memorychip", values[.memory] != fields[.memory]), ("Сеть", ip, "network", ip != InventoryPresentation.primaryAddress(fields))]
         return LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 12)], alignment: .leading, spacing: 12) {
             ForEach(items, id: \.0) { item in
                 VStack(alignment: .leading, spacing: 10) {
                     Label(item.0, systemImage: item.2).font(.caption).foregroundStyle(.secondary)
                     Text(item.1.isEmpty ? "Не указано" : item.1).font(.callout.weight(.medium)).lineLimit(3).textSelection(.enabled).frame(maxWidth: .infinity, minHeight: 34, alignment: .topLeading)
+                    if item.3 { Text("Получено · не сохранено").font(.caption2).foregroundStyle(.secondary) }
                 }.padding(14).background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
             }
         }
@@ -302,8 +312,9 @@ struct RecordInventoryView: View {
         // Keep the editor at the same structural position while parsed cards appear.
         // Switching the TextField into a disclosure mid-typing would drop its focus.
         DisclosureGroup(structured ? "Редактировать исходный список" : field == .interfaces ? "Ввести список интерфейсов" : "Ввести список дисков") {
-            fieldEditor(field).padding(.top, 8)
+            fieldEditor(field, includeSuggestion: false).padding(.top, 8)
         }.font(.caption)
+        factSuggestion(field)
     }
     @ViewBuilder private func structuredValue(_ field: InventoryField, value: String) -> some View {
         if field == .interfaces, !InventoryPresentation.interfaces(value).isEmpty {
@@ -328,36 +339,40 @@ struct RecordInventoryView: View {
             }
         } else { Text(value).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading) }
     }
-    @ViewBuilder private var collectedFields: some View {
-        if let snapshot {
-            heading(section.title, subtitle: snapshot.sourceTitle + " · " + snapshot.date.formatted())
-            Text("Сведения из снимка. Выбери поля, затем примени их к черновику карточки.").font(.caption).foregroundStyle(.secondary)
-            if section == .summary { overview(snapshot.facts) }
-            HStack { Button("Выбрать все") { model.selected = Set(snapshot.facts.populated) }; Button("Снять выбор") { model.selected = [] }; Spacer() }.controlSize(.small)
-            let visible = (section == .summary ? [.manufacturer, .model, .serial, .assetTag, .operatingSystem, .processor, .memory] : section.fields).filter { !snapshot.facts[$0].isEmpty }
-            if visible.isEmpty { ContentUnavailableView("В этом разделе нет сведений", systemImage: section.icon, description: Text("Коллектор не получил эти поля. Их можно заполнить вручную в карточке.")) }
-            ForEach(visible) { field in
-                card(field.title) {
-                    Toggle("Применить к карточке", isOn: Binding(get: { model.selected.contains(field) }, set: { if $0 { model.selected.insert(field) } else { model.selected.remove(field) } })).toggleStyle(.checkbox).font(.caption)
-                    structuredValue(field, value: snapshot.facts[field])
-                    if field == .interfaces || field == .disks { DisclosureGroup("Исходные сведения") { Text(snapshot.facts[field]).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.font(.caption) }
-                    if !fields[field].isEmpty && fields[field] != snapshot.facts[field] { Text("Сейчас в карточке: " + fields[field]).font(.caption).foregroundStyle(.secondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
-                }
+    private func snapshotSummary(_ snapshot: InventorySnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(snapshot.sourceTitle + " · " + snapshot.date.formatted(), systemImage: "arrow.down.doc").font(.caption).foregroundStyle(.secondary)
+            if suggested.isEmpty { Text("Нет новых значений для полей карточки.").font(.caption).foregroundStyle(.secondary) }
+            else {
+                Text("Новые значения показаны рядом с полями. Выбери нужные и нажми «Сохранить»; заполненные поля сохраняются до подтверждения.").font(.caption).foregroundStyle(.secondary)
+                ViewThatFits(in: .horizontal) {
+                    HStack { selectionButtons }
+                    VStack(alignment: .leading) { selectionButtons }
+                }.controlSize(.small)
             }
-        } else {
-            ContentUnavailableView("Снимков пока нет", systemImage: "shippingbox", description: Text(model.canCollect ? "Выбери «Считать через SSH» или «Считать с Mac». Сбор запускается только по кнопке, без sudo." : "Для этой записи доступна ручная карточка. Автосбор поддерживает SSH и локальную консоль Mac."))
+        }
+    }
+    @ViewBuilder private var selectionButtons: some View {
+        Button("Выбрать пустые поля") { model.selected = Set(suggested.filter { fields[$0].isEmpty }) }
+        Button("Выбрать все") { model.selected = suggested }
+        Button("Снять выбор") { model.selected = [] }
+    }
+    @ViewBuilder private func factSuggestion(_ field: InventoryField) -> some View {
+        if let snapshot, suggested.contains(field) {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("Использовать полученное значение", isOn: Binding(get: { model.selected.contains(field) }, set: { if $0 { model.selected.insert(field) } else { model.selected.remove(field) } })).toggleStyle(.checkbox).font(.caption).accessibilityLabel("Применить полученное: " + field.title)
+                structuredValue(field, value: snapshot.facts[field])
+                if !fields[field].isEmpty { Text("Заменит текущее значение после подтверждения").font(.caption2).foregroundStyle(.orange) }
+            }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(Color.accentColor.opacity(0.055), in: RoundedRectangle(cornerRadius: 8))
         }
     }
     private func applyBar(_ snapshot: InventorySnapshot) -> some View {
         ViewThatFits(in: .horizontal) {
-            HStack { selectionCaption; Spacer(); applyButton(snapshot) }
-            VStack(alignment: .leading, spacing: 8) { selectionCaption; applyButton(snapshot) }
+            HStack { selectionCaption; Spacer(); Text("Изменения принимаются кнопкой «Сохранить»").font(.caption).foregroundStyle(.secondary) }
+            selectionCaption
         }.padding(12)
     }
-    private var selectionCaption: some View { Text("Выбрано: \(model.selected.intersection(Set(snapshot?.facts.populated ?? [])).count)" + (replacementCount > 0 ? " · замен: \(replacementCount)" : "")).font(.caption).foregroundStyle(replacementCount > 0 ? Color.orange : Color.secondary) }
-    private func applyButton(_ snapshot: InventorySnapshot) -> some View {
-        Button("Применить выбранные…") { pendingApply = InventoryApplyProposal(snapshot: snapshot, fields: model.selected, current: fields); confirmingApply = true }.disabled(model.busy || model.selected.intersection(Set(snapshot.facts.populated)).isEmpty)
-    }
+    private var selectionCaption: some View { Text("Выбрано: \(selection.count)" + (replacementCount > 0 ? " · замен: \(replacementCount)" : "")).font(.caption).foregroundStyle(replacementCount > 0 ? Color.orange : Color.secondary) }
     private var history: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("История инвентаризации").font(.title2.bold())
@@ -365,7 +380,7 @@ struct RecordInventoryView: View {
             if model.record.snapshots.isEmpty { ContentUnavailableView("История пуста", systemImage: "clock.arrow.circlepath", description: Text("После сбора здесь появятся снимки и изменения.")) }
             ForEach(Array(model.record.snapshots.enumerated().reversed()), id: \.element.id) { index, snapshot in
                 card(snapshot.date.formatted()) {
-                    HStack { Text(snapshot.sourceTitle).font(.caption).foregroundStyle(.secondary); Spacer(); Button("Открыть снимок") { snapshotID = snapshot.id; model.selected = Set(snapshot.facts.populated); mode = .collected; section = .summary }.controlSize(.small) }
+                    HStack { Text(snapshot.sourceTitle).font(.caption).foregroundStyle(.secondary); Spacer(); Button("Показать в карточке") { snapshotID = snapshot.id; model.selected = Set(snapshot.facts.populated); showingHistory = false; section = .summary }.controlSize(.small) }
                     let changes = snapshot.facts.changes(from: index == 0 ? InventoryFields() : model.record.snapshots[index - 1].facts)
                     if changes.isEmpty { Text("Изменений нет").font(.caption).foregroundStyle(.secondary) }
                     ForEach(changes) { change in

@@ -112,6 +112,8 @@ struct LoginNotificationsView: View {
                  ? "Токен уже есть на сервере. Оставь поле пустым, чтобы сохранить его. Сохранённый токен не загружается в это поле."
                  : "Для установки укажи токен Telegram-бота. Токен передаётся только при применении просмотренного плана.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            LoginNotificationMessageEditor(configuration: $model.configuration, user: model.entry.user)
+            if let issue = model.configuration.validation { Text(issue).font(.caption).foregroundStyle(.orange) }
         }.disabled(model.busy)
     }
     private func reviewContent(_ review: LoginNotificationPlan) -> some View {
@@ -120,9 +122,7 @@ struct LoginNotificationsView: View {
             if review.action == .remove {
                 Text("Будут удалены только указанные в плане файлы и настройка уведомлений. Проверь точные пути и сервер.").font(.callout).foregroundStyle(.orange)
             }
-            Text(verbatim: review.reviewText).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading).padding(12)
-                .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+            LoginNotificationReviewSummary(review: review)
         }
     }
     @ViewBuilder private var progressAndErrors: some View {
@@ -186,6 +186,62 @@ struct LoginNotificationsView: View {
         case "skipped": return "пропущено"
         case "unknown", "none", "never": return "нет сведений"
         default: return "статус не распознан"
+        }
+    }
+}
+
+struct LoginNotificationMessageEditor: View {
+    @Binding var configuration: LoginNotificationConfiguration
+    let user: String
+    private var zones: [String] { Array(Set(TimeZone.knownTimeZoneIdentifiers + ["UTC", configuration.effectiveTimeZone])).sorted() }
+    private var regions: [String] { Array(Set(zones.map { $0.components(separatedBy: "/")[0] })).sorted() }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Divider()
+            Text("Время и текст уведомления").font(.headline)
+            HStack {
+                Text("Часовой пояс")
+                TextField("Asia/Tbilisi", text: Binding(get: { configuration.effectiveTimeZone }, set: { configuration.timeZone = $0 })).accessibilityIdentifier("notificationTimeZone")
+                Menu {
+                    ForEach(regions, id: \.self) { region in
+                        Menu(region) { ForEach(zones.filter { $0.components(separatedBy: "/")[0] == region }, id: \.self) { zone in Button(zone) { configuration.timeZone = zone } } }
+                    }
+                } label: { Image(systemName: "globe") }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("Выбрать часовой пояс")
+            }
+            HStack { Text("На этом Mac: " + TimeZone.current.identifier).font(.caption).foregroundStyle(.secondary); Button("Определить автоматически") { configuration.timeZone = TimeZone.current.identifier }.controlSize(.small) }
+            Text("Текст сообщения").font(.caption).foregroundStyle(.secondary)
+            TextEditor(text: Binding(get: { configuration.effectiveTemplate }, set: { configuration.messageTemplate = $0 }))
+                .font(.system(.body, design: .monospaced)).frame(minHeight: 170, maxHeight: 230).padding(6)
+                .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8)).accessibilityIdentifier("notificationMessageTemplate")
+            Text("Меняй подписи, удаляй строки и добавляй свои поля или метки, например #PVE_Olshaniki. Вместо переменных подставятся данные входа.").font(.caption).foregroundStyle(.secondary)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 165), alignment: .leading)], alignment: .leading, spacing: 8) {
+                ForEach(LoginNotificationMessage.variables, id: \.0) { variable in
+                    Button("{" + variable.0 + "} · " + variable.1) { configuration.messageTemplate = configuration.effectiveTemplate + "{" + variable.0 + "}" }
+                        .font(.caption).help("Добавить переменную в конец текста")
+                }
+            }
+            HStack { Text("Предпросмотр · пример данных").font(.caption).foregroundStyle(.secondary); Spacer(); Button("Стандартный текст") { configuration.messageTemplate = nil }.controlSize(.small) }
+            Text(verbatim: LoginNotificationMessage.preview(configuration, user: user)).font(.callout).textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(12).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+}
+
+struct LoginNotificationReviewSummary: View {
+    let review: LoginNotificationPlan
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(review.summaryText).font(.callout)
+            if review.action == .install || review.action == .configure {
+                Text("Чат: " + review.configuration.chatID + " · Сервер: " + review.configuration.hostLabel).font(.caption).foregroundStyle(.secondary)
+                Text("Часовой пояс: " + (review.configuration.timeZone ?? "UTC")).font(.caption).foregroundStyle(.secondary)
+                Text(verbatim: LoginNotificationMessage.preview(review.configuration, user: review.entry.user)).font(.callout).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(12).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+            }
+            Text("Настройки входа SSH, пакеты, firewall и общие уведомления Proxmox не меняются.").font(.caption).foregroundStyle(.secondary)
+            DisclosureGroup("Технические подробности: пути, команда и исходники") {
+                Text(verbatim: review.reviewText).font(.system(size: 11, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
+            }.font(.caption)
         }
     }
 }

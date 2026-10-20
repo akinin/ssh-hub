@@ -109,7 +109,14 @@ import Foundation
         try check(proposal.snapshot.facts[.model] == "Reviewed machine" && proposal.fields == [.model] && proposal.replacements.first?.previous == "Old machine", "confirmation freezes reviewed snapshot, fields and conflict values")
         model.apply(proposal)
         try check(model.record.fields[.model] == "Reviewed machine" && model.record.fields[.owner] == "Keep owner" && model.record.manual[.model] == "Recovered old", "confirmed proposal creates only selected draft without accepting newer facts")
+        model.selected = [.model, .memory]
+        model.change(.model, value: "Typed by user")
+        try check(!model.selected.contains(.model) && model.selected.contains(.memory) && model.record.fields[.model] == "Typed by user", "typing in the unified card deselects only that received value")
         model.discard(); try check(model.record.manual == recovered.manual && !model.record.hasChanges, "discard returns unchanged saved manual")
+        model.change(.memory, value: "Manual memory")
+        model.save(proposal)
+        try check(model.record.manual[.model] == "Reviewed machine" && model.record.manual[.memory] == "Manual memory" && !model.record.hasChanges, "one Save accepts chosen snapshot and manual edits together")
+        try check(try repository.load(entry.favoriteID).manual == model.record.manual, "one Save durably commits both sources")
         model.stop()
         print("PASS Inventory model: load failure preserves original and blocks writes/collection; explicit reload; immutable review payload and draft/discard")
     }

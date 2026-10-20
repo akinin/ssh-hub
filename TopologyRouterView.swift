@@ -14,7 +14,7 @@ struct TopologyRouterView: View {
             TextField("Название: например MikroTik · WAN2",text:$settings.name)
             TextField("Адрес: https://router.example",text:$settings.baseURL)
             TextField("Пользователь API",text:$settings.username)
-            SecureField(hasPassword ? "Новый пароль (сохранённый скрыт)" : "Пароль API",text:$password)
+            PasswordEntryView(prompt: hasPassword ? "Новый пароль (сохранённый скрыт)" : "Пароль API", text: $password)
             Picker("Добавить данные к записи",selection:Binding(get:{settings.recordKey ?? ""},set:{settings.recordKey = $0.isEmpty ? nil : $0})) {
                 Text("Отдельное устройство на карте").tag("")
                 ForEach(model.entries) { entry in Text(entry.name).tag(entry.favoriteID) }

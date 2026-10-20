@@ -20,6 +20,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 KNOWN_LEGACY_SHA256 = "3c9e1bf86cd1ef43a58326994581e3f1e71be7925290c703cd668207ae4084b3"
 LEGACY_HOOK = "session optional pam_exec.so quiet /usr/local/sbin/ssh-login-telegram"
@@ -72,6 +73,32 @@ WantedBy=multi-user.target
 """
 
 
+MESSAGE_VARIABLES = {"server", "user", "ip", "time", "timezone", "terminal", "service", "tag"}
+DEFAULT_TEMPLATE = "SSH-сессия открыта\nСервер: {server}\nПользователь: {user}\nИсточник: {ip}\nВремя: {time} ({timezone})\nТерминал: {terminal}\n{tag}"
+
+
+def validate_message_settings(value, check_timezone=True):
+    zone = value.get("time_zone")
+    if "time_zone" in value:
+        if (not isinstance(zone, str) or len(zone.encode()) > 100 or not zone
+                or not re.fullmatch(r"[A-Za-z0-9_+.-]+(?:/[A-Za-z0-9_+.-]+)*", zone)
+                or any(part in (".", "..") for part in zone.split("/"))):
+            raise ValueError("invalid_configuration")
+        if check_timezone:
+            try:
+                ZoneInfo(zone)
+            except (ValueError, ZoneInfoNotFoundError):
+                raise ValueError("timezone_unavailable")
+    template = value.get("message_template")
+    if "message_template" in value:
+        if (not isinstance(template, str) or not template.strip() or len(template.encode()) > 2048
+                or any((ord(c) < 32 and c != "\n") or ord(c) == 127 for c in template)):
+            raise ValueError("invalid_configuration")
+        remainder = re.sub(r"\{([a-z_]+)\}", lambda m: "" if m[1] in MESSAGE_VARIABLES else m[0], template)
+        if "{" in remainder or "}" in remainder:
+            raise ValueError("invalid_configuration")
+
+
 class Failure(Exception):
     def __init__(self, code):
         self.code = code
@@ -115,8 +142,8 @@ def read(path, root, maximum=262144, secret=False):
         return data
 
 
-def configuration(value, require_token=False):
-    if not isinstance(value, dict) or set(value) - {"schema", "enabled", "token", "chat_id", "host_label", "tag", "message_thread_id"}:
+def configuration(value, require_token=False, check_timezone=False):
+    if not isinstance(value, dict) or set(value) - {"schema", "enabled", "token", "chat_id", "host_label", "tag", "message_thread_id", "time_zone", "message_template"}:
         raise Failure("invalid_configuration")
     for key, maximum, empty in (("chat_id", 64, False), ("host_label", 200, False), ("tag", 80, True)):
         text = value.get(key, "" if empty else None)
@@ -131,17 +158,22 @@ def configuration(value, require_token=False):
         raise Failure("invalid_configuration")
     if require_token and (not isinstance(value.get("token"), str) or not re.fullmatch(r"[0-9]{4,20}:[A-Za-z0-9_-]{20,200}", value["token"])):
         raise Failure("invalid_token")
-    if require_token and any(value["token"] in value.get(key, "") for key in ("chat_id", "host_label", "tag")):
+    if require_token and any(value["token"] in (value.get(key) or "") for key in ("chat_id", "host_label", "tag", "message_template")):
         raise Failure("invalid_configuration")
     if "schema" in value and (type(value["schema"]) is not int or value["schema"] != 1) or "enabled" in value and type(value["enabled"]) is not bool:
         raise Failure("invalid_configuration")
+    try:
+        validate_message_settings(value, check_timezone=check_timezone)
+    except ValueError as error:
+        raise Failure(str(error))
     return value
 
 
 def public_config(config):
     value = {key: config.get(key, "") for key in ("chat_id", "host_label", "tag")}
-    if config.get("message_thread_id") is not None:
-        value["message_thread_id"] = config["message_thread_id"]
+    for key in ("message_thread_id", "time_zone", "message_template"):
+        if config.get(key) is not None:
+            value[key] = config[key]
     return value
 
 
@@ -381,15 +413,15 @@ def execute(payload, root=Path("/"), command=systemctl, preflight=platform_check
                 incoming = payload.get("config")
                 if incoming is None and adopting:
                     incoming = public_config(oldconfig)
-                if not isinstance(incoming, dict) or set(incoming) - {"chat_id", "host_label", "tag", "message_thread_id"}:
+                if not isinstance(incoming, dict) or set(incoming) - {"chat_id", "host_label", "tag", "message_thread_id", "time_zone", "message_template"}:
                     raise Failure("invalid_configuration")
                 config = dict(incoming)
                 config.update(schema=1, enabled=True if action == "install" else oldconfig["enabled"], token=payload.get("token") or (oldconfig or {}).get("token", ""))
             elif action in ("enable", "disable"):
                 config["enabled"] = action == "enable"
-            configuration(config, require_token=True)
+            configuration(config, require_token=True, check_timezone=True)
         helper = None
-        if action == "install":
+        if action == "install" or action == "configure" and "helper" in payload:
             try:
                 helper = base64.b64decode(payload.get("helper", ""), validate=True)
                 if len(helper) > 100000 or not helper or digest(helper) != payload.get("helper_sha256"):
@@ -397,6 +429,8 @@ def execute(payload, root=Path("/"), command=systemctl, preflight=platform_check
                 ast.parse(helper.decode("utf-8"))
             except (ValueError, UnicodeError, SyntaxError, TypeError):
                 raise Failure("invalid_payload")
+        if action == "configure" and helper is None and any(key in (config or {}) for key in ("time_zone", "message_template")):
+            raise Failure("helper_upgrade_required")
         return mutate(root, action, files, current, config, helper, adopting, command)
     finally:
         os.close(descriptor)
@@ -439,6 +473,9 @@ def mutate(root, action, files, current, config, helper, adopting, command):
                     created.append(path)
             for relative, data, mode in ((HELPER, helper, 0o755), (UNIT, UNIT_TEXT.encode(), 0o644), (MANIFEST, encoded({"schema": 1, "kind": "ssh-hub-login-notify", "helper_sha256": digest(helper), "unit_sha256": digest(UNIT_TEXT.encode())}), 0o600)):
                 change(relative, data, mode)
+        if action == "configure" and helper is not None and helper != files[HELPER]:
+            change(HELPER, helper, 0o755)
+            change(MANIFEST, encoded({"schema": 1, "kind": "ssh-hub-login-notify", "helper_sha256": digest(helper), "unit_sha256": digest(UNIT_TEXT.encode())}))
         if config is not None:
             change(CONFIG, encoded(config))
         if action in ("install", "remove"):

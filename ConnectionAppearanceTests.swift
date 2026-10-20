@@ -40,6 +40,16 @@ import AppKit
         let invalid = TransferAlias(alias, group: "", favorite: false, appearance: ConnectionAppearance(name: "bad\nname"))
         do { _ = try AliasTransfer.decode(AliasTransfer(aliases: [invalid]).encode()); fatalError("invalid imported name accepted") }
         catch is ConfigError {}
+        let custom = [RecordActionStyle(id: "inventory", color: "green"), RecordActionStyle(id: "connect", color: "red", hidden: true)]
+        let layoutOnly = ConnectionAppearance(actionTiles: custom)
+        check(!layoutOnly.isEmpty && layoutOnly.validation == nil, "layout-only metadata retained")
+        check(ConnectionAppearance.decode(try JSONEncoder().encode(["a": layoutOnly]))["a"] == layoutOnly, "per-record layout round trip")
+        let layout = RecordAction.layout(custom, entry: alias)
+        check(layout.prefix(2).map(\.id) == ["inventory", "connect"] && layout.first?.color == "green" && layout[1].hidden, "order, colors, hidden preserved")
+        check(Set(layout.map(\.id)).count == layout.count && !layout.contains(where: { $0.id == "inside" }), "only supported unique actions")
+        check(ConnectionAppearance(actionTiles: custom + custom).validation != nil, "duplicate actions rejected")
+        check(ConnectionAppearance(actionTiles: [RecordActionStyle(id: "connect", color: "invalid")]).validation != nil, "invalid palette rejected")
+        check(try AliasTransfer.decode(AliasTransfer(aliases: [TransferAlias(alias, group: "", favorite: false, appearance: layoutOnly)]).encode()).aliases[0].appearance == layoutOnly, "export layout metadata")
         print("PASS: display names, fallback, logo resizing/transparency, settings, rename/undo, reset, JSON compatibility and validation")
     }
 }

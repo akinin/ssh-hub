@@ -55,6 +55,24 @@ import CryptoKit
         try require(Set(encoded.keys) == ["chat_id", "host_label", "tag", "message_thread_id"], "stable snake-case wire configuration without secrets")
         try require(try JSONDecoder().decode(LoginNotificationConfiguration.self, from: JSONEncoder().encode(self.configuration())) == self.configuration(), "configuration round trip")
 
+        var messageConfig = self.configuration()
+        messageConfig.timeZone = "Asia/Tbilisi"
+        messageConfig.messageTemplate = "#PVE_Olshaniki\nУзел: {server}\nКто: {user}\nIP: {ip}\nКогда: {time} ({timezone})\n{terminal} {service} {tag}"
+        try require(messageConfig.validation == nil, "free labels, tags and allowlisted variables")
+        let preview = LoginNotificationMessage.preview(messageConfig, user: "fixture", date: Date(timeIntervalSince1970: 1735732800))
+        try require(preview.contains("16:00:00 +0400") && preview.contains("#PVE_Olshaniki") && preview.contains("192.0.2.10"), "local time and synthetic variable preview")
+        var messageStatus = try status(); messageStatus["configuration"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(messageConfig))
+        try require(try LoginNotificationFailure.decode(response(messageStatus)).configuration == messageConfig, "multiline public template decodes safely")
+        for invalid in ["", "{unknown}", "{user.name}", "{time:format}", "{user!r}", "{user", "value\r", String(repeating: "Ж", count: 1025)] {
+            messageConfig.messageTemplate = invalid; try require(messageConfig.validation != nil, "template bounds and grammar")
+        }
+        messageConfig.messageTemplate = "{user}"; messageConfig.timeZone = "Invalid/Zone"
+        try require(messageConfig.validation != nil, "unknown timezone rejected")
+        messageConfig.timeZone = "America/New_York"
+        try require(LoginNotificationMessage.preview(messageConfig, user: "{ip}") == "{ip}", "single-pass expansion")
+        messageConfig.messageTemplate = self.token
+        messageStatus["configuration"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(messageConfig))
+        try rejects({ _ = try LoginNotificationFailure.decode(response(messageStatus)) }, "template cannot return token")
         for state in ["absent", "managed", "legacy", "foreign"] {
             let decoded = try LoginNotificationFailure.decode(response(status(state)))
             try require(decoded.state == state && decoded.hasToken && decoded.configuration.messageThreadID == 42, "decode supported states without remote token")

@@ -64,10 +64,10 @@ enum InventoryField: String, Codable, CaseIterable, Identifiable {
 }
 
 enum InventorySection: String, CaseIterable, Identifiable {
-    case summary, network, software, hardware, location, contact, purchase
+    case summary, network, software, hardware, location, purchase
     var id: String { rawValue }
-    var title: String { switch self { case .summary: return "Сводка"; case .network: return "Сеть"; case .software: return "ПО"; case .hardware: return "Оборудование"; case .location: return "Расположение"; case .contact: return "Контакт"; case .purchase: return "Покупка" } }
-    var icon: String { switch self { case .summary: return "doc.text.image"; case .network: return "network"; case .software: return "opticaldisc"; case .hardware: return "cpu"; case .location: return "building.2"; case .contact: return "person.crop.circle"; case .purchase: return "tag" } }
+    var title: String { switch self { case .summary: return "Сводка"; case .network: return "Сеть"; case .software: return "ПО"; case .hardware: return "Оборудование"; case .location: return "Расположение"; case .purchase: return "Покупка" } }
+    var icon: String { switch self { case .summary: return "doc.text.image"; case .network: return "network"; case .software: return "opticaldisc"; case .hardware: return "cpu"; case .location: return "building.2"; case .purchase: return "tag" } }
     var fields: [InventoryField] {
         switch self {
         case .summary: return [.deviceType, .role, .assetTag, .notes]
@@ -75,7 +75,6 @@ enum InventorySection: String, CaseIterable, Identifiable {
         case .software: return [.operatingSystem, .software, .licenses]
         case .hardware: return [.manufacturer, .model, .serial, .processor, .socketType, .socketCount, .physicalCores, .logicalCores, .memory, .monitors, .disks]
         case .location: return [.location, .site, .building, .room, .rack, .rackUnit]
-        case .contact: return [.owner, .department, .email, .phone]
         case .purchase: return [.purchaseDate, .purchaseVendor, .purchaseCost, .warrantyUntil, .purchaseInvoice]
         }
     }
@@ -282,6 +281,12 @@ struct InventoryDiskInfo: Identifiable, Equatable {
     var id: String { name }
 }
 enum InventoryPresentation {
+    // Display only: filling the preview never changes manual fields or the draft.
+    static func preview(current: InventoryFields, facts: InventoryFields?) -> InventoryFields {
+        var values = current
+        if let facts { for field in facts.populated where current[field].isEmpty { values[field] = facts[field] } }
+        return values
+    }
     private static func match(_ pattern: String, _ text: String) -> [String]? {
         guard let regex = try? NSRegularExpression(pattern: pattern), let result = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else { return nil }
         return (1..<result.numberOfRanges).map { index in Range(result.range(at: index), in: text).map { String(text[$0]) } ?? "" }

@@ -58,7 +58,13 @@ import Darwin
         expanded.draft = expanded.manual; expanded.draft?[.notes] = "Uncommitted note"
         let expandedDecoded = try JSONDecoder().decode(RecordInventory.self, from: JSONEncoder().encode(expanded))
         try check(expandedDecoded == expanded, "all structured fields and draft survive archive roundtrip")
-        try check(Set(InventorySection.allCases.flatMap(\.fields)) == Set(InventoryField.allCases), "every field is accessible in a category")
+        let hiddenContacts: Set<InventoryField> = [.owner, .department, .email, .phone]
+        try check(Set(InventorySection.allCases.flatMap(\.fields)) == Set(InventoryField.allCases).subtracting(hiddenContacts), "contact category removed without deleting stored fields")
+        let current = InventoryFields([.model: "Hand-entered model", .owner: "Existing contact"])
+        let received = InventoryFields([.model: "Collected model", .memory: "16 GiB", .owner: "Collected contact"])
+        let preview = InventoryPresentation.preview(current: current, facts: received)
+        try check(preview[.model] == "Hand-entered model" && preview[.owner] == "Existing contact" && preview[.memory] == "16 GiB", "unified preview fills only blank fields")
+        try check(current[.memory].isEmpty && InventoryPresentation.preview(current: current, facts: nil) == current, "preview does not apply or persist collected facts")
         try check(Set(InventoryDeviceType.allCases.map(\.rawValue)).count == InventoryDeviceType.allCases.count, "device types have stable distinct IDs")
         let linuxInterfaces = "1: lo: <LOOPBACK,UP> state UNKNOWN\n1: lo inet 127.0.0.1/8 scope host\n2: eth0@if3: <UP> state UP link/ether 02:00:00:00:00:01\n2: eth0 inet6 fe80::1/64 scope link\n2: eth0 inet 192.0.2.10/24 scope global"
         let parsedLinux = InventoryPresentation.interfaces(linuxInterfaces)

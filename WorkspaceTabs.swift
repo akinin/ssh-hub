@@ -201,7 +201,7 @@ struct WorkspacePaneView: View {
                 else if page.section == .connection, let session = store.connectionSessions[id] { ConnectionPageView(session: session).id(id) }
                 else if page.section == .sftp, let model = store.sftpModels[id] { SFTPView(model: model).id(id) }
                 else if page.section == .logs, let model = store.logModels[id] { RecordLogsView(model: model).id(id) }
-                else if page.section == .inventory, let model = store.inventoryModels[id] { RecordInventoryView(model: model).id(id) }
+                else if page.section == .inventory, let model = store.inventoryModels[id] { RecordInventoryView(model: model, appearance: store.appearance(store.entry(for: page) ?? model.entry), title: store.title(store.entry(for: page) ?? model.entry)).id(id) }
                 else if page.section == .winbox, let model = store.winboxModels[id] { WinboxView(model: model).id(id) }
                 else if let entry = store.entry(for: page) { EntryDetailScreen(entry: entry, section: page.section).id(id) }
             }

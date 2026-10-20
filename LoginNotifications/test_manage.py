@@ -403,6 +403,47 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual(config.read_text(), "{}")
         self.assertEqual(self.commands, [])
 
+    def test_configure_upgrades_handler_and_preserves_token(self):
+        old = b"# Synthetic old managed handler\npass\n"
+        self.execute(self.payload("install", helper=base64.b64encode(old).decode(), helper_sha256=manage.digest(old)))
+        helper = (HERE / "notify.py").read_bytes()
+        new = self.config(time_zone="Asia/Tbilisi", message_template="Кто: {user}\nОткуда: {ip}\n{time} {timezone}\n#PVE_Olshaniki")
+        result = self.execute(self.payload("configure", config=new, helper=base64.b64encode(helper).decode(), helper_sha256=manage.digest(helper)))
+        self.assertEqual(result["state"], "managed")
+        self.assertEqual(result["configuration"], new)
+        self.assertEqual((self.root / manage.HELPER).read_bytes(), helper)
+        stored = json.loads((self.root / manage.CONFIG).read_bytes())
+        self.assertEqual(stored["token"], TOKEN)
+        self.assertEqual(json.loads((self.root / manage.MANIFEST).read_bytes())["helper_sha256"], manage.digest(helper))
+        self.assert_private(result)
+        self.execute(self.payload("disable")); self.execute(self.payload("enable"))
+        self.assertEqual(manage.inspect(self.root)["configuration"], new)
+
+    def test_handler_upgrade_rolls_back_with_configuration(self):
+        old = b"# Synthetic original handler\npass\n"
+        self.execute(self.payload("install", helper=base64.b64encode(old).decode(), helper_sha256=manage.digest(old)))
+        before = {name: (self.root / name).read_bytes() for name in (manage.HELPER, manage.MANIFEST, manage.CONFIG)}
+        helper = (HERE / "notify.py").read_bytes()
+        def fail_restart(args):
+            if args[0] == "restart": raise manage.Failure("service_failed")
+        with self.assertRaises(manage.Failure):
+            self.execute(self.payload("configure", config=self.config(time_zone="Asia/Tbilisi"), helper=base64.b64encode(helper).decode(), helper_sha256=manage.digest(helper)), command=fail_restart)
+        for name, data in before.items(): self.assertEqual((self.root / name).read_bytes(), data)
+        self.assertEqual(manage.inspect(self.root)["state"], "managed")
+
+    def test_new_settings_validate_before_mutation_and_are_public(self):
+        self.install()
+        before = (self.root / manage.CONFIG).read_bytes()
+        for fields, error in (({"time_zone": "NoSuch/Fixture"}, "timezone_unavailable"),
+                              ({"time_zone": "../UTC"}, "invalid_configuration"),
+                              ({"message_template": "{token}"}, "invalid_configuration"),
+                              ({"message_template": TOKEN}, "invalid_configuration"),
+                              ({"message_template": "text\r"}, "invalid_configuration")):
+            self.assert_failure(error, self.payload("configure", config=self.config(**fields)))
+            self.assertEqual((self.root / manage.CONFIG).read_bytes(), before)
+        self.assert_failure("helper_upgrade_required", self.payload("configure", config=self.config(time_zone="UTC")))
+
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

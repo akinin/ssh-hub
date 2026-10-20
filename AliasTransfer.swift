@@ -11,6 +11,7 @@ struct TransferAlias: Codable, Identifiable {
     var favorite: Bool
     var displayName: String?
     var logo: Data?
+    var actionTiles: [RecordActionStyle]? = nil
     var authentication: SSHAuthentication?
     var standalone: Bool?
     var recordKind: RecordKind?
@@ -37,7 +38,7 @@ struct TransferAlias: Codable, Identifiable {
         }
         return draft.validation(existing: existing)
     }
-    var appearance: ConnectionAppearance { ConnectionAppearance(name: displayName ?? "", logo: logo) }
+    var appearance: ConnectionAppearance { ConnectionAppearance(name: displayName ?? "", logo: logo, actionTiles: actionTiles) }
     var id: String { name }
     var draft: AliasDraft {
         var value = AliasDraft()
@@ -50,7 +51,7 @@ struct TransferAlias: Codable, Identifiable {
         identity = entry.value("IdentityFile") ?? ""; jump = entry.value("ProxyJump") ?? ""
         self.group = group; self.favorite = favorite
         authentication = entry.authentication == .automatic ? nil : entry.authentication
-        displayName = appearance.trimmedName.isEmpty ? (entry.localID == nil ? nil : entry.name) : appearance.trimmedName; logo = appearance.logo
+        displayName = appearance.trimmedName.isEmpty ? (entry.localID == nil ? nil : entry.name) : appearance.trimmedName; logo = appearance.logo; actionTiles = appearance.actionTiles
         standalone = entry.localID == nil ? nil : true; recordKind = entry.recordKind; website = entry.website; serial = entry.serial; transport = entry.transport
     }
 }

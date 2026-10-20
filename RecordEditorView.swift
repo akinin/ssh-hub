@@ -18,20 +18,17 @@ struct RecordSSHConnectionFields: View {
     @Binding var removePassword: Bool
     let reusePassword: Bool
     let identifier: String
+    var changedAt: Date? = nil
+    var savedPassword: (() throws -> String?)? = nil
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             RecordFieldRow("Сервер") { TextField("IP или имя сервера", text: $host).accessibilityIdentifier(identifier + "Host") }
             RecordFieldRow("Пользователь") { TextField("root", text: $user).accessibilityIdentifier(identifier + "User") }
-            RecordFieldRow("Способ входа") {
-                Picker("Способ входа", selection: $authentication) { ForEach(SSHAuthentication.allCases) { Text($0.title).tag($0) } }.labelsHidden().accessibilityIdentifier(identifier + "Authentication")
-            }
-            if authentication.usesPassword {
-                if keepPassword { RecordFieldRow("Пароль") { SecureField(reusePassword && !removePassword ? "Сохранён · оставь пустым" : "Запросить при подключении", text: $password).accessibilityIdentifier(identifier + "Password") } }
-                Toggle("Сохранить в Связке ключей macOS", isOn: $keepPassword).toggleStyle(.switch)
-                if reusePassword && !removePassword { Button("Удалить сохранённый пароль") { removePassword = true } }
-                Text("Пароль хранится в Связке ключей. Пустое поле без сохранённого пароля — ввод при подключении.").font(.caption).foregroundStyle(.secondary)
-            }
-            if authentication == .keyAndPassword { Text("Сначала ключ; пароль используется, если сервер его запросит. Пароль приватного ключа вводится отдельно.").font(.caption).foregroundStyle(.secondary) }
+            RecordFieldRow("Вход") { SSHAuthenticationChecks(selection: $authentication) }
+            RecordFieldRow("Пароль") { PasswordEntryView(prompt: reusePassword && !removePassword ? "Сохранён · оставь пустым" : "Запросить при подключении", text: $password, changedAt: changedAt, savedPassword: reusePassword && !removePassword ? savedPassword : nil).accessibilityIdentifier(identifier + "Password") }
+            Toggle("Сохранить в Связке ключей macOS", isOn: $keepPassword).toggleStyle(.switch)
+            if reusePassword && !removePassword { Button("Удалить сохранённый пароль") { removePassword = true } }
+            Text("Сохранение пароля независимо от способа входа. Пароль приватного ключа вводится отдельно.").font(.caption).foregroundStyle(.secondary)
             RecordFieldRow("Порт") { TextField("22", text: $port).accessibilityIdentifier(identifier + "Port") }
             RecordFieldRow("ProxyJump") { TextField("user@host:port или алиас", text: $jump).accessibilityIdentifier(identifier + "Jump") }
         }.textFieldStyle(.roundedBorder)
@@ -280,7 +277,7 @@ struct RecordEditorView: View {
         VStack(alignment: .leading, spacing: 14) {
             RecordFieldRow("Адрес сайта") { TextField("https://example.com", text: $record.website).textFieldStyle(.roundedBorder).accessibilityIdentifier("recordWebsite") }
             RecordFieldRow("Логин") { TextField("Имя пользователя или email", text: $record.user).textFieldStyle(.roundedBorder).accessibilityIdentifier("recordWebUser") }
-            RecordFieldRow("Пароль") { SecureField(reusePassword && !removePassword ? "Сохранён · оставь пустым" : "Пароль сайта", text: $password).textFieldStyle(.roundedBorder).accessibilityIdentifier("recordWebPassword") }
+            RecordFieldRow("Пароль") { PasswordEntryView(prompt: reusePassword && !removePassword ? "Сохранён · оставь пустым" : "Пароль сайта", text: $password, changedAt: passwordDate, savedPassword: passwordReader).accessibilityIdentifier("recordWebPassword") }
             Toggle("Сохранить пароль в Связке ключей macOS", isOn: $keepPassword)
             if reusePassword && !removePassword { Button("Удалить сохранённый пароль") { removePassword = true; settings.wrappedValue.webAutoLogin = false } }
             Divider()
@@ -303,7 +300,7 @@ struct RecordEditorView: View {
             LabeledContent("Пользователь") { TextField(kind == .ftp || kind == .ftps ? "anonymous" : "Имя пользователя", text: $record.user).textFieldStyle(.roundedBorder) }
         }
         if kind.hasPassword {
-            SecureField("Пароль", text: $password, prompt: Text(reusePassword && !removePassword ? "Сохранён · оставь пустым" : "Ввести при подключении")).textFieldStyle(.roundedBorder)
+            PasswordEntryView(prompt: reusePassword && !removePassword ? "Сохранён · оставь пустым" : "Ввести при подключении", text: $password, changedAt: passwordDate, savedPassword: passwordReader)
             Toggle("Сохранить в Связке ключей macOS", isOn: $keepPassword)
             if reusePassword && !removePassword { Button("Удалить сохранённый пароль") { removePassword = true } }
         }
@@ -358,8 +355,11 @@ struct RecordEditorView: View {
             }
         }
     }
-    private var fields: some View {
-        RecordSSHConnectionFields(host: $record.host, user: $record.user, port: $record.port, jump: $record.jump, authentication: $record.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: reusePassword, identifier: "record")
+    private var passwordDate: Date? { savedEntry.flatMap { SSHPasswordStore.changedAt(for: $0, config: store.config.url) } }
+    private var passwordReader: (() throws -> String?)? { guard reusePassword && !removePassword, let savedEntry else { return nil }; return { try SSHPasswordStore.storedPassword(for: savedEntry, config: store.config.url) } }
+    @ViewBuilder private var fields: some View {
+        RecordSSHConnectionFields(host: $record.host, user: $record.user, port: $record.port, jump: $record.jump, authentication: $record.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: reusePassword, identifier: "record", changedAt: passwordDate, savedPassword: passwordReader)
+        RecordSSHKeyFields(identity: $record.identity, entry: installationEntry).environmentObject(store)
     }
     private func load() {
         do {
@@ -416,7 +416,7 @@ struct RecordEditorView: View {
         var ssh: ConfigChange?, credentialChanged = false, previousPassword: String?
         do {
             try beforeSave?()
-            let changePassword = removePassword || ((kind.isWeb || record.authentication.usesPassword) && ((!keepPassword && reusePassword) || (keepPassword && !password.isEmpty)))
+            let changePassword = removePassword || ((kind.isWeb || kind == .ssh || kind.hasPassword) && ((!keepPassword && reusePassword) || (keepPassword && !password.isEmpty)))
             if changePassword {
                 previousPassword = try SSHPasswordStore.storedPassword(for: target, config: store.config.url)
                 try SSHPasswordStore.set(keepPassword && !removePassword && !password.isEmpty ? password : nil, for: target, config: store.config.url); credentialChanged = true

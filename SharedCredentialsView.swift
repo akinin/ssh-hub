@@ -93,8 +93,8 @@ private struct SharedCredentialEditor: View {
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 14) {
                 GridRow { Text("Название"); TextField("Например, администратор Linux", text: $draft.title) }
                 GridRow { Text("Пользователь"); TextField("Из записи, если пусто", text: $draft.username) }
-                GridRow { Text("Способ входа"); Picker("Способ входа", selection: $draft.authentication) { ForEach(SSHAuthentication.allCases) { Text($0.title).tag($0) } }.labelsHidden() }
-                GridRow { Text("Пароль"); SecureField("Оставь пустым, чтобы сохранить прежний", text: $password).disabled(removePassword) }
+                GridRow { Text("Способ входа"); SSHAuthenticationChecks(selection: $draft.authentication) }
+                GridRow { Text("Пароль"); PasswordEntryView(prompt: "Оставь пустым, чтобы сохранить прежний", text: $password, changedAt: vault.runtime.passwordChangedAt(draft.id), savedPassword: vault.document.presets.contains(where: { $0.id == draft.id }) ? { try vault.runtime.readSecret(draft.id) } : nil).disabled(removePassword) }
                 GridRow { Text(""); Toggle("Удалить пароль набора", isOn: $removePassword) }
                 GridRow { Text("Ключ набора"); HStack { TextField("Путь к приватному ключу", text: $draft.identityFile); Button("Выбрать…") { let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false; panel.message = "Выбери приватный SSH-ключ. Файл остаётся на своём месте."; if panel.runModal() == .OK, let url = panel.url { draft.identityFile = url.path } } } }
             }.textFieldStyle(.roundedBorder)

@@ -47,6 +47,16 @@ enum SSHPasswordStore {
         if entry.sharedCredentialScope != nil || provider?(entry, config) == true { return true }
         return hasStoredPassword(for: entry, config: config)
     }
+    static func changedAt(for entry: SSHAlias, config: URL) -> Date? {
+        var item = query(account(for: entry, config: config)); item[kSecReturnAttributes as String] = true
+        let context = LAContext(); context.interactionNotAllowed = true; item[kSecUseAuthenticationContext as String] = context
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(item as CFDictionary, &result) == errSecSuccess,
+              let attributes = result as? [String: Any], let data = attributes[kSecAttrGeneric as String] as? Data,
+              let text = String(data: data, encoding: .utf8), text.hasPrefix("ssh-hub-password-date:"),
+              let seconds = Double(text.dropFirst("ssh-hub-password-date:".count)), seconds.isFinite else { return nil }
+        return Date(timeIntervalSince1970: seconds)
+    }
     static func password(for entry: SSHAlias, config: URL) throws -> String? {
         providerLock.lock(); let provider = sharedPassword; providerLock.unlock()
         if provider == nil, entry.credentialRuntimeScope != nil { throw ConfigError.message("Профиль общих учётных данных больше не активен.") }
@@ -77,10 +87,13 @@ enum SSHPasswordStore {
             return
         }
         guard !password.contains(where: { $0.isNewline || $0 == "\0" }) else { throw ConfigError.message("Пароль должен занимать одну строку.") }
-        let update = [kSecValueData as String: Data(password.utf8)]
+        // Saving an unchanged password must not restart its age. Old items without
+        // our marker stay unknown until the password actually changes.
+        if try storedPassword(for: entry, config: config) == password { return }
+        let update: [String: Any] = [kSecValueData as String: Data(password.utf8), kSecAttrGeneric as String: Data("ssh-hub-password-date:\(Date().timeIntervalSince1970)".utf8)]
         var status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
         if status == errSecItemNotFound {
-            var item = query; item[kSecValueData as String] = Data(password.utf8)
+            var item = query; update.forEach { item[$0.key] = $0.value }
             item[kSecAttrLabel as String] = "SSH Hub · \(entry.name) · \(entry.user)@\(entry.host)"
             item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
             status = SecItemAdd(item as CFDictionary, nil)

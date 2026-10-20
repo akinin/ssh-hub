@@ -132,6 +132,8 @@ enum SSHAuthentication: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String { switch self { case .automatic: return "Автоматически"; case .key: return "SSH-ключ"; case .password: return "Пароль"; case .keyAndPassword: return "SSH-ключ и пароль" } }
     var usesPassword: Bool { self == .password || self == .keyAndPassword }
+    var usesKey: Bool { self == .key || self == .keyAndPassword }
+    static func selected(key: Bool, password: Bool) -> Self { key ? (password ? .keyAndPassword : .key) : (password ? .password : .automatic) }
     var options: [(String, String)] {
         switch self {
         case .automatic: return []

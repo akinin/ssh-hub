@@ -21,14 +21,47 @@ struct LoginNotificationConfiguration: Codable, Equatable {
     var hostLabel = ""
     var tag = "SSH_Login"
     var messageThreadID: Int?
-    enum CodingKeys: String, CodingKey { case chatID = "chat_id", hostLabel = "host_label", tag, messageThreadID = "message_thread_id" }
+    var timeZone: String?
+    var messageTemplate: String?
+    var effectiveTimeZone: String { timeZone ?? TimeZone.current.identifier }
+    var effectiveTemplate: String { messageTemplate ?? LoginNotificationMessage.defaultTemplate }
+    enum CodingKeys: String, CodingKey { case chatID = "chat_id", hostLabel = "host_label", tag, messageThreadID = "message_thread_id", timeZone = "time_zone", messageTemplate = "message_template" }
     var validation: String? {
         guard chatID.utf8.count <= 64, !chatID.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains), SSHConfig.matches(chatID, "^(?:-?[1-9][0-9]{0,18}|@[A-Za-z][A-Za-z0-9_]{4,31})$") else { return "Укажи числовой Telegram chat_id или @имя канала." }
         guard !hostLabel.trimmingCharacters(in: .whitespaces).isEmpty, hostLabel.utf8.count <= 200, !hostLabel.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { return "Укажи название узла до 200 байт без управляющих символов." }
         guard tag.utf8.count <= 80, tag.isEmpty || tag.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || $0 == "_" || $0 == "-" }), messageThreadID.map({ (1...2_147_483_647).contains($0) }) ?? true else { return "Тег — до 80 байт: буквы, цифры, дефис и подчёркивание; номер темы — от 1 до 2147483647." }
+        guard effectiveTimeZone.utf8.count <= 100, TimeZone(identifier: effectiveTimeZone) != nil else { return "Выбери существующий часовой пояс, например Asia/Tbilisi." }
+        if let messageTemplate, let issue = LoginNotificationMessage.validation(messageTemplate) { return issue }
         return nil
     }
     static func validToken(_ token: String) -> Bool { !token.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) && SSHConfig.matches(token, "^[0-9]{4,20}:[A-Za-z0-9_-]{20,200}$") }
+}
+enum LoginNotificationMessage {
+    static let variables = [("server", "Сервер"), ("user", "Пользователь"), ("ip", "IP источника"), ("time", "Время"), ("timezone", "Часовой пояс"), ("terminal", "Терминал"), ("service", "Служба"), ("tag", "Метка")]
+    static let defaultTemplate = "SSH-сессия открыта\nСервер: {server}\nПользователь: {user}\nИсточник: {ip}\nВремя: {time} ({timezone})\nТерминал: {terminal}\n{tag}"
+    static func validation(_ text: String) -> String? {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.utf8.count <= 2048,
+              !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) && $0 != "\n" }) else { return "Текст уведомления — до 2048 байт, без управляющих символов, кроме переноса строки." }
+        var remainder = text
+        for (name, _) in variables { remainder = remainder.replacingOccurrences(of: "{" + name + "}", with: "") }
+        return remainder.contains("{") || remainder.contains("}") ? "Неизвестная переменная. Используй переменные из списка под текстом." : nil
+    }
+    static func formattedTime(_ date: Date, zone: String) -> String {
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = TimeZone(identifier: zone) ?? TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss Z"; return formatter.string(from: date)
+    }
+    static func preview(_ configuration: LoginNotificationConfiguration, user: String, date: Date = Date()) -> String {
+        let values = ["server": configuration.hostLabel, "user": user, "ip": "192.0.2.10", "time": formattedTime(date, zone: configuration.effectiveTimeZone), "timezone": configuration.effectiveTimeZone, "terminal": "ssh", "service": "sshd", "tag": configuration.tag.isEmpty ? "" : "#" + configuration.tag]
+        let text = configuration.effectiveTemplate
+        guard let regex = try? NSRegularExpression(pattern: "\\{([a-z_]+)\\}") else { return text }
+        // Replace once from right to left; values are never interpreted as templates.
+        var output = text
+        for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).reversed() {
+            guard let name = Range(match.range(at: 1), in: text), let value = values[String(text[name])], let range = Range(match.range, in: output) else { continue }
+            output.replaceSubrange(range, with: value)
+        }
+        return output.trimmingCharacters(in: .newlines)
+    }
 }
 struct LoginNotificationDelivery: Decodable, Equatable { var state: String; var date: String? }
 struct LoginNotificationStatus: Decodable, Equatable {
@@ -47,6 +80,7 @@ struct LoginNotificationStatus: Decodable, Equatable {
               paths.allSatisfy({ $0.utf8.count <= 512 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }),
               warnings.count <= 20, warnings.allSatisfy({ $0.utf8.count <= 1000 }),
               configuration.chatID.utf8.count <= 100, configuration.hostLabel.utf8.count <= 200, configuration.tag.utf8.count <= 100,
+              (configuration.timeZone?.utf8.count ?? 0) <= 100, configuration.messageTemplate.map({ LoginNotificationMessage.validation($0) == nil }) ?? true,
               delivery.map({ $0.state.utf8.count <= 100 && ($0.date?.utf8.count ?? 0) <= 100 }) ?? true else { throw ConfigError.message("Сервер вернул неподдерживаемое состояние уведомлений.") }
     }
 }
@@ -71,13 +105,23 @@ struct LoginNotificationPlan: Identifiable {
         self.adoptLegacy = adoptLegacy; self.manager = manager; self.helper = helper; self.previous = previous
     }
     var remoteCommand: String { "/usr/bin/python3 -I -B -c " + SSHConfig.shellQuote(manager) }
+    var summaryText: String {
+        switch action {
+        case .install: return adoptLegacy ? "Существующие уведомления перейдут под управление SSH Hub. Токен останется на сервере, если не задан новый." : "Будут установлены уведомления Telegram о входе по SSH."
+        case .configure: return "Будут сохранены настройки и обновлён управляемый обработчик уведомлений. Пустой токен сохраняет текущий."
+        case .enable: return "Уведомления будут включены с сохранёнными настройками."
+        case .disable: return "Уведомления будут выключены. Настройки и токен останутся на сервере."
+        case .remove: return "Будут удалены управляемый хук SSH, служба, очередь и настройки, включая токен на сервере."
+        case .inspect: return "Состояние будет прочитано без изменений на сервере."
+        }
+    }
     var reviewText: String {
         let configText = String(decoding: (try? JSONEncoder().encode(configuration)) ?? Data(), as: UTF8.self)
         let tokenText = action == .remove ? "удалить с сервера" : newToken == nil ? "сохранить текущий на сервере" : "заменить введённым значением"
         let changes: String
         switch action {
         case .install: changes = adoptLegacy ? "Перенести распознанную схему: сохранить настройки и токен на сервере, заменить только известный SSH-хук и его файлы управляемой службой." : "Установить собственный PAM-хук, локальную очередь и службу доставки Telegram."
-        case .configure: changes = "Обновить только настройки управляемых уведомлений. Пустой токен сохраняет текущий серверный токен."
+        case .configure: changes = "Обновить настройки и управляемый обработчик уведомлений. Пустой токен сохраняет текущий серверный токен."
         case .enable: changes = "Включить уведомления с сохранёнными настройками."
         case .disable: changes = "Отключить уведомления. Настройки и токен останутся на сервере."
         case .remove: changes = "Удалить управляемый PAM-хук, службу, очередь и настройки, включая серверный токен."
@@ -106,6 +150,8 @@ enum LoginNotificationFailure {
         case "legacy_requires_adoption": return "Сначала явно перенеси существующую схему в управление SSH Hub."
         case "foreign_installation", "unsafe_path", "unrecognized_legacy", "ownership_mismatch", "conflict": return "Обнаружены неизвестные или изменённые файлы уведомлений. Автоматическая перезапись и удаление запрещены."
         case "invalid_configuration", "invalid_payload", "invalid_config", "invalid_token", "token_required", "invalid_request", "invalid_helper": return "Проверь токен бота, chat_id, название узла и тему сообщения."
+        case "timezone_unavailable": return "На сервере недоступен выбранный часовой пояс. Выбери другой пояс или установи системную базу tzdata вручную."
+        case "helper_upgrade_required": return "Для нового формата нужно обновить обработчик уведомлений через актуальный SSH Hub."
         case "service_failed", "verification_failed", "operation_failed", "interrupted", "recovery_required", "systemd_failed", "apply_failed", "rollback_failed": return "Сервер не подтвердил изменение службы. Проверь состояние заново; сведения о восстановлении доступны на сервере."
         case "busy": return "На сервере уже выполняется действие с уведомлениями. Дождись завершения и проверь состояние."
         case "already_installed", "not_installed": return "Установка изменилась. Проверь состояние заново."
@@ -123,7 +169,8 @@ enum LoginNotificationFailure {
             let forbidden: Set<String> = ["token", "bottoken", "telegrambottoken", "password", "secret", "authorization", "credentials", "apikey", "botkey"]
             return object.count <= 50 && object.allSatisfy { key, item in
                 let normalized = key.lowercased().filter { $0.isLetter || $0.isNumber }
-                return (normalized == "hastoken" || !forbidden.contains(where: { normalized.contains($0) })) && safeObject(key, depth: depth + 1) && safeObject(item, depth: depth + 1)
+                let safeValue = key == "message_template" ? (item as? String).map({ LoginNotificationMessage.validation($0) == nil && $0.range(of: "[0-9]{4,20}:[A-Za-z0-9_-]{20,200}", options: .regularExpression) == nil }) ?? false : safeObject(item, depth: depth + 1)
+                return (normalized == "hastoken" || !forbidden.contains(where: { normalized.contains($0) })) && safeObject(key, depth: depth + 1) && safeValue
             }
         }
         if let array = value as? [Any] { return array.count <= 100 && array.allSatisfy { safeObject($0, depth: depth + 1) } }
@@ -170,6 +217,7 @@ enum LoginNotificationFailure {
         self.entry = entry; entryTitle = title; destination = entry.user + "@" + entry.host + ":" + entry.port
         self.config = config; self.resources = resources ?? Bundle.main.resourceURL?.appendingPathComponent("LoginNotifications"); self.resolveEntry = resolveEntry
         configuration.hostLabel = title
+        configuration.timeZone = TimeZone.current.identifier
     }
     private func current() throws -> SSHAlias {
         guard let latest = resolveEntry(), latest.favoriteID == entry.favoriteID, latest.canSSH, !latest.isQuickConnection else { throw ConfigError.message("Запись или профиль изменились. Открой уведомления заново.") }
@@ -245,6 +293,7 @@ enum LoginNotificationFailure {
                 let result = try LoginNotificationFailure.decode(data)
                 status = result; configuration = result.configuration
                 if configuration.hostLabel.isEmpty { configuration.hostLabel = entryTitle }
+                if configuration.timeZone == nil { configuration.timeZone = TimeZone.current.identifier }
                 inspectedFingerprint = fingerprint; inspectedSnapshot = snapshot; adoptLegacy = false; review = nil; token = ""
                 message = action == .inspect ? "Состояние прочитано. Настройки на сервере не менялись." : "Действие подтверждено сервером."
             } catch is CancellationError {

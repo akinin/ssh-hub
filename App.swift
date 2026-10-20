@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import AppKit
 import UniformTypeIdentifiers
 import ConsoleSupport
@@ -513,59 +514,104 @@ import ConsoleSupport
     }
 }
 
+@MainActor final class HubSession: ObservableObject {
+    @Published private(set) var store: AliasStore?
+    private var updates: AnyCancellable?
+    func start() {
+        guard store == nil else { return }
+        let value = AliasStore()
+        updates = value.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
+        store = value
+    }
+}
+
 @main struct SSHHubApp: App {
-    @StateObject private var store = AliasStore()
+    @StateObject private var session = HubSession()
+    private var store: AliasStore? { session.store }
+    @ObservedObject private var access = AppAccess.shared
     @ObservedObject private var updater = AppUpdater.shared
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     init() { NSApplication.shared.setActivationPolicy(.regular) }
     var body: some Scene {
-        Window("SSH Hub", id: "main") { MainView().environmentObject(store) }
+        Window("SSH Hub", id: "main") {
+            Group {
+                if access.locked { AppUnlockView(access: access) }
+                else if let store { MainView().environmentObject(store) }
+                else { ProgressView().frame(minWidth: 600, minHeight: 400) }
+            }.onAppear { initializeStore() }.onChange(of: access.locked) { _, _ in initializeStore() }
+        }
             .defaultSize(width: 960, height: 640)
             .windowResizability(.contentMinSize)
-            .commands {
-                CommandGroup(replacing: .newItem) {
-                    Button("Новая запись…") { store.newRecord() }
-                        .keyboardShortcut("n", modifiers: .command)
-                }
-                CommandGroup(after: .newItem) {
-                    Button("Палитра действий…") { store.showingPalette = true }.keyboardShortcut("p", modifiers: .command)
-                    Button("Резервное копирование…") { store.showingBackup = true }
-                    Button("Шаблоны записей…") { store.showingTemplates = true }
-                    Button("Инструменты…") { store.openScanner() }
-                    Button("Библиотека команд…") { store.showingCommandLibrary = true }
-                    Button("Статус доступности…") { store.showingAvailability = true }
-                    Button("Сетевая карта…") { store.openTopology() }
-                    Button("Быстрое подключение…") { QuickAccessController.shared.show() }.keyboardShortcut("p", modifiers: [.command, .shift])
-                    Button("Обновить список") { store.reload() }.keyboardShortcut("r", modifiers: .command)
-                    Button("Создать SSH-ключ…") { store.generatingKey = true }.keyboardShortcut("k", modifiers: [.command, .shift])
-                    Button("Показать конфиг в Finder") { store.openConfig() }.keyboardShortcut("o", modifiers: .command)
-                    Divider()
-                    Button("Импорт записей…") { store.chooseImport() }
-                    Button("Экспорт всех записей…") { store.export(entries: store.ordered) }.disabled(store.aliases.isEmpty)
-                    Button("SSH-ключи…") { store.showingKeys = true }.keyboardShortcut("k", modifiers: .command)
-                    Button("История подключений…") { store.showingHistory = true }.keyboardShortcut("h", modifiers: [.command, .shift])
-                    Button("SSH-туннели…") { store.showingTunnels = true }.keyboardShortcut("t", modifiers: [.command, .shift])
-                    Button("Дублировать запись…") { if let entry = store.current { store.duplicate(entry) } }
-                        .keyboardShortcut("d", modifiers: .command).disabled(store.current == nil)
-                }
-                CommandGroup(after: .appInfo) {
-                    Button(updater.available == nil ? "Проверить обновления…" : "Доступно обновление…") { QuickAccessController.shared.openMain { updater.check() } }
-                }
-                CommandGroup(replacing: .appSettings) {
-                    Button("Настройки…") { store.showingSettings = true }.keyboardShortcut(",", modifiers: .command)
-                }
-                CommandGroup(after: .undoRedo) {
-                    Button("Отменить изменение записи") { store.undo() }
-                        .keyboardShortcut("z", modifiers: [.command, .option]).disabled(store.undoChange == nil && store.undoRecordChange == nil)
-                }
-                CommandMenu("Инструменты") {
-                    ForEach(OperationsPanel.allCases.filter { $0 != .search }) { panel in Button { store.operationsPanel = panel } label: { Label(panel.title + "…", systemImage: panel.icon) } }
-                    Divider()
-                    Button("Уведомления о входе…", systemImage: "bell.badge") { store.showLoginNotifications() }.disabled(store.current?.canSSH != true)
-                    Button("ИИ-помощник…", systemImage: "sparkles") { store.presentAssistant() }
-                }
-                CommandMenu("Подключения") { StatusMenu().environmentObject(store) }
-            }
+            .commands { HubCommands(session: session) }
+    }
+    private func initializeStore() { if !access.locked { session.start() } }
+}
+
+struct HubCommands: Commands {
+    @ObservedObject var session: HubSession
+    @ObservedObject private var access = AppAccess.shared
+    @ObservedObject private var updater = AppUpdater.shared
+    // Every command is disabled until startup authentication has completed.
+    private var store: AliasStore { session.store! }
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Group {
+                Button("Новая запись…") { store.newRecord() }
+                .keyboardShortcut("n", modifiers: .command)
+            }.disabled(access.locked || session.store == nil)
+        }
+        CommandGroup(after: .newItem) {
+            Group {
+                Button("Палитра действий…") { store.showingPalette = true }.keyboardShortcut("p", modifiers: .command)
+                Button("Резервное копирование…") { store.showingBackup = true }
+                Button("Шаблоны записей…") { store.showingTemplates = true }
+                Button("Инструменты…") { store.openScanner() }
+                Button("Библиотека команд…") { store.showingCommandLibrary = true }
+                Button("Статус доступности…") { store.showingAvailability = true }
+                Button("Сетевая карта…") { store.openTopology() }
+                Button("Быстрое подключение…") { QuickAccessController.shared.show() }.keyboardShortcut("p", modifiers: [.command, .shift])
+                Button("Обновить список") { store.reload() }.keyboardShortcut("r", modifiers: .command)
+                Button("Создать SSH-ключ…") { store.generatingKey = true }.keyboardShortcut("k", modifiers: [.command, .shift])
+                Button("Показать конфиг в Finder") { store.openConfig() }.keyboardShortcut("o", modifiers: .command)
+                Divider()
+                Button("Импорт записей…") { store.chooseImport() }
+                Button("Экспорт всех записей…") { store.export(entries: store.ordered) }.disabled(session.store?.aliases.isEmpty != false)
+                Button("SSH-ключи…") { store.showingKeys = true }.keyboardShortcut("k", modifiers: .command)
+                Button("История подключений…") { store.showingHistory = true }.keyboardShortcut("h", modifiers: [.command, .shift])
+                Button("SSH-туннели…") { store.showingTunnels = true }.keyboardShortcut("t", modifiers: [.command, .shift])
+                Button("Дублировать запись…") { if let entry = store.current { store.duplicate(entry) } }
+                .keyboardShortcut("d", modifiers: .command).disabled(session.store?.current == nil)
+            }.disabled(access.locked || session.store == nil)
+        }
+        CommandGroup(after: .appInfo) {
+            Group {
+                Button(updater.available == nil ? "Проверить обновления…" : "Доступно обновление…") { QuickAccessController.shared.openMain { updater.check() } }
+            }.disabled(access.locked || session.store == nil)
+        }
+        CommandGroup(replacing: .appSettings) {
+            Group {
+                Button("Настройки…") { store.showingSettings = true }.keyboardShortcut(",", modifiers: .command)
+            }.disabled(access.locked || session.store == nil)
+        }
+        CommandGroup(after: .undoRedo) {
+            Group {
+                Button("Отменить изменение записи") { store.undo() }
+                .keyboardShortcut("z", modifiers: [.command, .option]).disabled(session.store?.undoChange == nil && session.store?.undoRecordChange == nil)
+            }.disabled(access.locked || session.store == nil)
+        }
+        CommandMenu("Инструменты") {
+            Group {
+                ForEach(OperationsPanel.allCases.filter { $0 != .search }) { panel in Button { store.operationsPanel = panel } label: { Label(panel.title + "…", systemImage: panel.icon) } }
+                Divider()
+                Button("Уведомления о входе…", systemImage: "bell.badge") { store.showLoginNotifications() }.disabled(session.store?.current?.canSSH != true)
+                Button("ИИ-помощник…", systemImage: "sparkles") { store.presentAssistant() }
+            }.disabled(access.locked || session.store == nil)
+        }
+        CommandMenu("Подключения") {
+            Group {
+                if let store = session.store, !access.locked { StatusMenu().environmentObject(store) }
+            }.disabled(access.locked || session.store == nil)
+        }
     }
 }
 
@@ -936,6 +982,7 @@ struct MainView: View {
 struct AliasDetail: View {
     @EnvironmentObject var store: AliasStore
     let entry: SSHAlias
+    @State private var customizingTiles = false
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
@@ -946,28 +993,13 @@ struct AliasDetail: View {
                         recordInfo
                     }
                 }
+                HStack { Spacer(); Button("Настроить плитки…", systemImage: "slider.horizontal.3") { customizingTiles = true }.font(.caption).accessibilityIdentifier("customizeRecordTiles") }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 165), spacing: 10)], spacing: 10) {
-                    if entry.recordKind?.isWeb == true {
-                        tile("Открыть внутри", detail: "Во вкладке SSH Hub", icon: "macwindow") { store.openWebsite(entry) }
-                        tile("Открыть в браузере", detail: entry.transport?.tunnel == nil ? "Браузер по умолчанию" : "Напрямую, без SSH-туннеля", icon: "arrow.up.forward.square") { store.openWebsiteInBrowser(entry) }
-                    } else if entry.canConnect {
-                        tile("Подключиться", detail: entry.canSSH ? "Консоль SSH" : entry.recordKind?.title ?? "Сеанс", icon: entry.recordKind?.icon ?? "cable.connector") { store.connect(entry) }
-                    }
-                    if entry.canSSH {
-                        tile("SFTP", detail: "Файлы сервера", icon: "folder") { store.openSFTP(entry) }
-                    }
-                    if entry.canSSH || entry.recordKind == .localShell {
-                        tile("Логи", detail: "Захват, поиск и анализ", icon: "text.alignleft") { store.openPage(entry, section: .logs) }
-                    }
-                    tile("Инвентаризация", detail: "Оборудование и сведения", icon: "shippingbox") { store.openPage(entry, section: .inventory) }
-                    tile("Документация", detail: "Заметки и инструкции", icon: "doc.richtext") { store.showDocumentation(entry) }
-                    tile("Вложения", detail: "Файлы записи", icon: "paperclip") { store.showAttachments(entry) }
-                    tile("Инструменты", detail: "Nmap, DNS, порты, TLS и IP", icon: "wrench.and.screwdriver") { store.openScanner(entry) }
-                    tile("Редактировать", detail: "Параметры записи", icon: "pencil") { store.edit(entry) }
-                    if entry.canSSH {
-                        tile("Проверить", detail: "Доступность SSH", icon: "network") { store.check(entry) }.disabled(store.checkingID != nil)
-                        tile("Уведомления", detail: "Вход по SSH → Telegram", icon: "bell.badge") { store.showLoginNotifications(entry) }
-                        tile("Внешний терминал", detail: "Открыть отдельно", icon: "arrow.up.forward.square") { store.connectExternally(entry) }
+                    ForEach(RecordAction.layout(store.appearance(entry).actionTiles, entry: entry).filter { !$0.hidden }) { style in
+                        if let action = RecordAction(rawValue: style.id) {
+                            tile(action.title, detail: action.detail(entry), icon: action == .connect ? entry.recordKind?.icon ?? action.icon : action.icon, color: style.tint) { run(action) }
+                                .disabled(action == .check && store.checkingID != nil)
+                        }
                     }
                 }
                 if store.checkingID == entry.favoriteID { HStack { ProgressView().controlSize(.small); Text("Проверяем подключение…"); Button("Отмена") { store.cancelCheck() } } }
@@ -990,6 +1022,29 @@ struct AliasDetail: View {
                 }
                 Text(entry.localID == nil ? "SSH-алиас из " + entry.source.path.replacingOccurrences(of: NSHomeDirectory(), with: "~") : entry.sshAlias == nil ? "Запись хранится в SSH Hub." : "Запись связана с SSH-алиасом «" + (entry.sshAlias ?? "") + "».").font(.caption).foregroundStyle(.secondary)
             }.padding(24).frame(maxWidth: 850, alignment: .leading).frame(maxWidth: .infinity)
+        }.sheet(isPresented: $customizingTiles) {
+            RecordActionsEditor(entry: entry, stored: store.appearance(entry).actionTiles) { tiles in
+                guard let current = store.aliases.first(where: { $0.favoriteID == entry.favoriteID }) else { return }
+                var appearance = store.appearance(current); appearance.actionTiles = tiles
+                store.setAppearance(appearance, for: current)
+            }
+        }
+    }
+    private func run(_ action: RecordAction) {
+        switch action {
+        case .inside: store.openWebsite(entry)
+        case .browser: store.openWebsiteInBrowser(entry)
+        case .connect: store.connect(entry)
+        case .sftp: store.openSFTP(entry)
+        case .logs: store.openPage(entry, section: .logs)
+        case .inventory: store.openPage(entry, section: .inventory)
+        case .documentation: store.showDocumentation(entry)
+        case .attachments: store.showAttachments(entry)
+        case .tools: store.openScanner(entry)
+        case .edit: store.edit(entry)
+        case .check: store.check(entry)
+        case .notifications: store.showLoginNotifications(entry)
+        case .terminal: store.connectExternally(entry)
         }
     }
     private var recordIcon: some View {
@@ -1013,12 +1068,12 @@ struct AliasDetail: View {
             Button(role: .destructive) { store.prepareDelete(entry) } label: { Image(systemName: "trash").frame(width: 22, height: 24) }.help("Удалить запись").accessibilityLabel("Удалить запись")
         }.buttonStyle(.plain).foregroundStyle(.secondary).fixedSize()
     }
-    private func tile(_ title: String, detail: String, icon: String, action: @escaping () -> Void) -> some View {
+    private func tile(_ title: String, detail: String, icon: String, color: Color = .blue, action: @escaping () -> Void) -> some View {
         Button(action: action) { HStack(spacing: 12) {
-            Image(systemName: icon).font(.system(size: 22)).foregroundStyle(.blue).frame(width: 28)
+            Image(systemName: icon).font(.system(size: 22)).foregroundStyle(color).frame(width: 28)
             VStack(alignment: .leading, spacing: 4) { Text(title).font(.system(size: 13, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.85); Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
             Spacer(minLength: 0)
-        }.padding(.horizontal, 12).frame(maxWidth: .infinity, alignment: .leading).frame(height: 60).background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10)).contentShape(Rectangle()) }.buttonStyle(.plain)
+        }.padding(.horizontal, 12).frame(maxWidth: .infinity, alignment: .leading).frame(height: 60).background(color.opacity(0.06), in: RoundedRectangle(cornerRadius: 10)).contentShape(Rectangle()) }.buttonStyle(.plain)
     }
     private func parameter(_ label: String, _ value: String) -> some View {
         GridRow { Text(label).foregroundStyle(.secondary); Text(value).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.font(.callout)
@@ -1113,7 +1168,8 @@ struct CreateAliasView: View {
     }
     private var connectionFields: some View {
         VStack(alignment: .leading, spacing: 16) {
-            RecordSSHConnectionFields(host: $draft.host, user: $draft.user, port: $draft.port, jump: $draft.jump, authentication: $draft.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: canReuseSavedPassword, identifier: "alias")
+            RecordSSHConnectionFields(host: $draft.host, user: $draft.user, port: $draft.port, jump: $draft.jump, authentication: $draft.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: canReuseSavedPassword, identifier: "alias", changedAt: editing.map { SSHPasswordStore.changedAt(for: $0.entry, config: store.config.url) } ?? nil, savedPassword: canReuseSavedPassword ? { try SSHPasswordStore.storedPassword(for: editing!.entry, config: store.config.url) } : nil)
+            RecordSSHKeyFields(identity: $draft.identity, entry: installationEntry).environmentObject(store)
             Divider()
             if editing != nil {
                 RecordSSHAliasFields(enabled: $aliasEnabled, name: $draft.name, existingAlias: true, identifier: "aliasName")
@@ -1141,9 +1197,9 @@ struct CreateAliasView: View {
         var previousPassword: String?
         do {
             var replacement: String?
-            var changePassword = removePassword || (draft.authentication.usesPassword && !keepPassword && canReuseSavedPassword)
-            if draft.authentication.usesPassword && keepPassword && !password.isEmpty { replacement = password; changePassword = true }
-            else if draft.authentication.usesPassword && keepPassword && canReuseSavedPassword && !removePassword,
+            var changePassword = removePassword || (!keepPassword && canReuseSavedPassword)
+            if keepPassword && !password.isEmpty { replacement = password; changePassword = true }
+            else if keepPassword && canReuseSavedPassword && !removePassword,
                     let original = editing?.entry,
                     SSHPasswordStore.account(for: original, config: store.config.url) != SSHPasswordStore.account(for: target, config: store.config.url) {
                 replacement = try SSHPasswordStore.storedPassword(for: original, config: store.config.url); changePassword = replacement != nil

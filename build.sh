@@ -15,6 +15,8 @@ export CLANG_MODULE_CACHE_PATH="$build_dir/module-cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$build_dir/module-cache"
 swiftc -swift-version 5 -module-cache-path "$build_dir/module-cache" SSHConfig.swift Tests.swift -o "$build_dir/config-tests"
 "$build_dir/config-tests"
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift PasswordToolsView.swift AppAccess.swift PasswordToolsTests.swift -o "$build_dir/password-tools-tests" -framework SwiftUI -framework Security -framework LocalAuthentication
+"$build_dir/password-tools-tests"
 swiftc -swift-version 5 -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionProbe.swift FeatureTests.swift -o "$build_dir/feature-tests"
 "$build_dir/feature-tests"
 swiftc -swift-version 5 -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift PublicKeys.swift TerminalLauncher.swift RecentConnections.swift ExtendedTests.swift -o "$build_dir/extended-tests" -framework AppKit
@@ -60,6 +62,8 @@ swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$b
 swiftc -parse-as-library -swift-version 5 -DREMOTE_LOGS_TEST -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" RemoteLogs.swift RemoteLogsTests.swift -o "$build_dir/remote-logs-tests"
 "$build_dir/remote-logs-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" RecordInventory.swift RecordInventoryTests.swift -o "$build_dir/inventory-tests"
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift ConnectionIcon.swift ConnectionProbe.swift Tunnels.swift SSHCredentials.swift ToolkitRuntime.swift SSHLoginPolicy.swift RecordInventory.swift RecordInventoryView.swift InventoryIntegrationTests.swift -o "$build_dir/inventory-integration-tests" -framework AppKit -framework SwiftUI
+python3 InventoryIntegrationTests.py "$build_dir/inventory-integration-tests"
 "$build_dir/inventory-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionProbe.swift Tunnels.swift SSHCredentials.swift ToolkitRuntime.swift SSHLoginPolicy.swift ConnectionTunnel.swift WinboxSettings.swift Winbox.swift WinboxTests.swift -o "$build_dir/winbox-tests" -framework AppKit -framework Security
 "$build_dir/winbox-tests"
@@ -75,7 +79,7 @@ swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$b
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" WorkspaceDivider.swift WorkspaceDividerTests.swift -o "$build_dir/workspace-divider-tests" -framework AppKit -framework SwiftUI
 "$build_dir/workspace-divider-tests"
 # The 3.0 feature checks use synthetic metadata and owned loopback/process fixtures.
-swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift SSHCredentials.swift SharedCredentials.swift SharedCredentialsView.swift SharedCredentialsTests.swift -o "$build_dir/shared-credentials-tests" -framework AppKit -framework Security -framework LocalAuthentication
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift SSHCredentials.swift SharedCredentials.swift SharedCredentialsView.swift PasswordToolsView.swift SharedCredentialsTests.swift -o "$build_dir/shared-credentials-tests" -framework AppKit -framework Security -framework LocalAuthentication
 "$build_dir/shared-credentials-tests"
 maintenance_sources=(SSHConfig.swift ConfigChanges.swift WorkspaceProfiles.swift ConnectionAppearance.swift ConnectionTree.swift AliasTransfer.swift LocalConnections.swift SavedCommands.swift HubFeatureStorage.swift SSHCredentials.swift ToolkitRuntime.swift Tunnels.swift ConnectionProbe.swift TerminalLauncher.swift PublicKeys.swift SSHLoginPolicy.swift Maintenance.swift)
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" "${maintenance_sources[@]}" MaintenanceTests.swift -o "$build_dir/maintenance-tests" -framework AppKit -framework Security -framework LocalAuthentication

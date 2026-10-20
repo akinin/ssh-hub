@@ -300,6 +300,50 @@ class NotificationTests(unittest.TestCase):
             self.assertEqual(list(worker.queue.iterdir()), [])
             self.assert_private(json.loads((root / notify.STATE / "status.json").read_bytes()))
 
+    def test_template_timezone_and_literal_custom_fields(self):
+        material = event(time=1735732800)  # 2025-01-01 12:00:00 UTC
+        cfg = configuration(time_zone="Asia/Tbilisi", message_template="Вход: {server}\nКто: {user}\nАдрес: {ip}\n{time} · {timezone}\n{terminal} / {service}\n{tag}\n#PVE_Olshaniki")
+        result, calls = self.deliver(config=cfg, material=material)
+        self.assertEqual(result["state"], "sent")
+        text = json.loads(calls[0][1])["text"]
+        self.assertIn("2025-01-01 16:00:00 +0400 · Asia/Tbilisi", text)
+        self.assertIn("#PVE_Olshaniki", text)
+        self.assertIn("Кто: fixture", text)
+        self.assertIn("Адрес: 192.0.2.14", text)
+        self.assertIn("pts/4 / sshd", text)
+        self.assertNotIn("{user}", text)
+        self.assertNotIn(TOKEN, text)
+        self.assertNotIn("parse_mode", json.loads(calls[0][1]))
+        literal = notify.render_message(cfg, event(user="{server}"))
+        self.assertIn("Кто: {server}", literal)  # no recursive expansion or evaluation
+
+    def test_timezones_dst_legacy_and_optional_fields(self):
+        winter = event(time=1735732800)
+        summer = event(time=1751371200)  # 2025-07-01 12:00:00 UTC
+        cfg = configuration(time_zone="America/New_York", message_template="{time} {timezone}")
+        self.assertIn("07:00:00 -0500", notify.render_message(cfg, winter))
+        self.assertIn("08:00:00 -0400", notify.render_message(cfg, summer))
+        legacy = notify.render_message(configuration(tag=""), event(time=1735732800, tty=""))
+        self.assertIn("2025-01-01 12:00:00 UTC", legacy)
+        self.assertNotIn("Терминал", legacy)
+        self.assertFalse(legacy.endswith("\n"))
+        self.assertIn("(Asia/Tbilisi)", notify.render_message(configuration(time_zone="Asia/Tbilisi"), winter))
+
+    def test_template_validation_and_no_secret_transport(self):
+        for fields in ({"time_zone": "NoSuch/Fixture"}, {"time_zone": "../UTC"}, {"time_zone": None},
+                       {"message_template": "{token}"}, {"message_template": "{user.__class__}"},
+                       {"message_template": "{user!r}"}, {"message_template": "{ip"},
+                       {"message_template": ""}, {"message_template": None},
+                       {"message_template": "x\r"}, {"message_template": "Ж" * 1025},
+                       {"message_template": TOKEN}):
+            with self.subTest(fields=tuple(fields)):
+                with self.assertRaises(ValueError):
+                    notify.validate_config(configuration(**fields))
+                _, calls = self.deliver(config=configuration(**fields))
+                self.assertEqual(calls, [])
+        notify.validate_config(configuration(message_template="Ж" * 1024))
+
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

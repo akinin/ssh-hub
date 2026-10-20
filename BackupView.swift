@@ -80,9 +80,9 @@ struct BackupView: View {
             Label("Резервное копирование", systemImage: "externaldrive.badge.timemachine").font(.title2).bold()
             Text("Единый архив записей, логотипов, команд, папок, шаблонов, документации, вложений, сетевых карт, тегов, сценариев и настроек интеграций профилей. AES-256-GCM; ключ из пароля — PBKDF2-SHA256, 600 000 итераций. Пароль архива нигде не сохраняется.").font(.callout).foregroundStyle(.secondary)
             Text("Пароли и API-ключи из Связки ключей, включая общие учётные данные, не включаются. Файлы SSH-ключей также не включаются. SSH-алиасы восстанавливаются как отдельные записи SSH Hub. Пути к ключам могут потребовать изменения на другом Mac. Вложения — до 256 МБ на архив.").font(.caption).foregroundStyle(.secondary)
-            SecureField("Пароль архива (не менее 8 символов)", text: $password).textFieldStyle(.roundedBorder)
+            PasswordEntryView(prompt: "Пароль архива (не менее 8 символов)", text: $password, onGenerated: { confirmation = $0 }).textFieldStyle(.roundedBorder)
             if backup == nil {
-                SecureField("Повтори пароль для создания архива", text: $confirmation).textFieldStyle(.roundedBorder)
+                PasswordEntryView(prompt: "Повтори пароль для создания архива", text: $confirmation, onGenerated: { password = $0 }).textFieldStyle(.roundedBorder)
                 HStack {
                     Button("Создать архив…") { export() }.disabled(busy || password.count < 8 || password != confirmation)
                     Button("Открыть архив для восстановления…") { chooseRestore() }.disabled(busy || password.count < 8)

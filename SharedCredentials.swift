@@ -93,7 +93,10 @@ struct SharedCredentialRepository {
 protocol SharedCredentialSecretStorage: AnyObject {
     func read(scope: String, id: UUID, context: LAContext?) throws -> String?
     func write(_ password: String?, scope: String, id: UUID, protected: Bool, context: LAContext?) throws
+    func changedAt(scope: String, id: UUID) -> Date?
 }
+
+extension SharedCredentialSecretStorage { func changedAt(scope: String, id: UUID) -> Date? { nil } }
 
 final class SharedCredentialKeychain: SharedCredentialSecretStorage {
     private let service = "com.olshaniki.sshhub.shared-credentials.v1"
@@ -108,6 +111,15 @@ final class SharedCredentialKeychain: SharedCredentialSecretStorage {
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = result as? Data, let value = String(data: data, encoding: .utf8) else { throw SharedCredentialError.keychain }; return value
     }
+    func changedAt(scope: String, id: UUID) -> Date? {
+        var item = query(scope: scope, id: id, context: nil); item[kSecReturnAttributes as String] = true
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(item as CFDictionary, &result) == errSecSuccess, let attributes = result as? [String: Any],
+              let data = attributes[kSecAttrGeneric as String] as? Data,
+              let text = String(data: data, encoding: .utf8), text.hasPrefix("ssh-hub-password-date:"),
+              let seconds = Double(text.dropFirst("ssh-hub-password-date:".count)), seconds.isFinite else { return nil }
+        return Date(timeIntervalSince1970: seconds)
+    }
     func write(_ password: String?, scope: String, id: UUID, protected: Bool, context: LAContext?) throws {
         let query = query(scope: scope, id: id, context: context)
         guard let password, !password.isEmpty else {
@@ -118,7 +130,8 @@ final class SharedCredentialKeychain: SharedCredentialSecretStorage {
         // Current ad hoc distribution uses the macOS login Keychain. The optional owner
         // confirmation is enforced by SharedCredentialRuntime; it is an app lock, not an
         // OS user-presence ACL (which requires a data-protection Keychain signing identity).
-        let update: [String: Any] = [kSecValueData as String: Data(password.utf8)]
+        if try read(scope: scope, id: id, context: context) == password { return }
+        let update: [String: Any] = [kSecValueData as String: Data(password.utf8), kSecAttrGeneric as String: Data("ssh-hub-password-date:\(Date().timeIntervalSince1970)".utf8)]
         var status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
         if status == errSecItemNotFound {
             var item = query; update.forEach { item[$0.key] = $0.value }; item[kSecAttrLabel as String] = "SSH Hub · Общие учётные данные"; item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
@@ -206,6 +219,7 @@ final class SharedCredentialRuntime: @unchecked Sendable {
         return result
     }
     func readSecret(_ id: UUID) throws -> String? { mutex.lock(); defer { mutex.unlock() }; guard active else { throw SharedCredentialError.inactive }; guard !document.requiresAuthentication || context != nil else { throw SharedCredentialError.locked }; return try secrets.read(scope: repository.scope, id: id, context: context) }
+    func passwordChangedAt(_ id: UUID) -> Date? { mutex.lock(); defer { mutex.unlock() }; guard active && (!document.requiresAuthentication || context != nil) else { return nil }; return secrets.changedAt(scope: repository.scope, id: id) }
     func writeSecret(_ password: String?, id: UUID, protected: Bool) throws { mutex.lock(); defer { mutex.unlock() }; guard active else { throw SharedCredentialError.inactive }; guard !document.requiresAuthentication || context != nil else { throw SharedCredentialError.locked }; try secrets.write(password, scope: repository.scope, id: id, protected: protected, context: context) }
 }
 

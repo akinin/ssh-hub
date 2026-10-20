@@ -18,12 +18,39 @@ import struct
 import subprocess
 import time
 import uuid
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 CONFIG = "etc/ssh-hub-login-notify/config.json"
 STATE = "var/lib/ssh-hub-login-notify"
 SOCKET = "run/ssh-hub-login-notify/events.sock"
 MAX_EVENT = 4096
 MAX_QUEUE = 128
+
+
+MESSAGE_VARIABLES = {"server", "user", "ip", "time", "timezone", "terminal", "service", "tag"}
+DEFAULT_TEMPLATE = "SSH-сессия открыта\nСервер: {server}\nПользователь: {user}\nИсточник: {ip}\nВремя: {time} ({timezone})\nТерминал: {terminal}\n{tag}"
+
+
+def validate_message_settings(value, check_timezone=True):
+    zone = value.get("time_zone")
+    if "time_zone" in value:
+        if (not isinstance(zone, str) or len(zone.encode()) > 100 or not zone
+                or not re.fullmatch(r"[A-Za-z0-9_+.-]+(?:/[A-Za-z0-9_+.-]+)*", zone)
+                or any(part in (".", "..") for part in zone.split("/"))):
+            raise ValueError("invalid_configuration")
+        if check_timezone:
+            try:
+                ZoneInfo(zone)
+            except (ValueError, ZoneInfoNotFoundError):
+                raise ValueError("timezone_unavailable")
+    template = value.get("message_template")
+    if "message_template" in value:
+        if (not isinstance(template, str) or not template.strip() or len(template.encode()) > 2048
+                or any((ord(c) < 32 and c != "\n") or ord(c) == 127 for c in template)):
+            raise ValueError("invalid_configuration")
+        remainder = re.sub(r"\{([a-z_]+)\}", lambda m: "" if m[1] in MESSAGE_VARIABLES else m[0], template)
+        if "{" in remainder or "}" in remainder:
+            raise ValueError("invalid_configuration")
 
 
 def plain(value, maximum, empty=False):
@@ -33,7 +60,7 @@ def plain(value, maximum, empty=False):
 
 
 def validate_config(value, require_token=True):
-    if not isinstance(value, dict) or set(value) - {"schema", "enabled", "token", "chat_id", "host_label", "tag", "message_thread_id"}:
+    if not isinstance(value, dict) or set(value) - {"schema", "enabled", "token", "chat_id", "host_label", "tag", "message_thread_id", "time_zone", "message_template"}:
         raise ValueError("invalid_configuration")
     chat = plain(value.get("chat_id"), 64)
     if not re.fullmatch(r"-?[1-9][0-9]{0,18}|@[A-Za-z][A-Za-z0-9_]{4,31}", chat):
@@ -48,10 +75,11 @@ def validate_config(value, require_token=True):
     token = value.get("token", "")
     if require_token and (not isinstance(token, str) or not re.fullmatch(r"[0-9]{4,20}:[A-Za-z0-9_-]{20,200}", token)):
         raise ValueError("invalid_token")
-    if require_token and any(token in value.get(key, "") for key in ("chat_id", "host_label", "tag")):
+    if require_token and any(token in (value.get(key) or "") for key in ("chat_id", "host_label", "tag", "message_template")):
         raise ValueError("invalid_configuration")
     if "schema" in value and (type(value["schema"]) is not int or value["schema"] != 1) or "enabled" in value and type(value["enabled"]) is not bool:
         raise ValueError("invalid_configuration")
+    validate_message_settings(value)
     return value
 
 
@@ -128,18 +156,27 @@ def telegram_transport(token, body):
         connection.close()
 
 
+def render_message(config, value):
+    zone_name = config.get("time_zone") or "UTC"
+    local = datetime.datetime.fromtimestamp(value["time"], ZoneInfo(zone_name))
+    values = {"server": config["host_label"], "user": value["user"] or "—", "ip": value["remote_host"] or "локально / не указан",
+              "time": local.strftime("%Y-%m-%d %H:%M:%S %z"), "timezone": zone_name,
+              "terminal": value["tty"] or "—", "service": value["service"], "tag": "#" + config["tag"] if config.get("tag") else ""}
+    template = config.get("message_template")
+    if template is None and "time_zone" not in config:
+        # Existing installations keep their previous format until explicitly configured.
+        values["time"] = local.strftime("%Y-%m-%d %H:%M:%S UTC")
+        template = "SSH-сессия открыта\nСервер: {server}\nПользователь: {user}\nИсточник: {ip}\nВремя: {time}" + ("\nТерминал: {terminal}" if value["tty"] else "") + "\n{tag}"
+    return re.sub(r"\{([a-z_]+)\}", lambda m: values[m[1]], template if template is not None else DEFAULT_TEMPLATE).rstrip("\n")
+
+
 def deliver(config, value, transport=None):
     try:
         validate_config(config)
         if config.get("enabled") is False:
             return {"state": "failed", "error": "disabled"}
         value = event(value)
-        date = datetime.datetime.fromtimestamp(value["time"], datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        text = "SSH-сессия открыта\nСервер: " + config["host_label"] + "\nПользователь: " + (value["user"] or "—") + "\nИсточник: " + (value["remote_host"] or "локально / не указан") + "\nВремя: " + date
-        if value["tty"]:
-            text += "\nТерминал: " + value["tty"]
-        if config.get("tag"):
-            text += "\n#" + config["tag"]
+        text = render_message(config, value)
         body = {"chat_id": config["chat_id"], "text": text[:3500], "link_preview_options": {"is_disabled": True}}
         if config.get("message_thread_id") is not None:
             body["message_thread_id"] = config["message_thread_id"]

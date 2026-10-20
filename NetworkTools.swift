@@ -2,10 +2,10 @@ import SwiftUI
 import AppKit
 
 enum NetworkTool: String, CaseIterable, Identifiable {
-    case nmap, dns, ports, tls, ip, route, http, wake, speed, registration, bonjour, ssh, transform
+    case nmap, dns, ports, tls, ip, route, http, wake, speed, registration, bonjour, ssh, transform, passwords
     var id: String { rawValue }
-    var title: String { switch self { case .nmap: return "Nmap"; case .dns: return "DNS"; case .ports: return "Порты"; case .tls: return "TLS"; case .ip: return "IP-калькулятор"; case .route: return "Ping / маршрут"; case .http: return "HTTP"; case .wake: return "Wake-on-LAN"; case .speed: return "Скорость сети"; case .registration: return "Whois / RDAP"; case .bonjour: return "Bonjour / mDNS"; case .ssh: return "Проверка SSH"; case .transform: return "Преобразования" } }
-    var icon: String { switch self { case .nmap: return "network"; case .dns: return "globe"; case .ports: return "cable.connector"; case .tls: return "lock.shield"; case .ip: return "number"; case .route: return "point.topleft.down.to.point.bottomright.curvepath"; case .http: return "globe.americas"; case .wake: return "power"; case .speed: return "speedometer"; case .registration: return "info.circle"; case .bonjour: return "antenna.radiowaves.left.and.right"; case .ssh: return "terminal"; case .transform: return "arrow.left.arrow.right" } }
+    var title: String { switch self { case .nmap: return "Nmap"; case .dns: return "DNS"; case .ports: return "Порты"; case .tls: return "TLS"; case .ip: return "IP-калькулятор"; case .route: return "Ping / маршрут"; case .http: return "HTTP"; case .wake: return "Wake-on-LAN"; case .speed: return "Скорость сети"; case .registration: return "Whois / RDAP"; case .bonjour: return "Bonjour / mDNS"; case .ssh: return "Проверка SSH"; case .passwords: return "Генератор паролей"; case .transform: return "Преобразования" } }
+    var icon: String { switch self { case .nmap: return "network"; case .dns: return "globe"; case .ports: return "cable.connector"; case .tls: return "lock.shield"; case .ip: return "number"; case .route: return "point.topleft.down.to.point.bottomright.curvepath"; case .http: return "globe.americas"; case .wake: return "power"; case .speed: return "speedometer"; case .registration: return "info.circle"; case .bonjour: return "antenna.radiowaves.left.and.right"; case .ssh: return "terminal"; case .passwords: return "dice"; case .transform: return "arrow.left.arrow.right" } }
 }
 @MainActor final class NetworkToolsModel: ObservableObject {
     @Published var section = NetworkTool.nmap
@@ -74,7 +74,8 @@ struct NetworkToolsView: View {
                     }
                 }.padding(.horizontal, 12).padding(.vertical, 10).fixedSize(horizontal: false, vertical: true)
                 Divider()
-                if model.section == .nmap { NmapView(model: scanner) }
+                if model.section == .passwords { ScrollView { PasswordGeneratorView().frame(maxWidth: .infinity, alignment: .leading) } }
+                else if model.section == .nmap { NmapView(model: scanner) }
                 else if [.speed,.registration,.bonjour,.ssh,.transform].contains(model.section) { ExtraToolsView(model:model,runner:model.runner).id(model.section).padding(12) }
                 else { ToolkitToolsView(model: model, runner: model.runner).id(model.section).padding(12) }
             }.frame(width: viewport.size.width, height: viewport.size.height, alignment: .topLeading).clipped()
