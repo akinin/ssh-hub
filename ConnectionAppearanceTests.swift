@@ -4,6 +4,29 @@ import AppKit
 @main struct ConnectionAppearanceTests {
     static func check(_ condition: Bool, _ message: String) { if !condition { fatalError(message) } }
     static func main() throws {
+        var pair = RecordAddressPair(domain: "server.example.test", ip: "192.0.2.10")
+        check(pair.valid && pair.selected == "server.example.test", "domain is selected without losing IP")
+        pair.preferred = .ip
+        check(pair.valid && pair.selected == "192.0.2.10" && pair.domain == "server.example.test", "explicit switch keeps both addresses")
+        check(RecordAddressPair.inferred("2001:db8::10").preferred == .ip && RecordAddressPair.validIP("fe80::1%en0"), "IPv6 and scope inference")
+        check(!RecordAddressPair.validIP("999.1.1.1") && !RecordAddressPair.validIP("192.0.2.10:22") && !RecordAddressPair.validIP("1.2.3.4%en0"), "IP field refuses bad literals and ports")
+        check(!RecordAddressPair.validDomain("https://server.example") && !RecordAddressPair.validDomain("server:22") && !RecordAddressPair.validDomain("-bad.example") && !RecordAddressPair.validDomain("bad..example"), "domain field refuses URLs, ports and unsafe hostnames")
+        check(RecordAddressPair.inferred("server.local").preferred == .domain && !RecordAddressPair(ip: "", preferred: .ip).valid, "legacy inference and empty selected address")
+        let url = "https://server.example.test:5001/a%20b?q=one%2Ftwo#section"
+        let rewritten = RecordAddressPair.replacingURLHost(url, with: pair.selected)!
+        check(rewritten == "https://192.0.2.10:5001/a%20b?q=one%2Ftwo#section", "web switch retains scheme, port, encoded path, query and fragment")
+        let ipv6URL = RecordAddressPair.replacingURLHost(url, with: "2001:db8::10")!
+        check(URLComponents(string: ipv6URL)?.port == 5001 && RecordAddressPair.host(URLComponents(string: ipv6URL)!.host!) == "2001:db8::10", "IPv6 URL brackets handled")
+        check(RecordAddressPair.replacingURLHost("https://user:secret@example.test/", with: "192.0.2.10") == nil && RecordAddressPair.replacingURLHost(url, with: "$(bad)") == nil, "no URL userinfo or executable host input")
+        check(pair.reconciled(with: "new.example.test").ip == pair.ip && pair.reconciled(with: "new.example.test").preferred == .domain, "external host edits reconcile primary without dropping alternate")
+        let pairAppearance = ConnectionAppearance(addresses: pair)
+        let pairRoundtrip = try JSONDecoder().decode(ConnectionAppearance.self, from: JSONEncoder().encode(pairAppearance))
+        check(!pairAppearance.isEmpty && pairAppearance.validation == nil && pairRoundtrip == pairAppearance, "optional address metadata persists")
+        check((try JSONDecoder().decode(ConnectionAppearance.self, from: Data("{\"name\":\"legacy\"}".utf8))).addresses == nil, "old appearance without address pair remains readable")
+        let oldRenewals = RecordActionStyle(id: "renewals", color: "purple", hidden: false, placement: .header)
+        let split = RecordAction.catalog([RecordActionStyle(id: "tools"), oldRenewals, RecordActionStyle(id: "edit")])
+        check(Array(split.prefix(4).map(\.id)) == ["tools", "licenses", "payments", "edit"] && split[1].color == "purple" && split[2].placement == .header && !split[2].hidden, "legacy combined action splits in place with style and visibility preserved")
+        check(!RecordAction.saving(split, previous: [oldRenewals]).contains { $0.id == "renewals" }, "saving migrated layout never restores combined action")
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ssh-hub-appearance-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -32,6 +55,8 @@ import AppKit
         check(ConnectionAppearance.decode(Data("broken".utf8)).isEmpty, "corrupt settings handled")
         let alias = SSHAlias(name: "alpha", source: dir.appendingPathComponent("config"), line: 1,
                              options: [SSHOption(key: "HostName", value: "192.0.2.1"), SSHOption(key: "User", value: "demo")])
+        let pairTransfer = AliasTransfer(aliases: [TransferAlias(alias, group: "", favorite: false, appearance: pairAppearance)])
+        check(try AliasTransfer.decode(pairTransfer.encode()).aliases[0].appearance.addresses == pair, "domain/IP and explicit preference included in portable JSON")
         let transfer = AliasTransfer(aliases: [TransferAlias(alias, group: "Дом", favorite: true, appearance: value)])
         let imported = try AliasTransfer.decode(transfer.encode()).aliases[0]
         check(imported.appearance.name == "Домашний сервер" && imported.logo == logo, "JSON roundtrip preserves appearance")

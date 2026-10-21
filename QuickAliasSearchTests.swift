@@ -14,6 +14,7 @@ import Foundation
         func search(_ query: String = "", _ scope: QuickAliasScope = .all) -> [SSHAlias] {
             QuickAliasSearch.results(aliases, query: query, scope: scope, favorites: favorites, groups: groups, history: history)
         }
+        check(QuickAliasSearch.results(aliases, query: "alternate.example.test", scope: .all, favorites: favorites, groups: groups, history: history, addresses: [home.favoriteID: "alternate.example.test"]).map(\.name) == [home.name], "search includes inactive alternate address")
         check(search().map(\.name) == ["alpha", "pve-home", "zeta", "pve"], "favorites then recent then alphabetical")
         check(search("  PVE \n").map(\.name) == ["pve", "pve-home"], "exact and prefix alias outrank favorites and recency")
         check(search("100.10 ROOT дом").map(\.name) == ["pve-home"], "multiple words across address, user and Russian group")

@@ -54,6 +54,10 @@ final class TitleBarMonitor: NSView {
     private weak var splitController: NSSplitViewController?
     private var previousWidth: CGFloat = 280
     var isCollapsed: Bool? { splitController?.splitViewItems.first?.isCollapsed }
+    var visibleWidth: CGFloat {
+        guard let item = splitController?.splitViewItems.first else { return previousWidth }
+        return item.isCollapsed ? 0 : item.viewController.view.frame.width
+    }
     func bind(_ view: NSView) {
         guard let content = view.window?.contentView else { return }
         func find(_ view: NSView) -> NSSplitViewController? {

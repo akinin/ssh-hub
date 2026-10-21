@@ -1,19 +1,22 @@
 import Foundation
+import Darwin
 
 struct ConnectionAppearance: Codable, Equatable {
     var name = ""
     var logo: Data?
+    var addresses: RecordAddressPair? = nil
     var actionTiles: [RecordActionStyle]? = nil
     var pinnedFields: [String]? = nil
     var reminders: [RecordReminder]? = nil
     var reminderAppearance: RecordReminderAppearance? = nil
     var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
-    var isEmpty: Bool { trimmedName.isEmpty && logo == nil && (actionTiles?.isEmpty != false) && pinnedFields == nil && (reminders?.isEmpty != false) && reminderAppearance == nil }
+    var isEmpty: Bool { trimmedName.isEmpty && logo == nil && addresses == nil && (actionTiles?.isEmpty != false) && pinnedFields == nil && (reminders?.isEmpty != false) && reminderAppearance == nil }
     func title(fallback: String) -> String { trimmedName.isEmpty ? fallback : trimmedName }
     var validation: String? {
         if name.count > 80 || name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) {
             return "Название должно занимать одну строку до 80 символов."
         }
+        if let addresses, !addresses.valid { return "Укажи домен без протокола и порта, корректный IPv4/IPv6 и заполни выбранный адрес подключения." }
         if let actionTiles, actionTiles.count > RecordActionStyle.limit || Set(actionTiles.map(\.id)).count != actionTiles.count || !actionTiles.allSatisfy(\.valid) { return "Некорректные настройки плиток." }
         if let fields = pinnedFields, fields.count > RecordPinnedField.allCases.count || Set(fields).count != fields.count || !fields.allSatisfy({ RecordPinnedField(rawValue: $0) != nil }) { return "Некорректный набор полей карточки." }
         if let reminders, reminders.count > 20 || Set(reminders.map(\.id)).count != reminders.count || !reminders.allSatisfy(\.valid) { return "Некорректные лицензии или оплаты: до 20 сроков на запись." }
@@ -52,7 +55,7 @@ enum RecordActionPlacement: String, Codable, CaseIterable, Identifiable {
     var title: String { self == .tiles ? "Плитка" : self == .header ? "Значок вверху" : "Бейдж" }
 }
 struct RecordActionStyle: Codable, Equatable, Identifiable {
-    static let limit = 40
+    static let limit = 64
     var id: String
     var color: String = "blue"
     var hidden = false
@@ -66,11 +69,11 @@ struct RecordActionStyle: Codable, Equatable, Identifiable {
 }
 
 enum RecordAction: String, CaseIterable, Identifiable {
-    case inside, browser, connect, sftp, logs, inventory, documentation, attachments, tools, edit, check, notifications, terminal, favorite, duplicate, export, keePass, vpn, delete, renewals
+    case inside, browser, connect, sftp, logs, inventory, documentation, attachments, tools, edit, check, notifications, terminal, favorite, duplicate, export, keePass, vpn, delete, licenses, payments
     var id: String { rawValue }
     var defaultPlacement: RecordActionPlacement { switch self { case .keePass, .vpn: return .badges; case .favorite, .duplicate, .export, .delete: return .header; default: return .tiles } }
-    var title: String { switch self { case .renewals: return "Лицензии и оплаты"; case .favorite: return "Избранное"; case .duplicate: return "Дублировать"; case .export: return "Экспортировать"; case .keePass: return "KeePass"; case .vpn: return "VPN"; case .delete: return "Удалить"; case .inside: return "Открыть внутри"; case .browser: return "Открыть в браузере"; case .connect: return "Подключиться"; case .sftp: return "SFTP"; case .logs: return "Логи"; case .inventory: return "Инвентаризация"; case .documentation: return "Документация"; case .attachments: return "Вложения"; case .tools: return "Инструменты"; case .edit: return "Редактировать"; case .check: return "Проверить"; case .notifications: return "Уведомления"; case .terminal: return "Внешний терминал" } }
-    var icon: String { switch self { case .renewals: return "calendar.badge.clock"; case .favorite: return "star"; case .duplicate: return "plus.square.on.square"; case .export: return "square.and.arrow.up"; case .keePass: return "key"; case .vpn: return "network.badge.shield.half.filled"; case .delete: return "trash"; case .inside: return "macwindow"; case .browser, .terminal: return "arrow.up.forward.square"; case .connect: return "cable.connector"; case .sftp: return "folder"; case .logs: return "text.alignleft"; case .inventory: return "shippingbox"; case .documentation: return "doc.richtext"; case .attachments: return "paperclip"; case .tools: return "wrench.and.screwdriver"; case .edit: return "pencil"; case .check: return "network"; case .notifications: return "bell.badge" } }
+    var title: String { switch self { case .licenses: return "Лицензии"; case .payments: return "Оплаты"; case .favorite: return "Избранное"; case .duplicate: return "Дублировать"; case .export: return "Экспортировать"; case .keePass: return "KeePass"; case .vpn: return "VPN"; case .delete: return "Удалить"; case .inside: return "Открыть внутри"; case .browser: return "Открыть в браузере"; case .connect: return "Подключиться"; case .sftp: return "SFTP"; case .logs: return "Логи"; case .inventory: return "Инвентаризация"; case .documentation: return "Документация"; case .attachments: return "Вложения"; case .tools: return "Инструменты"; case .edit: return "Редактировать"; case .check: return "Проверить"; case .notifications: return "Уведомления"; case .terminal: return "Внешний терминал" } }
+    var icon: String { switch self { case .licenses: return "key.horizontal"; case .payments: return "creditcard"; case .favorite: return "star"; case .duplicate: return "plus.square.on.square"; case .export: return "square.and.arrow.up"; case .keePass: return "key"; case .vpn: return "network.badge.shield.half.filled"; case .delete: return "trash"; case .inside: return "macwindow"; case .browser, .terminal: return "arrow.up.forward.square"; case .connect: return "cable.connector"; case .sftp: return "folder"; case .logs: return "text.alignleft"; case .inventory: return "shippingbox"; case .documentation: return "doc.richtext"; case .attachments: return "paperclip"; case .tools: return "wrench.and.screwdriver"; case .edit: return "pencil"; case .check: return "network"; case .notifications: return "bell.badge" } }
     func available(_ entry: SSHAlias) -> Bool { switch self {
         case .vpn: return entry.canSSH || [.rdp, .vnc, .web, .website, .telnet, .ftp, .ftps, .webdav].contains(entry.recordKind)
         case .inside: return entry.recordKind?.isWeb == true
@@ -81,7 +84,8 @@ enum RecordAction: String, CaseIterable, Identifiable {
         default: return true
     } }
     func detail(_ entry: SSHAlias) -> String { switch self {
-        case .renewals: return "Сроки и напоминания"
+        case .licenses: return "Сроки, файлы и примечания"
+        case .payments: return "Даты платежей и примечания"
         case .favorite: return "Быстрый доступ к записи"
         case .duplicate: return "Создать копию записи"
         case .export: return "Сохранить в файл"
@@ -103,15 +107,20 @@ enum RecordAction: String, CaseIterable, Identifiable {
         case .terminal: return "Открыть отдельно"
     } }
     static func catalog(_ stored: [RecordActionStyle]?) -> [RecordActionStyle] {
-        let saved = stored ?? [], seen = Set(saved.map(\.id))
-        return (saved + allCases.filter { !seen.contains($0.id) }.map { RecordActionStyle(id: $0.id, color: $0.defaultPlacement == .header ? "gray" : "blue", hidden: $0 == .renewals) }).filter { RecordAction(rawValue: $0.id) != nil || $0.isDivider }
+        let explicit = Set((stored ?? []).map(\.id))
+        let saved = (stored ?? []).flatMap { style -> [RecordActionStyle] in
+            guard style.id == "renewals" else { return [style] }
+            return [RecordAction.licenses, .payments].filter { !explicit.contains($0.id) }.map { action in var copy = style; copy.id = action.id; return copy }
+        }
+        let seen = Set(saved.map(\.id))
+        return (saved + allCases.filter { !seen.contains($0.id) }.map { RecordActionStyle(id: $0.id, color: $0.defaultPlacement == .header ? "gray" : "blue", hidden: $0 == .licenses || $0 == .payments) }).filter { RecordAction(rawValue: $0.id) != nil || $0.isDivider }
     }
     static func layout(_ stored: [RecordActionStyle]?, global: [RecordActionStyle]? = nil, entry: SSHAlias) -> [RecordActionStyle] {
         catalog(stored ?? global).filter { $0.isDivider || RecordAction(rawValue: $0.id)?.available(entry) == true }
     }
     static func saving(_ edited: [RecordActionStyle], previous: [RecordActionStyle]?) -> [RecordActionStyle] {
         let seen = Set(edited.map(\.id))
-        return edited + (previous ?? []).filter { !seen.contains($0.id) && !$0.isDivider }
+        return edited + (previous ?? []).filter { !seen.contains($0.id) && !$0.isDivider && $0.id != "renewals" }
     }
     struct Section: Identifiable {
         var id: String
@@ -249,5 +258,49 @@ enum RecordReminderDefaults {
     static let key = "recordReminderAppearance.v1"
     static func decode(_ data: Data?) -> RecordReminderAppearance {
         guard let data, data.count < 8192, let value = try? JSONDecoder().decode(RecordReminderAppearance.self, from: data), value.valid else { return RecordReminderAppearance() }; return value
+    }
+}
+
+
+// Public metadata only. The selected value is committed through the ordinary
+// record/SSH editor as HostName or the URL host; no runtime fallback or TLS bypass.
+struct RecordAddressPair: Codable, Equatable {
+    enum Preference: String, Codable { case domain, ip }
+    var domain = ""
+    var ip = ""
+    var preferred: Preference = .domain
+    var selected: String { preferred == .domain ? domain : ip }
+    var searchText: String { domain + " " + ip }
+    var valid: Bool { !selected.isEmpty && (domain.isEmpty || Self.validDomain(domain)) && (ip.isEmpty || Self.validIP(ip)) }
+    static func host(_ value: String) -> String {
+        value.hasPrefix("[") && value.hasSuffix("]") ? String(value.dropFirst().dropLast()) : value
+    }
+    static func validIP(_ value: String) -> Bool {
+        guard !value.isEmpty, value.utf8.count <= 128, value == value.trimmingCharacters(in: .whitespacesAndNewlines) else { return false }
+        let parts = value.split(separator: "%", omittingEmptySubsequences: false)
+        guard parts.count <= 2, parts.count == 1 || (!parts[1].isEmpty && parts[1].utf8.count <= 64 && parts[1].allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" || $0 == ".") }) else { return false }
+        var ipv4 = in_addr(), ipv6 = in6_addr()
+        return parts[0].withCString { p in (parts.count == 1 && inet_pton(AF_INET, p, &ipv4) == 1) || inet_pton(AF_INET6, p, &ipv6) == 1 }
+    }
+    static func validDomain(_ value: String) -> Bool {
+        guard !value.isEmpty, value.utf8.count <= 253, !validIP(value), value.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "-" || $0 == "_") }) else { return false }
+        let name = value.hasSuffix(".") ? String(value.dropLast()) : value
+        return name.split(separator: ".", omittingEmptySubsequences: false).allSatisfy { !$0.isEmpty && $0.utf8.count <= 63 && $0.first != "-" && $0.last != "-" }
+    }
+    static func inferred(_ value: String) -> Self {
+        let value = host(value)
+        return validIP(value) ? Self(ip: value, preferred: .ip) : Self(domain: value)
+    }
+    func reconciled(with value: String) -> Self {
+        guard !value.isEmpty else { return self }
+        var copy = self; let value = Self.host(value)
+        if Self.validIP(value) { copy.ip = value; copy.preferred = .ip } else { copy.domain = value; copy.preferred = .domain }
+        return copy
+    }
+    static func replacingURLHost(_ input: String, with host: String) -> String? {
+        guard var parts = URLComponents(string: input), ["http", "https"].contains(parts.scheme?.lowercased() ?? ""), parts.user == nil, parts.password == nil,
+              validIP(host) || validDomain(host) else { return nil }
+        parts.host = host.contains(":") ? "[" + host + "]" : host
+        return parts.url?.absoluteString
     }
 }

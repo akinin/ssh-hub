@@ -239,14 +239,24 @@ struct ConnectionTreeView: NSViewRepresentable {
                 let notices = RecordReminderNotice.collect(store.appearance(entry).reminders)
                 let style = store.appearance(entry).reminderAppearance ?? RecordReminderDefaults.decode(UserDefaults.standard.data(forKey: RecordReminderDefaults.key))
                 if !notices.isEmpty, style.showIcon || style.showCount {
-                    var badges: [NSView] = []
-                    let color = RecordReminderColors.native(style.color(notices[0].level)), tooltip = notices.map(\.text).joined(separator: "\n")
-                    if style.showIcon {
-                        let image = NSImageView(); image.image = NSImage(systemSymbolName: style.icon, accessibilityDescription: "Лицензии и оплаты") ?? NSImage(systemSymbolName: "calendar", accessibilityDescription: "Лицензии и оплаты"); image.contentTintColor = color
-                        image.translatesAutoresizingMaskIntoConstraints = false; image.widthAnchor.constraint(equalToConstant: 13).isActive = true; image.heightAnchor.constraint(equalToConstant: 13).isActive = true; badges.append(image)
+                    let color = RecordReminderColors.native(style.color(notices[0].level))
+                    var groups: [NSView] = []
+                    for kind in [RecordReminderKind.license, .payment] {
+                        let values = RecordReminderNotice.collect(store.appearance(entry).reminders?.filter { $0.kind == kind })
+                        guard !values.isEmpty else { continue }
+                        let title = kind == .license ? "Лицензии" : "Оплаты", tint = RecordReminderColors.native(style.color(values[0].level))
+                        let group = RecordReminderKindBadge(); group.tint = tint; group.spacing = 3
+                        let tooltip = values.map(\.text).joined(separator: "\n")
+                        if style.showIcon {
+                            let icon = style.icon == RecordReminderAppearance().icon ? (kind == .license ? "key.horizontal" : "creditcard") : style.icon
+                            let image = NSImageView(); image.image = NSImage(systemSymbolName: icon, accessibilityDescription: title); image.contentTintColor = tint
+                            image.translatesAutoresizingMaskIntoConstraints = false; image.widthAnchor.constraint(equalToConstant: 13).isActive = true; image.heightAnchor.constraint(equalToConstant: 13).isActive = true; group.addArrangedSubview(image)
+                        }
+                        if style.showCount { let count = NSTextField(labelWithString: String(values.count)); count.font = .monospacedDigitSystemFont(ofSize: 10, weight: .semibold); count.textColor = tint; group.addArrangedSubview(count) }
+                        group.toolTip = tooltip; group.setAccessibilityLabel(title + ": \(values.count). " + tooltip); groups.append(group)
                     }
-                    if style.showCount { let count = NSTextField(labelWithString: String(notices.count)); count.font = .monospacedDigitSystemFont(ofSize: 10, weight: .semibold); count.textColor = color; badges.append(count) }
-                    let badge = NSStackView(views: badges); badge.spacing = 3; badge.toolTip = tooltip; badge.setAccessibilityLabel("Лицензии и оплаты: \(notices.count). " + tooltip); badge.setContentCompressionResistancePriority(.required, for: .horizontal); views.append(badge); cell.reminderTint = color; cell.reminderBadge = badge
+                    let badge = NSStackView(views: groups); badge.spacing = 7; badge.setContentCompressionResistancePriority(.required, for: .horizontal)
+                    views.append(badge); cell.reminderTint = color; cell.reminderBadge = badge
                 }
             }
             if let entry = item.node.entry, store.availability.selected.contains(entry.favoriteID) {
@@ -304,7 +314,7 @@ struct ConnectionTreeView: NSViewRepresentable {
             menu.removeAllItems()
             if let outline { contextItem = outline.item(atRow: outline.clickedRow) as? TreeItem }
             func add(_ title: String, _ action: String) {
-                let symbols = ["connect": "play.circle", "sftp": "folder", "loginNotify": "bell.badge", "external": "arrow.up.forward.square", "website": "macwindow", "browser": "arrow.up.forward.square", "dashboard": "rectangle.grid.2x2", "documentation": "doc.richtext", "attachments": "paperclip", "edit": "pencil", "appearance": "photo", "group": "folder.badge.gearshape", "favorite": "star", "template": "square.stack", "duplicate": "plus.square.on.square", "copy": "doc.on.doc", "copyUsername": "person.crop.rectangle", "copyPassword": "key", "export": "square.and.arrow.up", "delete": "trash", "record": "plus", "folder": "folder.badge.plus", "renewals": "calendar.badge.clock", "folderLogo": "pencil", "subfolder": "folder.badge.plus"]
+                let symbols = ["connect": "play.circle", "sftp": "folder", "loginNotify": "bell.badge", "external": "arrow.up.forward.square", "website": "macwindow", "browser": "arrow.up.forward.square", "dashboard": "rectangle.grid.2x2", "documentation": "doc.richtext", "attachments": "paperclip", "edit": "pencil", "appearance": "photo", "group": "folder.badge.gearshape", "favorite": "star", "template": "square.stack", "duplicate": "plus.square.on.square", "copy": "doc.on.doc", "copyUsername": "person.crop.rectangle", "copyPassword": "key", "export": "square.and.arrow.up", "delete": "trash", "record": "plus", "folder": "folder.badge.plus", "licenses": "key.horizontal", "payments": "creditcard", "folderLogo": "pencil", "subfolder": "folder.badge.plus"]
                 let item = NSMenuItem(title: title, action: #selector(menuAction(_:)), keyEquivalent: "")
                 item.image = NSImage(systemSymbolName: symbols[action] ?? "circle", accessibilityDescription: nil)
                 // Public macOS 27 API: .visible == 1. Keep the stable macOS 26 SDK build compatible with older systems.
@@ -323,7 +333,7 @@ struct ConnectionTreeView: NSViewRepresentable {
                     if entry.canSSH { add("Открыть SFTP", "sftp"); add("Во внешнем терминале", "external"); add("Уведомления о входе…", "loginNotify") }
                     add("Панель управления", "dashboard")
                     menu.addItem(.separator()); add("Копировать логин", "copyUsername"); add("Копировать пароль", "copyPassword")
-                    menu.addItem(.separator()); add("Документация", "documentation"); add("Вложения", "attachments"); add("Лицензии и оплаты…", "renewals"); add("Редактировать…", "edit"); add("Оформление карточки…", "appearance"); add("Переместить в папку…", "group")
+                    menu.addItem(.separator()); add("Документация", "documentation"); add("Вложения", "attachments"); add("Лицензии…", "licenses"); add("Оплаты…", "payments"); add("Редактировать…", "edit"); add("Оформление карточки…", "appearance"); add("Переместить в папку…", "group")
                     add(store.isFavorite(entry) ? "Убрать из избранного" : "В избранное", "favorite")
                     if entry.canSSH { add("Сохранить как шаблон", "template") }
                     add("Дублировать…", "duplicate"); if entry.canSSH { add("Копировать команду", "copy") }; add("Экспорт…", "export"); add("Передать в KeePass…", "keePass")
@@ -332,6 +342,7 @@ struct ConnectionTreeView: NSViewRepresentable {
             }
             if contextItem?.node.isFolder != true { if menu.items.count > 0 { menu.addItem(.separator()) }; add("Новая запись…", "record") }
             add("Новая папка…", "folder")
+            if contextItem?.node.entry != nil { CustomMenuLayout.apply(to: menu, data: UserDefaults.standard.data(forKey: CustomMenuSurface.record.key) ?? Data()) }
         }
         @objc func menuAction(_ sender: NSMenuItem) {
             let action = sender.representedObject as? String ?? ""
@@ -349,7 +360,8 @@ struct ConnectionTreeView: NSViewRepresentable {
                 case "website": store.openWebsite(entry)
                 case "browser": store.openWebsiteInBrowser(entry)
                 case "dashboard": store.showDashboard(entry)
-                case "renewals": store.reminderEntry = entry
+                case "licenses": store.reminderEntry = RecordReminderTarget(entry: entry, kind: .license)
+                case "payments": store.reminderEntry = RecordReminderTarget(entry: entry, kind: .payment)
                 case "attachments": store.showAttachments(entry)
                 case "documentation": store.showDocumentation(entry)
                 case "edit": store.edit(entry)

@@ -58,7 +58,7 @@ import ConsoleSupport
     var maintenance: MaintenanceModel?
     @Published var showingCommandLibrary = false
     @Published var showingTrash = false
-    @Published var reminderEntry: SSHAlias?
+    @Published var reminderEntry: RecordReminderTarget?
     @Published var showingBackup = false
     @Published var showingTemplates = false
     @Published var showingAvailability = false
@@ -162,7 +162,7 @@ import ConsoleSupport
         (groupFilter == "recent" ? recentAliases : ordered).filter { entry in
             let matchesGroup = groupFilter == "all" || groupFilter == "recent" || (groupFilter == "favorites" && isFavorite(entry)) || (groupFilter == "ungrouped" && group(entry).isEmpty) || (groupFilter.hasPrefix("group:") && (ConnectionTree.normalized(group(entry)) == String(groupFilter.dropFirst(6)) || ConnectionTree.normalized(group(entry)).hasPrefix(String(groupFilter.dropFirst(6)) + "/")))
             let matchesAvailability = (groupFilter == "available" || groupFilter == "unavailable") && availability.selected.contains(entry.favoriteID) && availability.results[entry.favoriteID]?.reachable == (groupFilter == "available")
-            return profiles.contains(entry.favoriteID) && (matchesGroup || matchesAvailability || matchesSmartFolder(entry)) && (query.isEmpty || "\(title(entry)) \(entry.name) \(entry.host) \(entry.user) \(entry.website ?? "") \(group(entry)) \(tags(for: entry).joined(separator: " "))".localizedCaseInsensitiveContains(query))
+            return profiles.contains(entry.favoriteID) && (matchesGroup || matchesAvailability || matchesSmartFolder(entry)) && (query.isEmpty || "\(title(entry)) \(entry.name) \(entry.host) \(appearance(entry).addresses?.searchText ?? "") \(entry.user) \(entry.website ?? "") \(group(entry)) \(tags(for: entry).joined(separator: " "))".localizedCaseInsensitiveContains(query))
         }
     }
     func showDocumentation(_ entry: SSHAlias) {
@@ -191,7 +191,14 @@ import ConsoleSupport
         collapsedFolderIDs = collapsedFolderIDs.filter { !ancestors.contains($0) }
         selected = entry.id; revealRequest += 1
     }
-    func appearance(_ entry: SSHAlias) -> ConnectionAppearance { appearances[entry.favoriteID] ?? ConnectionAppearance() }
+    func appearance(_ entry: SSHAlias) -> ConnectionAppearance {
+        var value = appearances[entry.favoriteID] ?? ConnectionAppearance()
+        if let addresses = value.addresses {
+            let host = entry.website.flatMap { URLComponents(string: $0)?.host } ?? entry.host
+            value.addresses = addresses.reconciled(with: host)
+        }
+        return value
+    }
     func title(_ entry: SSHAlias) -> String { if entry.isQuickConnection { return entry.host }; return appearance(entry).title(fallback: localRecords.first(where: { $0.id == entry.localID })?.title ?? entry.name) }
     func setAppearance(_ value: ConnectionAppearance, for entry: SSHAlias) {
         guard value.validation == nil else { return }
@@ -797,6 +804,11 @@ struct MainView: View {
     @State private var quickAddress = ""
     @State private var quickKind: RecordKind = .ssh
     @State private var handledLaunchAction = false
+    @AppStorage(CustomMenuSurface.toolbar.key) private var toolbarData = Data()
+    @AppStorage(CustomMenuSurface.tools.key) private var toolsData = Data()
+    @State private var customizingToolbar = false
+    @State private var toolbarWindowWidth: CGFloat = 960
+    @State private var toolbarSidebarWidth: CGFloat = 280
     @State private var narrowWindow = true
     private var compactToolbar: Bool { narrowWindow && columnVisibility != .detailOnly }
     @StateObject private var sidebarController = SidebarController()
@@ -807,6 +819,8 @@ struct MainView: View {
         guard window.canBecomeMain else { return }
         DispatchQueue.main.async { [weak window] in
             guard let window else { return }
+            toolbarWindowWidth = window.frame.width
+            toolbarSidebarWidth = sidebarController.visibleWidth
             let value = window.frame.width < 1080
             if narrowWindow != value { narrowWindow = value }
             if window.frame.width < 1120 && store.assistantVisible {
@@ -859,22 +873,77 @@ struct MainView: View {
             Image(systemName: symbol).font(.system(size: 17)).frame(width: 28, height: 28).contentShape(Rectangle())
         }.buttonStyle(.plain).help(help).accessibilityLabel(title)
     }
+    private func globalActionEnabled(_ id: String) -> Bool {
+        if id == "lock" { return access.enabled }
+        if id == "export" { return !store.aliases.isEmpty }
+        return true
+    }
+    private func runGlobalAction(_ id: String) {
+        switch id {
+        case "reload": store.reload()
+        case "palette": store.showingPalette = true
+        case "maps": store.openTopology()
+        case "settings": store.showingSettings = true
+        case "assistant": if store.assistantVisible || store.assistantExpanded { store.closeAssistant() } else { store.presentAssistant() }
+        case "lock": if access.enabled { store.lockApplication() }
+        case "record": store.newRecord()
+        case "folder": store.folderParent = ""; store.creatingFolder = true
+        case "commands": store.showingCommandLibrary = true
+        case "trash": store.showingTrash = true
+        case "network": store.openScanner()
+        case "integrations": store.operationsPanel = .integrations
+        case "monitoring": store.operationsPanel = .monitoring
+        case "maintenance": store.operationsPanel = .maintenance
+        case "generateKey": store.generatingKey = true
+        case "keys": store.showingKeys = true
+        case "history": store.showingHistory = true
+        case "tunnels": store.showingTunnels = true
+        case "credentials": store.operationsPanel = .credentials
+        case "profiles": store.showingProfiles = true
+        case "templates": store.showingTemplates = true
+        case "availability": store.showingAvailability = true
+        case "backup": store.showingBackup = true
+        case "import": store.chooseImport()
+        case "export": if !store.aliases.isEmpty { store.export(entries: store.ordered) }
+        default: break
+        }
+    }
+    private func menuAction(_ definition: CustomMenuDefinition) -> ToolbarMenuAction {
+        .init(title: definition.title + (["reload", "lock"].contains(definition.id) ? "" : "…"), symbol: definition.icon, enabled: globalActionEnabled(definition.id), action: { runGlobalAction(definition.id) })
+    }
     private var toolsMenuActions: [ToolbarMenuAction] {
-        [
-            .init(title: "Библиотека команд…", symbol: "books.vertical", action: { store.showingCommandLibrary = true }),
-            .init(title: "Корзина записей…", symbol: "trash", action: { store.showingTrash = true }),
-            .divider,
-            .init(title: "Сетевые инструменты…", symbol: "wrench.and.screwdriver", action: { store.openScanner() }),
-            .init(title: "Сетевые карты…", symbol: "point.3.connected.trianglepath.dotted", action: { store.openTopology() }),
-            .init(title: "Сценарии обслуживания…", symbol: "list.bullet.clipboard", action: { store.operationsPanel = .maintenance }),
-            .divider,
-            .init(title: "Создать SSH-ключ…", symbol: "key.fill", action: { store.generatingKey = true }),
-            .init(title: "SSH-ключи…", symbol: "key.horizontal", action: { store.showingKeys = true }),
-            .init(title: "История подключений…", symbol: "clock.arrow.circlepath", action: { store.showingHistory = true }),
-            .init(title: "SSH-туннели…", symbol: "arrow.left.arrow.right", action: { store.showingTunnels = true }),
-            .divider,
-            .init(title: "Настройки…", symbol: "gearshape", action: { store.showingSettings = true })
-        ]
+        var result: [ToolbarMenuAction] = [], separator = false
+        let definitions = CustomMenuSurface.tools.definitions
+        for value in CustomMenuLayout.visible(toolsData, for: .tools) {
+            if value.isDivider { separator = !result.isEmpty; continue }
+            guard let definition = definitions.first(where: { $0.id == value.id }) else { continue }
+            if separator { result.append(.divider); separator = false }
+            result.append(menuAction(definition))
+        }
+        return result.isEmpty ? [.init(title: "Нет выбранных инструментов", enabled: false)] : result
+    }
+    private var toolbarDefinitions: [CustomMenuDefinition] {
+        let definitions = CustomMenuSurface.toolbar.definitions
+        return CustomMenuLayout.visible(toolbarData, for: .toolbar).compactMap { item in definitions.first { $0.id == item.id } }
+    }
+    private var toolbarCapacity: Int { max(1, min(12, Int((toolbarWindowWidth - toolbarSidebarWidth - (compactToolbar ? 220 : 300) - 120) / 36))) }
+    private var visibleToolbarDefinitions: [CustomMenuDefinition] {
+        toolbarDefinitions.count <= toolbarCapacity ? toolbarDefinitions : Array(toolbarDefinitions.prefix(max(0, toolbarCapacity - 1)))
+    }
+    private var toolbarOverflow: [ToolbarMenuAction] {
+        toolbarDefinitions.dropFirst(visibleToolbarDefinitions.count).flatMap { definition in
+            definition.id == "tools" ? toolsMenuActions : [menuAction(definition)]
+        }
+    }
+    @ViewBuilder private func customizedToolbarButton(_ definition: CustomMenuDefinition) -> some View {
+        if definition.id == "tools" {
+            ToolbarActionsMenu(actions: toolsMenuActions).frame(width: 28, height: 28)
+        } else if definition.id == "maps" {
+            toolbarButton(definition.title, symbol: definition.icon, help: "Сетевые карты · ПКМ — выбрать карту") { store.openTopology() }
+                .contextMenu { ForEach(store.topologyMapIndex) { map in Button(map.name) { store.openTopology(mapID: map.id) } } }
+        } else {
+            toolbarButton(definition.title, symbol: definition.icon, help: definition.title) { runGlobalAction(definition.id) }.disabled(!globalActionEnabled(definition.id))
+        }
     }
     private var filterTitle: String {
         switch store.groupFilter {
@@ -968,39 +1037,26 @@ struct MainView: View {
         .frame(minWidth: 780, minHeight: 550)
         .onAppear { updateToolbarMode() }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification)) { updateToolbarMode($0) }
+        .onReceive(NotificationCenter.default.publisher(for: NSSplitView.didResizeSubviewsNotification)) { _ in updateToolbarMode() }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { updateToolbarMode($0) }
         .background(WindowTitleBehavior().frame(width: 0, height: 0))
         .background(SidebarProbe(controller: sidebarController).frame(width: 0, height: 0))
         .toolbar {
             sidebarToolbar
             if #available(macOS 26.0, *) { ToolbarSpacer(.flexible, placement: .primaryAction) }
-            // A single fixed-size item avoids AppKit regrouping buttons during split-view transitions.
-            ToolbarItem(id: compactToolbar ? "trailingCompactActions" : "trailingActions", placement: .primaryAction) {
+            // One toolbar item keeps button order stable during split-view transitions.
+            ToolbarItem(id: "customizedActions", placement: .primaryAction) {
                 HStack(spacing: 8) {
-                    if compactToolbar {
-                        ToolbarActionsMenu(actions: [
-                            .init(title: "Обновить", symbol: "arrow.clockwise", action: { store.reload() }),
-                            .init(title: "Палитра действий…", symbol: "command", action: { store.showingPalette = true }),
-                            .init(title: "Настройки…", symbol: "gearshape", action: { store.showingSettings = true }),
-                            .divider
-                        ] + toolsMenuActions).frame(width: 28, height: 28)
-                    } else {
-                        toolbarButton("Обновить", symbol: "arrow.clockwise", help: "Обновить · ⌘R") { store.reload() }
-                        toolbarButton("Палитра действий", symbol: "command", help: "Палитра действий · ⌘P") { store.showingPalette = true }
-                        ToolbarActionsMenu(actions: toolsMenuActions).frame(width: 28, height: 28)
-                        toolbarButton("Сетевые карты", symbol: "point.3.connected.trianglepath.dotted", help: "Сетевые карты · ПКМ — выбрать карту") { store.openTopology() }
-                            .contextMenu { ForEach(store.topologyMapIndex) { map in Button(map.name) { store.openTopology(mapID: map.id) } } }
-                            .onAppear { store.reloadTopologyMapIndex() }
-                            .onChange(of: store.profiles.active) { _, _ in store.reloadTopologyMapIndex() }
-                            .onChange(of: store.config.url) { _, _ in store.reloadTopologyMapIndex() }
-                        toolbarButton("Настройки", symbol: "gearshape", help: "Настройки · ⌘,") { store.showingSettings = true }
-                    }
-                    toolbarButton("ИИ-помощник", symbol: "sparkles", help: "Показать или скрыть ИИ-помощника") { if store.assistantVisible || store.assistantExpanded { store.closeAssistant() } else { store.presentAssistant() } }
-                    toolbarButton("Заблокировать", symbol: "lock", help: access.enabled ? "Заблокировать SSH Hub" : "Включи пароль приложения в настройках авторизации") { store.lockApplication() }.disabled(!access.enabled)
-                    toolbarButton("Новая запись", symbol: "plus", help: "Новая запись · ⌘N") { store.newRecord() }
+                    ForEach(visibleToolbarDefinitions) { definition in customizedToolbarButton(definition) }
+                    if !toolbarOverflow.isEmpty { ToolbarActionsMenu(title: "Ещё", symbol: "ellipsis", actions: toolbarOverflow).frame(width: 28, height: 28) }
                 }.padding(.horizontal, 10).fixedSize(horizontal: true, vertical: true)
+                    .contextMenu { Button("Настроить верхнюю панель…", systemImage: "slider.horizontal.3") { customizingToolbar = true } }
+                    .onAppear { store.reloadTopologyMapIndex() }
+                    .onChange(of: store.profiles.active) { _, _ in store.reloadTopologyMapIndex() }
+                    .onChange(of: store.config.url) { _, _ in store.reloadTopologyMapIndex() }
             }
         }
+        .sheet(isPresented: $customizingToolbar) { MenuCustomizationView(surface: .toolbar) }
         .sheet(item: $store.stylingFolder) { FolderAppearanceView(path: $0.path).environmentObject(store) }
         .sheet(isPresented: $store.creatingFolder) { CreateFolderView().environmentObject(store) }
         .sheet(isPresented: $store.creatingAlias) { RecordChooserView().environmentObject(store) }
@@ -1014,7 +1070,7 @@ struct MainView: View {
         .sheet(item: $store.editingTab) { TabCustomizationView(target: $0).environmentObject(store) }
         .sheet(isPresented: $store.showingPalette) { ActionPalette().environmentObject(store) }
         .sheet(isPresented: $store.showingCommandLibrary) { CommandLibraryView() }
-        .sheet(item: $store.reminderEntry) { RecordRemindersView(entry: $0).environmentObject(store) }
+        .sheet(item: $store.reminderEntry) { RecordRemindersView(entry: $0.entry, kind: $0.kind).environmentObject(store) }
         .sheet(isPresented: $store.showingTrash) { RecordTrashView().environmentObject(store) }
         .sheet(isPresented: $store.showingBackup) { BackupView().environmentObject(store) }
         .sheet(isPresented: $store.showingTemplates) { TemplatesView().environmentObject(store) }
@@ -1091,7 +1147,7 @@ struct AliasDetail: View {
     private var badgeActions: [RecordActionStyle] { visibleActions.filter { $0.effectivePlacement == .badges } }
     private var sections: [RecordAction.Section] { RecordAction.sections(visibleTiles) }
     private var primaryAction: String? {
-        let preferred: [RecordAction] = entry.recordKind == .website ? [.browser, .inside] : entry.recordKind == .web ? [.inside, .browser] : [.connect]
+        let preferred: [RecordAction] = entry.recordKind?.isWeb == true ? [.inside, .browser] : [.connect]
         return preferred.first { action in visibleTiles.contains { $0.id == action.id } }?.id
     }
     var body: some View {
@@ -1149,7 +1205,8 @@ struct AliasDetail: View {
     }
     private func run(_ action: RecordAction) {
         switch action {
-        case .renewals: store.reminderEntry = entry
+        case .licenses: store.reminderEntry = RecordReminderTarget(entry: entry, kind: .license)
+        case .payments: store.reminderEntry = RecordReminderTarget(entry: entry, kind: .payment)
         case .favorite: store.toggleFavorite(entry)
         case .duplicate: store.duplicate(entry)
         case .export: store.export(entries: [entry])
@@ -1183,6 +1240,13 @@ struct AliasDetail: View {
             ForEach(store.appearance(entry).pinnedFields ?? RecordPinnedField.defaults.map(\.rawValue), id: \.self) { id in
                 if let field = RecordPinnedField(rawValue: id), !field.value(entry, group: store.group(entry)).isEmpty {
                     Text(field.title + ": " + field.value(entry, group: store.group(entry))).font(.caption).foregroundStyle(.secondary).textSelection(.enabled).lineLimit(2)
+                    if field == .address, let pair = store.appearance(entry).addresses {
+                        let alternate = pair.preferred == .domain ? pair.ip : pair.domain
+                        if !alternate.isEmpty {
+                            Text((pair.preferred == .domain ? "IP: " : "Домен: ") + alternate).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                                .contextMenu { Button("Копировать адрес") { store.copy(alternate) } }
+                        }
+                    }
                 }
             }
             HStack(spacing: 6) {
@@ -1326,7 +1390,7 @@ struct CreateAliasView: View {
     private var connectionFields: some View {
         VStack(alignment: .leading, spacing: 16) {
             RecordCredentialFields(vault: store.credentialVault(), workspace: store.kdbx!, choice: $credentialEdit.choice, username: $draft.user)
-            RecordSSHConnectionFields(host: $draft.host, user: $draft.user, port: $draft.port, jump: $draft.jump, authentication: $draft.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: canReuseSavedPassword, identifier: "alias", usesExternalCredentials: credentialEdit.choice.isExternal, changedAt: editing.map { SSHPasswordStore.changedAt(for: $0.entry, config: store.config.url) } ?? nil, savedPassword: canReuseSavedPassword ? { try SSHPasswordStore.storedPassword(for: editing!.entry, config: store.config.url) } : nil)
+            RecordSSHConnectionFields(host: $draft.host, appearance: $appearance, user: $draft.user, port: $draft.port, jump: $draft.jump, authentication: $draft.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: canReuseSavedPassword, identifier: "alias", usesExternalCredentials: credentialEdit.choice.isExternal, changedAt: editing.map { SSHPasswordStore.changedAt(for: $0.entry, config: store.config.url) } ?? nil, savedPassword: canReuseSavedPassword ? { try SSHPasswordStore.storedPassword(for: editing!.entry, config: store.config.url) } : nil)
             RecordSSHKeyFields(identity: $draft.identity, entry: installationEntry).environmentObject(store)
             Divider()
             if editing != nil {

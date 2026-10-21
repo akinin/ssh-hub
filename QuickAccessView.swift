@@ -73,7 +73,7 @@ struct QuickAccessView: View {
     @State private var error: String?
     @State private var copied = false
     private var entries: [SSHAlias] {
-        QuickAliasSearch.results(store.profileEntries, query: query, scope: scope, favorites: store.favorites, groups: store.groups, history: store.history, names: store.appearances.mapValues(\.name))
+        QuickAliasSearch.results(store.profileEntries, query: query, scope: scope, favorites: store.favorites, groups: store.groups, history: store.history, names: store.appearances.mapValues(\.name), addresses: store.appearances.mapValues { $0.addresses?.searchText ?? "" })
     }
     private var current: SSHAlias? { entries.first { $0.id == selected } ?? entries.first }
     var body: some View {
@@ -221,7 +221,8 @@ struct QuickAccessView: View {
                 Button("Редактировать…") { controller.openMain { store.edit(entry) } }
                 Button("Дублировать…") { controller.openMain { store.duplicate(entry) } }
                 Button("Группа…") { controller.openMain { store.groupingAlias = entry } }
-                Button("Лицензии и оплаты…") { controller.openMain { store.reminderEntry = entry } }
+                Button("Лицензии…") { controller.openMain { store.reminderEntry = RecordReminderTarget(entry: entry, kind: .license) } }
+                Button("Оплаты…") { controller.openMain { store.reminderEntry = RecordReminderTarget(entry: entry, kind: .payment) } }
                 Button("Оформление карточки…") { controller.openMain { store.stylingAlias = entry } }
             } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("Действия: \(entry.name)")
         }

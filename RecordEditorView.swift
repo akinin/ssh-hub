@@ -7,8 +7,44 @@ enum RecordEditorSection: String, Identifiable {
     var title: String { switch self { case .licenses: return "Лицензии"; case .payments: return "Оплаты"; case .general: return "Общие"; case .connection: return "Подключение"; case .key: return "SSH-ключ"; case .availability: return "Доступность"; case .commands: return "Команды"; case .preview: return "SSH-конфиг" } }
     var icon: String { switch self { case .licenses: return "key.horizontal"; case .payments: return "creditcard"; case .general: return "slider.horizontal.3"; case .connection: return "cable.connector"; case .key: return "key"; case .availability: return "waveform.path.ecg"; case .commands: return "terminal"; case .preview: return "doc.text" } }
 }
+struct RecordAddressFields: View {
+    @Binding var address: String
+    @Binding var appearance: ConnectionAppearance
+    var isURL = false
+    var identifier = "record"
+    private var actualHost: String { isURL ? URLComponents(string: address).flatMap(\.host).map(RecordAddressPair.host) ?? "" : address }
+    private var pair: RecordAddressPair { appearance.addresses ?? .inferred(actualHost) }
+    private func field(_ key: WritableKeyPath<RecordAddressPair, String>) -> Binding<String> {
+        Binding(get: { pair[keyPath: key] }, set: { text in var value = pair; value[keyPath: key] = text; apply(value) })
+    }
+    private func apply(_ value: RecordAddressPair) {
+        appearance.addresses = value
+        if isURL {
+            if let result = RecordAddressPair.replacingURLHost(address, with: value.selected) { address = result }
+        } else { address = value.selected }
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            RecordFieldRow("Домен") { TextField("server.example.com", text: field(\.domain)).accessibilityIdentifier(identifier + "Domain") }
+            RecordFieldRow("IP-адрес") { TextField("192.0.2.10 или 2001:db8::10", text: field(\.ip)).accessibilityIdentifier(identifier + "IP") }
+            RecordFieldRow("Подключаться по") {
+                Picker("Адрес подключения", selection: Binding(get: { pair.preferred }, set: { var value = pair; value.preferred = $0; apply(value) })) {
+                    Text("Домену").tag(RecordAddressPair.Preference.domain)
+                    Text("IP-адресу").tag(RecordAddressPair.Preference.ip)
+                }.labelsHidden().pickerStyle(.segmented)
+            }
+            Text(isURL ? "Меняется только узел в адресе сайта. Протокол, порт и путь сохраняются. При выборе IP сертификат проверяется для IP-адреса." : "Выбранный адрес используется после сохранения записи. Порт, VPN и остальные параметры сохраняются.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }.textFieldStyle(.roundedBorder)
+            .onAppear { if let value = appearance.addresses { appearance.addresses = value.reconciled(with: actualHost) } }
+            .onChange(of: address) { _, _ in
+                if let value = appearance.addresses, !actualHost.isEmpty, RecordAddressPair.host(actualHost) != value.selected { appearance.addresses = value.reconciled(with: actualHost) }
+            }
+    }
+}
 struct RecordSSHConnectionFields: View {
     @Binding var host: String
+    @Binding var appearance: ConnectionAppearance
     @Binding var user: String
     @Binding var port: String
     @Binding var jump: String
@@ -23,7 +59,7 @@ struct RecordSSHConnectionFields: View {
     var savedPassword: (() throws -> String?)? = nil
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            RecordFieldRow("Сервер") { TextField("IP или имя сервера", text: $host).accessibilityIdentifier(identifier + "Host") }
+            RecordAddressFields(address: $host, appearance: $appearance, identifier: identifier)
             RecordFieldRow("Пользователь") { TextField("root", text: $user).accessibilityIdentifier(identifier + "User") }
             RecordFieldRow("Вход") { SSHAuthenticationChecks(selection: $authentication) }
             RecordFieldRow("Пароль") { PasswordEntryView(prompt: reusePassword && !removePassword ? "Сохранён · оставь пустым" : "Запросить при подключении", text: $password, changedAt: changedAt, savedPassword: reusePassword && !removePassword ? savedPassword : nil).accessibilityIdentifier(identifier + "Password").disabled(usesExternalCredentials) }
@@ -300,6 +336,7 @@ struct RecordEditorView: View {
     private var webFields: some View {
         VStack(alignment: .leading, spacing: 14) {
             RecordFieldRow("Адрес сайта") { TextField("https://example.com", text: $record.website).textFieldStyle(.roundedBorder).accessibilityIdentifier("recordWebsite") }
+            RecordAddressFields(address: $record.website, appearance: $appearance, isURL: true)
             RecordFieldRow("Логин") { TextField("Имя пользователя или email", text: $record.user).textFieldStyle(.roundedBorder).accessibilityIdentifier("recordWebUser") }
             RecordFieldRow("Пароль") { PasswordEntryView(prompt: reusePassword && !removePassword ? "Сохранён · оставь пустым" : "Пароль сайта", text: $password, changedAt: passwordDate, savedPassword: passwordReader).accessibilityIdentifier("recordWebPassword").disabled(usesSharedCredential) }
             Toggle("Сохранить пароль в Связке ключей macOS", isOn: $keepPassword).disabled(usesSharedCredential)
@@ -332,11 +369,12 @@ struct RecordEditorView: View {
     @ViewBuilder private var transportFields: some View {
         if kind == .webdav {
             TextField("Адрес WebDAV", text: $record.website, prompt: Text("https://cloud.example.com/remote.php/dav/files/user/")).textFieldStyle(.roundedBorder)
+            RecordAddressFields(address: $record.website, appearance: $appearance, isURL: true)
         }
         if [.rdp, .vnc, .telnet, .ftp, .ftps, .mosh, .adb].contains(kind) {
             if kind == .adb { Toggle("Подключение ADB по сети", isOn: settings.adbNetwork) }
             if kind != .adb || settings.wrappedValue.adbNetwork {
-                LabeledContent("Сервер") { TextField("IP или имя сервера", text: $record.host).textFieldStyle(.roundedBorder) }
+                RecordAddressFields(address: $record.host, appearance: $appearance)
                 LabeledContent("Порт") { TextField(kind.defaultPort, text: $record.port).textFieldStyle(.roundedBorder) }
             }
         }
@@ -405,7 +443,7 @@ struct RecordEditorView: View {
     private var passwordDate: Date? { savedEntry.flatMap { SSHPasswordStore.changedAt(for: $0, config: store.config.url) } }
     private var passwordReader: (() throws -> String?)? { guard reusePassword && !removePassword, let savedEntry else { return nil }; return { try SSHPasswordStore.storedPassword(for: savedEntry, config: store.config.url) } }
     @ViewBuilder private var fields: some View {
-        RecordSSHConnectionFields(host: $record.host, user: $record.user, port: $record.port, jump: $record.jump, authentication: $record.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: reusePassword, identifier: "record", usesExternalCredentials: usesSharedCredential, changedAt: passwordDate, savedPassword: passwordReader)
+        RecordSSHConnectionFields(host: $record.host, appearance: $appearance, user: $record.user, port: $record.port, jump: $record.jump, authentication: $record.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: reusePassword, identifier: "record", usesExternalCredentials: usesSharedCredential, changedAt: passwordDate, savedPassword: passwordReader)
         RecordSSHKeyFields(identity: $record.identity, entry: installationEntry).environmentObject(store)
     }
     private func load() {

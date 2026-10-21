@@ -3,10 +3,10 @@ import AppKit
 import ServiceManagement
 
 private enum AppSettingsSection: String, CaseIterable, Identifiable {
-    case connections, appearance, wireGuard, keePass, workspace, services, startup, updates, transfer, security
+    case connections, appearance, wireGuard, keePass, workspace, startup, updates, transfer, security
     var id: String { rawValue }
-    var title: String { switch self { case .services: return "Сервисы"; case .appearance: return "Внешний вид"; case .wireGuard: return "WireGuard"; case .keePass: return "KeePass"; case .security: return "Авторизация"; case .connections: return "Подключения"; case .workspace: return "Рабочая область"; case .startup: return "Запуск"; case .updates: return "Обновления"; case .transfer: return "Перенос данных" } }
-    var icon: String { switch self { case .services: return "square.stack.3d.up"; case .appearance: return "paintbrush"; case .wireGuard: return "network.badge.shield.half.filled"; case .keePass: return "lock.rectangle.stack"; case .security: return "lock.shield"; case .connections: return "network"; case .workspace: return "rectangle.split.2x1"; case .startup: return "power"; case .updates: return "arrow.triangle.2.circlepath"; case .transfer: return "externaldrive" } }
+    var title: String { switch self { case .appearance: return "Внешний вид"; case .wireGuard: return "WireGuard"; case .keePass: return "KeePass"; case .security: return "Авторизация"; case .connections: return "Подключения"; case .workspace: return "Рабочая область"; case .startup: return "Запуск"; case .updates: return "Обновления"; case .transfer: return "Перенос данных" } }
+    var icon: String { switch self { case .appearance: return "paintbrush"; case .wireGuard: return "network.badge.shield.half.filled"; case .keePass: return "lock.rectangle.stack"; case .security: return "lock.shield"; case .connections: return "network"; case .workspace: return "rectangle.split.2x1"; case .startup: return "power"; case .updates: return "arrow.triangle.2.circlepath"; case .transfer: return "externaldrive" } }
 }
 
 struct AppSettingsView: View {
@@ -24,6 +24,7 @@ struct AppSettingsView: View {
     @State private var requiresApproval = false
     @State private var error: String?
     @State private var showingActionTiles = false
+    @State private var customizingMenu: CustomMenuSurface?
     @State private var selectedSection = AppSettingsSection.connections
     var body: some View {
         VStack(spacing: 0) {
@@ -74,22 +75,17 @@ struct AppSettingsView: View {
                                 Button("Плитки всех записей…", systemImage: "square.grid.2x2") { showingActionTiles = true }
                                 Text("Общий порядок, цвета и набор плиток. Индивидуальные настройки записей имеют приоритет.").font(.caption).foregroundStyle(.secondary)
                             }
+                            Section("Панель и меню") {
+                                ForEach(CustomMenuSurface.allCases) { surface in
+                                    Button(surface.title + "…", systemImage: surface.icon) { customizingMenu = surface }
+                                }
+                                Text("Кнопки, пункты, порядок и разделители. Общие настройки для всех профилей.").font(.caption).foregroundStyle(.secondary)
+                            }
                             Section("Консоль") {
                                 ConsolePreferencesView()
                                 Text("Шрифт, размер, цвета и цветовые схемы применяются ко всем встроенным консолям. Быстрый доступ из сеанса использует те же настройки.").font(.caption).foregroundStyle(.secondary)
                             }
                             GlobalReminderAppearanceSettings()
-                        case .services:
-                            Section("Текущий профиль: " + store.profileName) {
-                                Button("Интеграции…", systemImage: "square.stack.3d.up") { open { store.operationsPanel = .integrations } }
-                                Button("Мониторинг сервера…", systemImage: "chart.xyaxis.line") { open { store.operationsPanel = .monitoring } }
-                                Button("ИИ-помощник…", systemImage: "sparkles") { open { store.presentAssistant() } }
-                                Text("Подключения к API, параметры коллектора и модели ИИ. Сохранённые настройки относятся к текущему профилю.").font(.caption).foregroundStyle(.secondary)
-                            }
-                            Section("Уведомления о входе") {
-                                Button("Настроить для выбранной записи…", systemImage: "bell.badge") { open { store.showLoginNotifications() } }.disabled(store.current?.canSSH != true)
-                                Text("Выбери SSH-запись в боковой панели. Уведомления устанавливаются отдельно на её сервере.").font(.caption).foregroundStyle(.secondary)
-                            }
                         case .workspace:
                             Section {
                                 Button("Профили…", systemImage: "person.crop.rectangle.stack") { open { store.showingProfiles = true } }
@@ -139,6 +135,7 @@ struct AppSettingsView: View {
             }.padding(16)
         }.frame(width: 820, height: 600).dismissOnOutsideClick()
             .sheet(isPresented: $showingActionTiles) { GlobalRecordActionsEditor() }
+            .sheet(item: $customizingMenu) { MenuCustomizationView(surface: $0) }
             .onAppear { refreshLoginStatus() }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refreshLoginStatus() }
     }

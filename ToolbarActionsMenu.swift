@@ -12,14 +12,16 @@ struct ToolbarMenuAction {
 // A native menu keeps item images visible on macOS versions whose default
 // SwiftUI menu image policy hides them. No application-wide defaults change.
 struct ToolbarActionsMenu: NSViewRepresentable {
+    var title = "Инструменты"
+    var symbol = "wrench.and.screwdriver"
     var actions: [ToolbarMenuAction]
     func makeCoordinator() -> Coordinator { Coordinator(actions: actions) }
     func makeNSView(context: Context) -> NSButton {
         let button = NSButton()
         button.isBordered = false; button.bezelStyle = .regularSquare
-        button.image = NSImage(systemSymbolName: "wrench.and.screwdriver", accessibilityDescription: "Инструменты")?.withSymbolConfiguration(.init(pointSize: 17, weight: .regular))
-        button.imagePosition = .imageOnly; button.title = ""; button.toolTip = "Инструменты"
-        button.setAccessibilityLabel("Инструменты")
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)?.withSymbolConfiguration(.init(pointSize: 17, weight: .regular))
+        button.imagePosition = .imageOnly; button.title = ""; button.toolTip = title
+        button.setAccessibilityLabel(title)
         button.target = context.coordinator; button.action = #selector(Coordinator.show(_:))
         return button
     }

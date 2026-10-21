@@ -174,6 +174,8 @@ swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$b
 "$build_dir/toolkit-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionProbe.swift Tunnels.swift ToolkitRuntime.swift IPCalculator.swift Nmap.swift ExtraTools.swift ExtraToolsTests.swift -o "$build_dir/extra-tools-tests" -framework Security
 "$build_dir/extra-tools-tests"
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" MenuLayout.swift MenuLayoutTests.swift -o "$build_dir/menu-layout-tests" -framework AppKit
+"$build_dir/menu-layout-tests"
 spm_args=(--build-system native --scratch-path "$build_dir/spm" --cache-path "$build_dir/spm-cache" --config-path "$build_dir/spm-config" --security-path "$build_dir/spm-security" --disable-sandbox --sdk "$sdk_dir" --triple arm64-apple-macosx14.0 -c release)
 swift build "${spm_args[@]}" --product SSHHub
 swift build "${spm_args[@]}" --product SSHHubConsoleChecks

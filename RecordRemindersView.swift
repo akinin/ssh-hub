@@ -46,13 +46,23 @@ final class RecordReminderRowView: NSTableRowView {
     private func stroke(_ tint: NSColor) { if style.outline { tint.withAlphaComponent(0.85).setStroke(); let border = path; border.lineWidth = style.lineWidth; border.stroke() } }
 }
 
+final class RecordReminderKindBadge: NSStackView {
+    var tint: NSColor = .secondaryLabelColor
+    func update(emphasized: Bool) {
+        let color: NSColor = emphasized ? .white : tint
+        for view in arrangedSubviews { (view as? NSTextField)?.textColor = color; (view as? NSImageView)?.contentTintColor = color }
+    }
+}
 final class RecordReminderCellView: NSTableCellView {
     var reminderBadge: NSStackView? { didSet { updateReminder() } }
     var reminderTint: NSColor? { didSet { updateReminder() } }
     override var backgroundStyle: NSView.BackgroundStyle { didSet { updateReminder() } }
     private func updateReminder() {
         let color: NSColor = backgroundStyle == .emphasized ? .white : reminderTint ?? .secondaryLabelColor
-        for view in reminderBadge?.arrangedSubviews ?? [] { (view as? NSTextField)?.textColor = color; (view as? NSImageView)?.contentTintColor = color }
+        for view in reminderBadge?.arrangedSubviews ?? [] {
+            if let badge = view as? RecordReminderKindBadge { badge.update(emphasized: backgroundStyle == .emphasized) }
+            else { (view as? NSTextField)?.textColor = color; (view as? NSImageView)?.contentTintColor = color }
+        }
     }
 }
 
@@ -87,10 +97,10 @@ struct GlobalReminderAppearanceSettings: View {
     @AppStorage(RecordReminderDefaults.key) private var data = Data()
     private var value: Binding<RecordReminderAppearance> { Binding(get: { RecordReminderDefaults.decode(data) }, set: { if $0.valid, let encoded = try? JSONEncoder().encode($0) { data = encoded } }) }
     var body: some View {
-        Section("Индикаторы лицензий и оплат") {
+        Section("Индикаторы сроков") {
             ReminderAppearanceFields(value: value)
             Button("По умолчанию") { data = Data() }
-            Text("Применяется сразу ко всем записям без индивидуального оформления. Даты и сроки предупреждений задаются в «Лицензии и оплаты» у записи.").font(.caption).foregroundStyle(.secondary)
+            Text("Применяется сразу ко всем записям без индивидуального оформления. Даты задаются отдельно в разделах «Лицензии» и «Оплаты» у записи.").font(.caption).foregroundStyle(.secondary)
         }
     }
 }
@@ -179,7 +189,7 @@ struct RecordReminderFields: View {
                     DisclosureGroup("Оформление индикатора") {
                         VStack(alignment: .leading, spacing: 12) {
                             Toggle("Использовать общие настройки", isOn: $useGlobal)
-                            if useGlobal { Text("Настройки → Внешний вид → Индикаторы лицензий и оплат. Здесь можно включить индивидуальный вариант.").font(.caption).foregroundStyle(.secondary) }
+                            if useGlobal { Text("Настройки → Внешний вид → Индикаторы сроков. Здесь можно включить индивидуальный вариант.").font(.caption).foregroundStyle(.secondary) }
                             else { ReminderAppearanceFields(value: $style) }
                         }.padding(.top, 10)
                     }.disclosureGroupStyle(FullRowDisclosureStyle())
@@ -198,13 +208,18 @@ struct RecordReminderDraftFields: View {
     }
 }
 
+struct RecordReminderTarget: Identifiable {
+    let entry: SSHAlias
+    let kind: RecordReminderKind
+    var id: String { entry.favoriteID + ":" + kind.rawValue }
+}
 struct RecordRemindersView: View {
     let entry: SSHAlias
+    let kind: RecordReminderKind
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) private var dismiss
     @AppStorage(RecordReminderDefaults.key) private var globalData = Data()
     @State private var reminders: [RecordReminder] = []
-    @State private var kind: RecordReminderKind = .license
     @StateObject private var licenseFiles = LicenseFileDrafts()
     @State private var initialReminders: [RecordReminder] = []
     @State private var style = RecordReminderAppearance()
@@ -214,8 +229,7 @@ struct RecordRemindersView: View {
     private var valid: Bool { reminders.count <= 20 && reminders.allSatisfy(\.valid) && (useGlobal || style.valid) }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HubSheetHeader(title: "Лицензии и оплаты", subtitle: store.title(entry), icon: "calendar.badge.clock")
-            Picker("Раздел", selection: $kind) { Text("Лицензии").tag(RecordReminderKind.license); Text("Оплаты").tag(RecordReminderKind.payment) }.pickerStyle(.segmented)
+            HubSheetHeader(title: kind == .license ? "Лицензии" : "Оплаты", subtitle: store.title(entry), icon: kind == .license ? "key.horizontal" : "creditcard")
             ScrollView {
                 RecordReminderFields(reminders: $reminders, kind: kind, useGlobal: $useGlobal, style: $style).environmentObject(licenseFiles).padding(.trailing, 8)
             }

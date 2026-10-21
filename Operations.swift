@@ -22,7 +22,7 @@ extension AliasStore {
     func matchesSmartFolder(_ entry: SSHAlias) -> Bool {
         guard groupFilter.hasPrefix("smart:"), let id = UUID(uuidString: String(groupFilter.dropFirst(6))), let folder = searchMetadata.folders.first(where: { $0.id == id }) else { return false }
         let tags = tags(for: entry)
-        let text = [title(entry), entry.name, entry.host, entry.user, group(entry), tags.joined(separator: " ")].joined(separator: " ")
+        let text = [title(entry), entry.name, entry.host, appearance(entry).addresses?.searchText ?? "", entry.user, group(entry), tags.joined(separator: " ")].joined(separator: " ")
         return (folder.kind == nil || (entry.recordKind ?? .ssh) == folder.kind) && (folder.tag.isEmpty || tags.contains(folder.tag)) && folder.query.split(whereSeparator: \.isWhitespace).allSatisfy { text.localizedCaseInsensitiveContains(String($0)) }
     }
     func moveOperationsRecord(from old: String, to new: String) {

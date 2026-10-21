@@ -10,7 +10,7 @@ enum QuickAliasSearch {
         value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "ru_RU"))
     }
     static func results(_ aliases: [SSHAlias], query: String, scope: QuickAliasScope,
-                        favorites: Set<String>, groups: [String: String], history: [RecentConnection], names: [String: String] = [:]) -> [SSHAlias] {
+                        favorites: Set<String>, groups: [String: String], history: [RecentConnection], names: [String: String] = [:], addresses: [String: String] = [:]) -> [SSHAlias] {
         let query = normalized(query.trimmingCharacters(in: .whitespacesAndNewlines))
         let words = query.split(whereSeparator: \.isWhitespace).map(String.init)
         var recency: [String: Int] = [:]
@@ -23,7 +23,7 @@ enum QuickAliasSearch {
         return aliases.filter { entry in
             if scope == .favorites && !favorites.contains(entry.favoriteID) { return false }
             if scope == .recent && recency[entry.favoriteID] == nil { return false }
-            let text = normalized([names[entry.favoriteID] ?? "", entry.name, entry.host, entry.user, entry.website ?? "", groups[entry.favoriteID] ?? ""].joined(separator: " "))
+            let text = normalized([names[entry.favoriteID] ?? "", entry.name, entry.host, addresses[entry.favoriteID] ?? "", entry.user, entry.website ?? "", groups[entry.favoriteID] ?? ""].joined(separator: " "))
             return words.allSatisfy { text.contains($0) }
         }.sorted { a, b in
             if rank(a) != rank(b) { return rank(a) < rank(b) }

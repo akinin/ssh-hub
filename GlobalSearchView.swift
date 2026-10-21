@@ -70,7 +70,7 @@ struct GlobalSearchView: View {
     }
     private func buildIndex() {
         guard !indexing else { return }; indexing = true
-        let seeds = store.profileEntries.map { SearchRecordSeed(key: $0.favoriteID, title: store.title($0), detail: [$0.name, $0.host, $0.user, $0.port, store.group($0), store.tags(for: $0, manual: metadata.tags[$0.favoriteID, default: []]).joined(separator: " ")].filter { !$0.isEmpty }.joined(separator: " · "), kind: $0.recordKind ?? .ssh) }
+        let seeds = store.profileEntries.map { SearchRecordSeed(key: $0.favoriteID, title: store.title($0), detail: [$0.name, $0.host, store.appearance($0).addresses?.searchText ?? "", $0.user, $0.port, store.group($0), store.tags(for: $0, manual: metadata.tags[$0.favoriteID, default: []]).joined(separator: " ")].filter { !$0.isEmpty }.joined(separator: " · "), kind: $0.recordKind ?? .ssh) }
         let events = SessionJournal.shared.events, library = CommandLibrary.shared.all
         indexTask = Task {
             let worker = Task.detached(priority: .userInitiated) { try GlobalSearchIndex.build(seeds, events: events, libraryCommands: library) }
