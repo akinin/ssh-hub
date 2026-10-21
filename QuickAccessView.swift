@@ -2,6 +2,10 @@ import SwiftUI
 import AppKit
 
 extension AliasStore {
+    func createRecord(fromQuickConnection entry: SSHAlias) {
+        do { recordEditor = RecordEditorTarget(seed: try QuickConnectionTarget.record(from: entry)) }
+        catch { self.error = error.localizedDescription }
+    }
     func quickConnect(address: String, kind: RecordKind) {
         do {
             let target = try QuickConnectionTarget(address, kind: kind)

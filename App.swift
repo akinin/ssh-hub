@@ -1061,7 +1061,7 @@ struct MainView: View {
         .sheet(item: $store.stylingFolder) { FolderAppearanceView(path: $0.path).environmentObject(store) }
         .sheet(isPresented: $store.creatingFolder) { CreateFolderView().environmentObject(store) }
         .sheet(isPresented: $store.creatingAlias) { RecordChooserView().environmentObject(store) }
-        .sheet(item: $store.recordEditor) { target in RecordEditorView(kind: target.record?.kind ?? target.template?.recordKind ?? .ssh, original: target.record, template: target.template, blueprint: target.blueprint).environmentObject(store) }
+        .sheet(item: $store.recordEditor) { target in RecordEditorView(kind: target.record?.kind ?? target.template?.recordKind ?? target.seed?.kind ?? .ssh, original: target.record, template: target.template, blueprint: target.blueprint, seed: target.seed).environmentObject(store) }
         .sheet(item: $store.batchTarget) { RecordBatchView(target: $0).environmentObject(store) }
         .sheet(item: $store.editingAlias) { snapshot in CreateAliasView(editing: snapshot).environmentObject(store) }
         .sheet(item: $store.duplicatingAlias) { snapshot in CreateAliasView(duplicating: snapshot, existing: store.aliases).environmentObject(store) }
@@ -1354,7 +1354,7 @@ struct CreateAliasView: View {
                 }
             case .connection:
                 connectionFields
-            case .key: RecordSSHKeyFields(identity: $draft.identity, entry: installationEntry).environmentObject(store)
+            case .key: RecordSSHKeyFields(identity: $draft.identity, entry: installationEntry, password: credentialEdit.choice.isExternal ? "" : password).environmentObject(store)
             case .availability: RecordAvailabilityFields(entry: installationEntry != nil ? editing?.entry : nil, enabled: $monitorEnabled, interval: $monitorInterval, monitor: store.availability)
             case .commands:
                 if let entry = editing?.entry { ConsoleCommandsSettingsLink(entry: entry) }
@@ -1392,7 +1392,6 @@ struct CreateAliasView: View {
         VStack(alignment: .leading, spacing: 16) {
             RecordCredentialFields(vault: store.credentialVault(), workspace: store.kdbx!, choice: $credentialEdit.choice, username: $draft.user)
             RecordSSHConnectionFields(host: $draft.host, appearance: $appearance, user: $draft.user, port: $draft.port, jump: $draft.jump, authentication: $draft.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: canReuseSavedPassword, identifier: "alias", usesExternalCredentials: credentialEdit.choice.isExternal, changedAt: editing.map { SSHPasswordStore.changedAt(for: $0.entry, config: store.config.url) } ?? nil, savedPassword: canReuseSavedPassword ? { try SSHPasswordStore.storedPassword(for: editing!.entry, config: store.config.url) } : nil)
-            RecordSSHKeyFields(identity: $draft.identity, entry: installationEntry).environmentObject(store)
             Divider()
             if editing != nil {
                 RecordSSHAliasFields(enabled: $aliasEnabled, name: $draft.name, existingAlias: true, identifier: "aliasName")

@@ -4,7 +4,7 @@ import AppKit
 enum RecordEditorSection: String, Identifiable {
     case general, connection, key, availability, commands, licenses, payments, preview
     var id: String { rawValue }
-    var title: String { switch self { case .licenses: return "Лицензии"; case .payments: return "Оплаты"; case .general: return "Общие"; case .connection: return "Подключение"; case .key: return "SSH-ключ"; case .availability: return "Доступность"; case .commands: return "Команды"; case .preview: return "SSH-конфиг" } }
+    var title: String { switch self { case .licenses: return "Лицензии"; case .payments: return "Оплаты"; case .general: return "Общие"; case .connection: return "Подключение"; case .key: return "SSH-ключи"; case .availability: return "Доступность"; case .commands: return "Команды"; case .preview: return "SSH-конфиг" } }
     var icon: String { switch self { case .licenses: return "key.horizontal"; case .payments: return "creditcard"; case .general: return "slider.horizontal.3"; case .connection: return "cable.connector"; case .key: return "key"; case .availability: return "waveform.path.ecg"; case .commands: return "terminal"; case .preview: return "doc.text" } }
 }
 struct RecordAddressFields: View {
@@ -130,6 +130,7 @@ struct RecordEditorTarget: Identifiable {
     var record: LocalConnectionRecord?
     var template: SSHAlias?
     var blueprint: RecordTemplate?
+    var seed: LocalConnectionRecord?
 }
 struct LocalRecordChange {
     let before: [LocalConnectionRecord]
@@ -306,7 +307,7 @@ struct RecordEditorView: View {
                 else { Text("Добавь инструкции в документации и файлы во вложениях после сохранения записи.").foregroundStyle(.secondary) }
                 if [.rdp, .vnc].contains(kind) || kind.isWeb { tunnelFields }
                 if [.ssh, .rdp, .vnc, .web, .website, .telnet, .ftp, .ftps, .webdav].contains(kind) { WireGuardProfilePicker(selected: Binding(get: { record.transport?.wireGuardID }, set: { value in var settings = record.transport ?? ConnectionSettings(); settings.wireGuardID = value; record.transport = settings }), workspace: store.wireGuardWorkspace()) }
-            case .key: RecordSSHKeyFields(identity: $record.identity, entry: installationEntry).environmentObject(store)
+            case .key: RecordSSHKeyFields(identity: $record.identity, entry: installationEntry, password: usesSharedCredential ? "" : password).environmentObject(store)
             case .availability: availabilityFields
             case .commands:
                 if let entry = savedEntry { ConsoleCommandsSettingsLink(entry: entry) }
@@ -446,7 +447,6 @@ struct RecordEditorView: View {
     private var passwordReader: (() throws -> String?)? { guard reusePassword && !removePassword, let savedEntry else { return nil }; return { try SSHPasswordStore.storedPassword(for: savedEntry, config: store.config.url) } }
     @ViewBuilder private var fields: some View {
         RecordSSHConnectionFields(host: $record.host, appearance: $appearance, user: $record.user, port: $record.port, jump: $record.jump, authentication: $record.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: reusePassword, identifier: "record", usesExternalCredentials: usesSharedCredential, changedAt: passwordDate, savedPassword: passwordReader)
-        RecordSSHKeyFields(identity: $record.identity, entry: installationEntry).environmentObject(store)
     }
     private func load() {
         do {

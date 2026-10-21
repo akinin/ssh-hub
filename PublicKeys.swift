@@ -1,5 +1,60 @@
 import Foundation
 
+enum KeyInstallationMethod: String, CaseIterable, Identifiable {
+    case current, sudo, direct
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .current: return "Пользователю записи"
+        case .sudo: return "Другому пользователю через sudo"
+        case .direct: return "Другому пользователю по SSH"
+        }
+    }
+}
+
+struct PublicKeyInstallation {
+    let key: String
+    let method: KeyInstallationMethod
+    let username: String
+    init(key: PublicSSHKey, method: KeyInstallationMethod, username: String) throws {
+        self.key = try PublicSSHKey.validate(key.text)
+        self.method = method; self.username = username.trimmingCharacters(in: .whitespaces)
+        guard method == .current || SSHConfig.matches(self.username, "^[A-Za-z_][A-Za-z0-9_.-]{0,63}[$]?$") else {
+            throw ConfigError.message("Укажи имя пользователя сервера, например root.")
+        }
+    }
+    func loginUser(for entry: SSHAlias) -> String { method == .direct ? username : entry.user }
+    func reusesLoginPassword(for entry: SSHAlias) -> Bool { loginUser(for: entry) == entry.user }
+    var remoteCommand: String {
+        let parts = key.split(whereSeparator: { $0 == " " || $0 == "\t" })
+        // Run as the target account (sudo sets its HOME). No guessed home path,
+        // no SSH daemon changes, and no replacement of existing authorized_keys.
+        let script = """
+        set -eu
+        umask 077
+        test -n "${HOME:-}" && test -d "$HOME" || { printf '%s\\n' 'Не найдена домашняя папка пользователя.' >&2; exit 1; }
+        directory="$HOME/.ssh"
+        test ! -L "$directory" || { printf '%s\\n' 'Отказ: .ssh является ссылкой.' >&2; exit 1; }
+        mkdir -p "$directory"
+        chmod 700 "$directory"
+        file="$directory/authorized_keys"
+        test ! -L "$file" || { printf '%s\\n' 'Отказ: authorized_keys является ссылкой.' >&2; exit 1; }
+        if test -e "$file"; then test -f "$file"; fi
+        touch "$file"
+        chmod 600 "$file"
+        if awk -v type=\(SSHConfig.shellQuote(String(parts[0]))) -v blob=\(SSHConfig.shellQuote(String(parts[1]))) ' { for (i = 1; i < NF; i++) if ($i == type && $(i+1) == blob) found = 1 } END { exit !found }' "$file"; then
+            printf '%s\\n' 'Ключ уже установлен.'
+        else
+            if test -s "$file" && test "$(tail -c 1 "$file" | od -An -tu1 | tr -d ' ')" != 10; then printf '\\n' >> "$file"; fi
+            printf '%s\\n' \(SSHConfig.shellQuote(key)) >> "$file"
+            printf '%s\\n' 'Ключ установлен.'
+        fi
+        """
+        let command = "sh -c " + SSHConfig.shellQuote(script)
+        return method == .sudo ? "sudo -H -u " + SSHConfig.shellQuote(username) + " -- " + command : command
+    }
+}
+
 struct PublicSSHKey: Identifiable {
     let url: URL
     let text: String

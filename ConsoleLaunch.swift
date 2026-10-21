@@ -8,6 +8,19 @@ struct ConsoleLaunch {
             "-o", "BatchMode=no", "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=30",
             "-o", "ServerAliveCountMax=3", "-tt", "--", entry.sshTarget])
     }
+    static func installation(_ plan: PublicKeyInstallation, entry: SSHAlias, config: URL) throws -> Self {
+        guard entry.canSSH, SSHConfig.matches(entry.sshTarget, "^[A-Za-z0-9_][A-Za-z0-9_.-]*$") else {
+            throw ConfigError.message("Для установки ключа нужна сохранённая SSH-запись.")
+        }
+        var arguments = TerminalCommands.configArguments(entry.connectionConfig(fallback: config)) + [
+            "-o", "BatchMode=no", "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3",
+            "-o", "PermitLocalCommand=no", "-o", "ClearAllForwardings=yes", "-o", "RemoteCommand=none", "-o", "ControlMaster=no", "-o", "ControlPath=none",
+            "-o", "PubkeyAuthentication=yes", "-o", "PasswordAuthentication=yes", "-o", "KbdInteractiveAuthentication=yes",
+            "-o", "PreferredAuthentications=publickey,keyboard-interactive,password", "-tt"]
+        if plan.method == .direct { arguments += ["-l", plan.username] }
+        arguments += ["--", entry.sshTarget, plan.remoteCommand]
+        return Self(executable: "/usr/bin/ssh", arguments: arguments)
+    }
     var environment: [String: String] {
         var env = ProcessInfo.processInfo.environment
         env["TERM"] = "xterm-256color"; env["COLORTERM"] = "truecolor"
@@ -26,6 +39,18 @@ struct QuickConnectionTarget {
     let port: UInt16
     let user: String?
     let website: String?
+    static func record(from entry: SSHAlias) throws -> LocalConnectionRecord {
+        let kind = entry.recordKind ?? .ssh
+        guard entry.isQuickConnection, kinds.contains(kind) else { throw ConfigError.message("Это не быстрое подключение.") }
+        var record = LocalConnectionRecord()
+        record.kind = kind; record.title = String(entry.host.prefix(80))
+        record.host = entry.host; record.user = entry.user; record.port = entry.port
+        record.website = entry.website ?? ""; record.transport = entry.transport
+        record.identity = entry.value("IdentityFile") ?? ""; record.jump = entry.value("ProxyJump") ?? ""
+        record.authentication = entry.authentication
+        if let issue = record.validation { throw ConfigError.message(issue) }
+        return record
+    }
     init(_ input: String, kind: RecordKind) throws {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard Self.kinds.contains(kind), !text.isEmpty, text.utf8.count <= 2048,

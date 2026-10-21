@@ -4,6 +4,11 @@
 
 Нативное приложение для macOS 14+ на Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
 
+## Изменения 3.12.3 (сборка 63)
+
+- PublicKeyInstallation uses an immutable validated public key and current/sudo/direct target mode. Target account sudo -H -u owns HOME and file writes; preserve existing lines, deduplicate key material even with different comments, reject .ssh/authorized_keys symlinks, 0700/0600 modes. No daemon settings changes. ConsoleLaunch installation uses argv SSH, original prepared route/config, independent PTY, no multiplex/forwards/LocalCommand/RemoteCommand. ConsoleSession reuses saved password only for original SSH login and safe routing policy; supplied editor password only for unchanged unbound username. Direct different user never reads/reuses source password. Standalone console closes on sheet disappearance, app auth/profile/config changes; generation/entry guards rechecked before launch. Never run user server installs in QA: owned loopback and temporary HOME/sudo shim only.
+- QuickConnectionTarget.record creates fresh public record seed without original/runtime identities or passwords. Console/page context menu opens standard draft editor; Save/CAS unchanged, active connection not restarted. Record editor SSH fields exist only under plural SSH-keys section. Setup may choose another installation public key without changing login identity.
+
 ## Изменения 3.12.2 (сборка 62)
 
 - RecordChooserView double-click activates the exact clicked choice through the existing choose route; single-click, Continue and Enter remain. No connection starts from the chooser. Folder/tunnel use their existing routes.

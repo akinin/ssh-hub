@@ -93,6 +93,10 @@ import Foundation
         let quick = try QuickConnectionTarget("demo@192.0.2.40:2222", kind: .ssh)
         let quickEntry = try quick.entry(kind: .ssh, user: quick.user!, config: config)
         check(quickEntry.isQuickConnection && quickEntry.host == "192.0.2.40" && quickEntry.port == "2222")
+        let quickRecord = try QuickConnectionTarget.record(from: quickEntry)
+        check(quickRecord.host == quickEntry.host && quickRecord.user == "demo" && quickRecord.port == "2222" && quickRecord.kind == .ssh)
+        check(quickRecord.validation == nil && quickRecord.aliasName == nil && quickRecord.aliasSource == nil && quickRecord.originIdentity == nil)
+        check(try QuickConnectionTarget.record(from: quickEntry).id != quickRecord.id)
         check(ConsoleLaunch.ssh(quickEntry, config: config).arguments.suffix(2) == ["--", "ssh://demo@192.0.2.40:2222"])
         let qp = Process(); qp.executableURL = URL(fileURLWithPath: "/usr/bin/ssh"); qp.arguments = ["-G", "-F", config.path, "--", quickEntry.sshTarget]
         let qo = Pipe(); qp.standardOutput = qo; qp.standardError = qo; try qp.run()
@@ -106,6 +110,10 @@ import Foundation
         let quickWebA = try QuickConnectionTarget("http://127.0.0.1:8080/a", kind: .web).entry(kind: .web, user: "demo", config: config)
         let quickWebB = try QuickConnectionTarget("http://127.0.0.1:8080/b", kind: .web).entry(kind: .web, user: "demo", config: config)
         check(quickWebA.favoriteID != quickWebB.favoriteID)
+        let quickWebRecord = try QuickConnectionTarget.record(from: quickWebA)
+        check(quickWebRecord.kind == .web && quickWebRecord.website == "http://127.0.0.1:8080/a" && quickWebRecord.port == "8080")
+        var saved = quickEntry; saved.isQuickConnection = false
+        do { _ = try QuickConnectionTarget.record(from: saved); fatalError("saved entry accepted as quick connection") } catch {}
         let quickFTP = try QuickConnectionTarget("192.0.2.1", kind: .ftp)
         check(try quickFTP.entry(kind: .ftp, user: "one", config: config).favoriteID != quickFTP.entry(kind: .ftp, user: "two", config: config).favoriteID)
 
@@ -127,6 +135,20 @@ import Foundation
         check(entry.command.contains(repo.privateConfig(record.id).path))
         let launch = ConsoleLaunch.ssh(entry, config: config).arguments
         check(launch.contains(repo.privateConfig(record.id).path) && launch.last == "connection")
+        let blob = Data([0, 0, 0, 11]) + Data("ssh-ed25519".utf8) + Data([0, 0, 0, 32]) + Data(repeating: 7, count: 32)
+        let publicKey = PublicSSHKey(url: root.appendingPathComponent("synthetic.pub"), text: "ssh-ed25519 " + blob.base64EncodedString() + " fixture", fingerprint: "fixture")
+        for method in KeyInstallationMethod.allCases {
+            let plan = try PublicKeyInstallation(key: publicKey, method: method, username: "root")
+            let install = try ConsoleLaunch.installation(plan, entry: entry, config: config)
+            let resolve = Process(), pipe = Pipe()
+            resolve.executableURL = URL(fileURLWithPath: install.executable); resolve.arguments = ["-G"] + install.arguments
+            resolve.standardOutput = pipe; resolve.standardError = pipe
+            try resolve.run(); let result = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self); resolve.waitUntilExit()
+            check(resolve.terminationStatus == 0 && result.contains("hostname 192.0.2.10\n") && result.contains("port 2222\n"))
+            check(result.contains(method == .direct ? "user root\n" : "user demo\n"))
+            check(result.contains("controlmaster false\n") && !result.split(separator: "\n").contains(where: { $0.hasPrefix("controlpath ") }) && result.contains("clearallforwardings yes\n"))
+            check(entry.user == "demo" && install.arguments.last == plan.remoteCommand)
+        }
         let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh"); process.arguments = ["-G", "-F", repo.privateConfig(record.id).path, "connection"]
         let output = Pipe(); process.standardOutput = output; process.standardError = output
         try process.run(); let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self); process.waitUntilExit()

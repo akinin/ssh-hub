@@ -1,5 +1,11 @@
 import SwiftUI
 
+private struct KeyInstallationRequest: Identifiable {
+    let id = UUID()
+    let key: PublicSSHKey
+    let entry: SSHAlias
+}
+
 struct RecordFieldRow<Content: View>: View {
     let title: String
     let content: Content
@@ -15,13 +21,14 @@ struct RecordFieldRow<Content: View>: View {
 struct RecordSSHKeyFields: View {
     @Binding var identity: String
     var entry: SSHAlias?
+    var password = ""
     @EnvironmentObject var store: AliasStore
     @State private var generating = false
-    @State private var installation: String?
+    @State private var installation: KeyInstallationRequest?
     @State private var error: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            RecordFieldRow("SSH-ключ") {
+            RecordFieldRow("Ключ входа") {
                 HStack {
                     TextField("Путь к приватному ключу", text: $identity).textFieldStyle(.roundedBorder).labelsHidden().accessibilityIdentifier("recordSSHKey")
                     Button("Выбрать…") { choose() }
@@ -32,17 +39,27 @@ struct RecordSSHKeyFields: View {
                 Button("Установить публичный ключ на сервер…", systemImage: "arrow.up.to.line") {
                     do {
                         guard let entry else { return }
-                        let url = PublicSSHKey.identityURL(identity.trimmingCharacters(in: .whitespaces)).appendingPathExtension("pub")
-                        installation = try TerminalCommands.installation(key: PublicSSHKey.read(url), entry: entry, config: store.config.url)
+                        let value = identity.trimmingCharacters(in: .whitespaces)
+                        let url: URL
+                        if value.isEmpty {
+                            let panel = NSOpenPanel(); panel.title = "Публичный ключ для установки"; panel.showsHiddenFiles = true
+                            panel.directoryURL = store.config.sshDirectory; panel.canChooseDirectories = false
+                            guard panel.runModal() == .OK, let selected = panel.url else { return }
+                            url = selected.pathExtension == "pub" ? selected : selected.appendingPathExtension("pub")
+                        } else {
+                            let selected = PublicSSHKey.identityURL(value)
+                            url = selected.pathExtension == "pub" ? selected : selected.appendingPathExtension("pub")
+                        }
+                        installation = KeyInstallationRequest(key: try PublicSSHKey.read(url), entry: entry)
                     } catch { self.error = error.localizedDescription }
-                }.disabled(entry == nil || identity.trimmingCharacters(in: .whitespaces).isEmpty)
+                }.disabled(entry == nil)
             }
             if entry == nil { Text("Для установки ключа сначала сохрани адрес, пользователя, порт и ProxyJump записи.").font(.caption).foregroundStyle(.secondary) }
             if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
         }
         .sheet(isPresented: $generating) { GenerateKeyView(directory: store.config.sshDirectory) { identity = $0.path } }
-        .sheet(isPresented: Binding(get: { installation != nil }, set: { if !$0 { installation = nil } })) {
-            InstallationReviewView(command: installation ?? "", server: entry.map { $0.user + "@" + $0.host + ":" + $0.port } ?? "").environmentObject(store)
+        .sheet(item: $installation) { request in
+            InstallationReviewView(entry: request.entry, key: request.key, password: password).environmentObject(store)
         }
     }
     private func choose() {
@@ -60,7 +77,7 @@ struct KeyManagerView: View {
     @State private var target: String = ""
     @State private var warnings: [String] = []
     @State private var loading = false
-    @State private var installation: String?
+    @State private var installation: KeyInstallationRequest?
     @State private var error: String?
     @State private var generating = false
     private var current: PublicSSHKey? { keys.first { $0.id == selected } }
@@ -101,11 +118,9 @@ struct KeyManagerView: View {
                             }
                             if let server { Text("\(server.user)@\(server.host) · порт \(server.port)").font(.caption).foregroundStyle(.secondary) }
                             Button("Подготовить установку…", systemImage: "arrow.up.to.line") {
-                                do {
-                                    if let server { installation = try TerminalCommands.installation(key: key, entry: server, config: store.config.url) }
-                                } catch { self.error = error.localizedDescription }
+                                if let server { installation = KeyInstallationRequest(key: key, entry: server) }
                             }.disabled(server == nil)
-                            Text("Установка откроется в выбранном терминале. Пароль сервера, если нужен, вводится там.")
+                            Text("Установка выполняется во встроенной консоли с параметрами записи. Можно выбрать другого пользователя, в том числе root через sudo.")
                                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(.trailing, 6)
                     }
@@ -127,9 +142,8 @@ struct KeyManagerView: View {
         }.padding(24).frame(width: 820).dismissOnOutsideClick()
             .onAppear { target = store.selected ?? ""; refresh() }
             .sheet(isPresented: $generating, onDismiss: refresh) { GenerateKeyView(directory: store.config.sshDirectory) }
-            .sheet(isPresented: Binding(get: { installation != nil }, set: { if !$0 { installation = nil } })) {
-                InstallationReviewView(command: installation ?? "", server: server?.name ?? "")
-                    .environmentObject(store)
+            .sheet(item: $installation) { request in
+                InstallationReviewView(entry: request.entry, key: request.key).environmentObject(store)
             }
     }
     private func refresh() {
@@ -145,22 +159,95 @@ struct KeyManagerView: View {
 }
 
 struct InstallationReviewView: View {
-    let command: String
-    let server: String
+    let entry: SSHAlias
+    @State private var key: PublicSSHKey
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var access = AppAccess.shared
+    @State private var method: KeyInstallationMethod = .current
+    @State private var username = "root"
+    @State private var loginPassword: String
+    @State private var session: ConsoleSession?
+    @State private var profile: UUID?
+    @State private var config: URL?
+    @State private var error: String?
+    init(entry: SSHAlias, key: PublicSSHKey, password: String = "") {
+        self.entry = entry; _key = State(initialValue: key); _loginPassword = State(initialValue: password)
+    }
+    private var validation: String? {
+        do { _ = try PublicKeyInstallation(key: key, method: method, username: username); return nil }
+        catch { return error.localizedDescription }
+    }
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Label("Установка ключа: \(server)", systemImage: "key.horizontal").font(.title2).bold()
-            Text("Публичный ключ будет добавлен в authorized_keys выбранного пользователя на сервере. ssh-copy-id проверит, установлен ли он уже.")
-                .font(.callout).fixedSize(horizontal: false, vertical: true)
-            Text(command).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                .padding(14).frame(maxWidth: .infinity, alignment: .leading).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
-            HStack {
-                Button("Отмена", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
-                Spacer()
-                Button("Открыть в терминале") { store.runInTerminal(command); dismiss() }.buttonStyle(.borderedProminent)
+        VStack(alignment: .leading, spacing: 16) {
+            Label("Установка публичного ключа", systemImage: "key.horizontal").font(.title2).bold()
+            Text("\(entry.user)@\(entry.host) · порт \(entry.port)").foregroundStyle(.secondary).textSelection(.enabled)
+            if let session {
+                KeyInstallationConsole(session: session)
+            } else {
+                HStack { Text(key.name).font(.headline); Spacer(); Button("Выбрать другой ключ…") { chooseKey() } }
+                Text(key.fingerprint).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                Text("Выбор ключа для установки не меняет ключ входа в запись.").font(.caption).foregroundStyle(.secondary)
+                Picker("Кому установить", selection: $method) { ForEach(KeyInstallationMethod.allCases) { Text($0.title).tag($0) } }
+                    .accessibilityIdentifier("keyInstallationMethod")
+                if method != .current {
+                    TextField("Пользователь", text: $username).textFieldStyle(.roundedBorder).accessibilityIdentifier("keyInstallationUser")
+                }
+                Text(method == .sudo ? "Вход по данным записи, затем установка в домашнюю папку выбранного пользователя через sudo. Пароль sudo при необходимости введи в консоли." : method == .direct ? "Отдельный вход выбранным пользователем. Пароль другого пользователя из записи не передаётся." : "Ключ добавится в authorized_keys пользователя записи. Существующие ключи сохраняются, повторно тот же ключ не добавляется.")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if let message = error ?? validation { Text(message).font(.caption).foregroundStyle(.red) }
+                Spacer(minLength: 0)
             }
-        }.padding(24).frame(width: 590).dismissOnOutsideClick()
+            HStack {
+                Spacer()
+                Button(session == nil ? "Отмена" : "Закрыть", role: .cancel) { stop(); dismiss() }.keyboardShortcut(.cancelAction)
+                if session == nil { Button("Установить во встроенной консоли") { start() }.buttonStyle(.borderedProminent).disabled(validation != nil || access.locked) }
+            }
+        }.padding(24).frame(width: 820, height: 560)
+            .onAppear { profile = store.profiles.active; config = store.config.url }
+            .onDisappear { stop() }
+            .onChange(of: access.authorizationRevision) { _, _ in stop(); dismiss() }
+            .onChange(of: access.locked) { _, locked in if locked { stop(); dismiss() } }
+            .onChange(of: store.profiles.active) { _, _ in stop(); dismiss() }
+            .onChange(of: store.config.url) { _, _ in stop(); dismiss() }
+    }
+    private func chooseKey() {
+        let panel = NSOpenPanel(); panel.title = "Публичный SSH-ключ"; panel.showsHiddenFiles = true
+        panel.directoryURL = key.url.deletingLastPathComponent(); panel.canChooseDirectories = false
+        if panel.runModal() == .OK, let url = panel.url {
+            do { key = try PublicSSHKey.read(url.pathExtension == "pub" ? url : url.appendingPathExtension("pub")); error = nil }
+            catch { self.error = error.localizedDescription }
+        }
+    }
+    private func start() {
+        do {
+            guard !loginPassword.contains(where: { $0.isNewline || $0 == "\0" }), loginPassword.utf8.count <= 16384 else { throw ConfigError.message("Проверь введённый пароль.") }
+            let plan = try PublicKeyInstallation(key: key, method: method, username: username)
+            let revision = access.authorizationRevision, profile = self.profile, config = self.config, expected = entry
+            let authorized: () -> Bool = { [weak store] in
+                guard let store, !AppAccess.shared.locked, AppAccess.shared.authorizationRevision == revision,
+                      store.profiles.active == profile, store.config.url == config,
+                      let latest = store.profileEntries.first(where: { $0.favoriteID == expected.favoriteID }) else { return false }
+                return latest.host == expected.host && latest.user == expected.user && latest.port == expected.port && latest.options == expected.options && latest.transport == expected.transport && latest.connectionConfig(fallback: store.config.url) == expected.connectionConfig(fallback: store.config.url)
+            }
+            guard authorized() else { throw ConfigError.message("Запись, профиль или авторизация изменились. Открой установку заново.") }
+            session = ConsoleSession(entry: entry, title: "Установка публичного ключа", config: store.config.url, installation: plan, password: loginPassword.isEmpty ? nil : loginPassword, authorizationCheck: authorized)
+            loginPassword = ""
+        } catch { self.error = error.localizedDescription }
+    }
+    private func stop() { loginPassword = ""; session?.disconnect() }
+}
+
+private struct KeyInstallationConsole: View {
+    @ObservedObject var session: ConsoleSession
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(session.status).font(.callout)
+                Spacer()
+                if !session.finished { Button("Остановить") { session.disconnect() } }
+            }
+            EmbeddedTerminalView(session: session, isActive: true).id(session.id).frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
 }

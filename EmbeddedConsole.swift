@@ -97,6 +97,9 @@ final class HubTerminalView: LocalProcessTerminalView {
     private var diagnosticTail = Data()
     private var event: SessionEvent?
     private var preflight: Task<Void, Never>?
+    private let installation: PublicKeyInstallation?
+    private var initialPassword: String?
+    private let authorizationCheck: (() -> Bool)?
     func resume() {
         guard preflight == nil, !finished else { return }
         if entry.recordKind == .adb && entry.transport?.adbNetwork == true {
@@ -132,8 +135,9 @@ final class HubTerminalView: LocalProcessTerminalView {
         event?.ended = Date(); event?.result = status
         if let event { SessionJournal.shared.update(event) }
     }
-    init(entry: SSHAlias, title: String, config: URL, id: UUID = UUID(), restored: Bool = false) {
+    init(entry: SSHAlias, title: String, config: URL, id: UUID = UUID(), restored: Bool = false, installation: PublicKeyInstallation? = nil, password: String? = nil, authorizationCheck: (() -> Bool)? = nil) {
         self.entry = entry; self.title = title; self.config = config; self.id = id
+        self.installation = installation; self.initialPassword = password; self.authorizationCheck = authorizationCheck
         awaitingConnection = restored
         if restored { status = "Восстановленная вкладка · подключение по кнопке" }
     }
@@ -141,13 +145,13 @@ final class HubTerminalView: LocalProcessTerminalView {
         if let view { return view }
         let terminal = HubTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 460))
         ConsolePreferences.shared.apply(to: terminal, zoom: zoom)
-        terminal.canPaste = { [weak self, weak terminal] in guard let self else { return false }; return !self.finished && !self.awaitingConnection && !AppAccess.shared.locked && ConsoleStore.shared.selected == self.id && terminal?.process.running == true }
+        terminal.canPaste = { [weak self, weak terminal] in guard let self else { return false }; return !self.finished && !self.awaitingConnection && !AppAccess.shared.locked && self.authorizationCheck?() != false && (self.installation != nil || ConsoleStore.shared.selected == self.id) && terminal?.process.running == true }
         terminal.pasteDestination = { [weak self] in self.map { $0.title + " · " + $0.entry.user + "@" + $0.entry.host + " · сеанс " + $0.id.uuidString.prefix(8) } ?? "" }
         terminal.onOutput = { [weak self] data in self?.received(data) }
         terminal.onFind = { [weak self] in self?.showSearch = true }
         terminal.onZoom = { [weak self] delta in self?.changeZoom(delta) }
         terminal.onShortcut = { [weak self] number in
-            guard let self, let value = try? SavedCommandsRepository().load(self.entry.favoriteID),
+            guard let self, self.installation == nil, let value = try? SavedCommandsRepository().load(self.entry.favoriteID),
                   let command = value.commands.first(where: { $0.shortcut == number }) else { return }
             self.execute(command)
         }
@@ -156,16 +160,24 @@ final class HubTerminalView: LocalProcessTerminalView {
         terminal.processDelegate = self
         let bridge = ConsoleTerminalDelegate(); bridge.view = terminal; terminal.terminalDelegate = bridge
         self.bridge = bridge; view = terminal
+        let suppliedPasswordUser = entry.user
         let launch: ConsoleLaunch
         if entry.recordKind == .serial {
             guard let helper = Bundle.main.url(forAuxiliaryExecutable: "SSHSerial"), let settings = entry.serial, settings.validation == nil else { status = "Некорректные параметры serial port"; finished = true; finishEvent(); return terminal }
             launch = ConsoleLaunch(executable: helper.path, arguments: settings.arguments)
         } else {
-            do { entry = try SSHPasswordStore.preparedConnection(for: entry, config: config); launch = try ConnectionLaunch.console(entry, config: config) }
+            do {
+                if installation != nil, AppAccess.shared.locked || authorizationCheck?() == false { throw ConfigError.message("Установка отменена: запись, профиль или авторизация изменились.") }
+                entry = try SSHPasswordStore.preparedConnection(for: entry, config: config)
+                launch = try installation.map { try ConsoleLaunch.installation($0, entry: entry, config: config) } ?? ConnectionLaunch.console(entry, config: config)
+            }
             catch { status = error.localizedDescription; finished = true; terminal.feed(text: status + "\r\n"); finishEvent(); return terminal }
         }
-        if entry.canSSH, entry.authentication.usesPassword,
-           SSHPasswordStore.hasPassword(for: entry, config: entry.credentialConfig(fallback: config)) {
+        let supplied = entry.sharedCredentialScope == nil && entry.user == suppliedPasswordUser ? initialPassword : nil
+        initialPassword = nil
+        let mayReuse = installation?.reusesLoginPassword(for: entry) ?? true
+        if entry.canSSH, mayReuse, (installation != nil || entry.authentication.usesPassword),
+           supplied != nil || SSHPasswordStore.hasPassword(for: entry, config: entry.credentialConfig(fallback: config)) {
             status = "Проверка маршрута SSH…"
             preflight = Task { [weak self] in
                 guard let self else { return }
@@ -173,7 +185,7 @@ final class HubTerminalView: LocalProcessTerminalView {
                 let permitted = await SSHLoginPolicy.permitsSavedPassword(for: self.entry, config: self.config)
                 guard !Task.isCancelled, !self.finished else { return }
                 var password: String?
-                if permitted { password = try? SSHPasswordStore.password(for: self.entry, config: self.entry.credentialConfig(fallback: self.config)) }
+                if permitted { password = supplied ?? (try? SSHPasswordStore.password(for: self.entry, config: self.entry.credentialConfig(fallback: self.config))) }
                 self.launchProcess(launch, terminal: terminal, password: password, askpass: true)
             }
         } else { launchProcess(launch, terminal: terminal, password: nil, askpass: false) }
@@ -181,11 +193,12 @@ final class HubTerminalView: LocalProcessTerminalView {
     }
     private func launchProcess(_ launch: ConsoleLaunch, terminal: HubTerminalView, password: String?, askpass: Bool) {
         guard !finished else { return }
+        if installation != nil, AppAccess.shared.locked || authorizationCheck?() == false { disconnect(); return }
         var environment = launch.environment
         do {
             if askpass {
                 guard let helper = Bundle.main.url(forAuxiliaryExecutable: "SSHLoginAskpass") else { throw ConfigError.message("Не найден помощник ввода пароля.") }
-                let server = try SSHLoginServer(password: password, destination: "\(entry.user)@\(entry.host)")
+                let server = try SSHLoginServer(password: password, destination: "\(installation?.loginUser(for: entry) ?? entry.user)@\(entry.host)")
                 login = server
                 environment["SSH_ASKPASS"] = helper.path; environment["SSH_ASKPASS_REQUIRE"] = "force"
                 environment["SSH_HUB_LOGIN_SOCKET"] = server.path
@@ -194,10 +207,10 @@ final class HubTerminalView: LocalProcessTerminalView {
         let directory = entry.recordKind == .localShell && entry.transport?.workingDirectory.isEmpty == false ? entry.transport!.workingDirectory : NSHomeDirectory()
         terminal.startProcess(executable: launch.executable, args: launch.arguments,
                               environment: environment.map { "\($0.key)=\($0.value)" }, currentDirectory: directory)
-        if terminal.process.running { status = entry.canSSH ? "SSH · \(entry.user)@\(entry.host)" : (entry.recordKind?.title ?? "Консоль") + " · " + title }
+        if terminal.process.running { status = installation != nil ? "Установка ключа · \(installation!.loginUser(for: entry))@\(entry.host)" : entry.canSSH ? "SSH · \(entry.user)@\(entry.host)" : (entry.recordKind?.title ?? "Консоль") + " · " + title }
         else { status = "Не удалось запустить подключение"; finished = true; login?.stop(); login = nil; finishEvent() }
     }
-    func disconnect() { preflight?.cancel(); preflight = nil; guard !finished else { return }; login?.stop(); login = nil; if let view { ConsoleProcess.stop(view.process) }; finished = true; status = "Отключено пользователем"; finishEvent() }
+    func disconnect() { initialPassword = nil; preflight?.cancel(); preflight = nil; guard !finished else { return }; login?.stop(); login = nil; if let view { ConsoleProcess.stop(view.process) }; finished = true; status = "Отключено пользователем"; finishEvent() }
     nonisolated func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
     nonisolated func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
     nonisolated func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
@@ -206,7 +219,7 @@ final class HubTerminalView: LocalProcessTerminalView {
             guard let self else { return }
             self.login?.stop(); self.login = nil; self.finished = true
             let code = ConsoleProcess.exitCode(fromWaitStatus: exitCode)
-            if code == 0 { self.status = "Сеанс завершён" }
+            if code == 0 { self.status = self.installation == nil ? "Сеанс завершён" : "Установка завершена" }
             else if self.entry.canSSH {
                 let result = ConnectionResult.classify(status: code ?? 255, log: String(decoding: self.diagnosticTail, as: UTF8.self))
                 self.status = result.title + " · " + result.detail
@@ -397,6 +410,9 @@ struct ConsoleTab: View {
                 Button("Закрыть другие вкладки") { store.keepConsole(session) }.disabled(consoles.sessions.count + store.pages.count < 2)
                 Button("Закрыть вкладки справа") { store.closeTabsRight(of: .console(session.id)) }.disabled(store.workspace.pane(for: .console(session.id)).map { store.workspace.tabs(in: $0).last == .console(session.id) } ?? true)
                 Divider()
+                if entry.isQuickConnection {
+                    Button("Создать запись из подключения…", systemImage: "plus.rectangle.on.folder") { store.createRecord(fromQuickConnection: entry) }
+                } else {
                 Button("Показать в дереве", systemImage: "sidebar.left") { store.reveal(entry) }
                 Button("Панель управления", systemImage: "gauge.with.dots.needle.50percent") { store.showDashboard(entry) }
                 Button("Документация", systemImage: "doc.richtext") { store.showDocumentation(entry) }
@@ -404,6 +420,7 @@ struct ConsoleTab: View {
                 if entry.canSSH || entry.recordKind == .localShell { Button("Логи", systemImage: "text.alignleft") { store.openPage(entry, section: .logs) } }
                 Button("Инвентаризация", systemImage: "shippingbox") { store.openPage(entry, section: .inventory) }
                 if entry.canSSH { Button("WinBox", systemImage: "network") { store.openPage(entry, section: .winbox) } }
+                }
                 Divider()
                 Button("Переподключиться", systemImage: "arrow.clockwise") { consoles.reconnect(session, entry: entry); if entry.canSSH { store.recordConnection(entry, kind: .ssh) } }
                 Button("Дублировать вкладку", systemImage: "plus.square.on.square") { consoles.connect(entry, title: session.title, config: session.config, newSession: true); if entry.canSSH { store.recordConnection(entry, kind: .ssh) } }.disabled(entry.recordKind == .serial)

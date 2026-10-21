@@ -45,6 +45,7 @@ import Foundation
         let comment = "test 'quote $(false)"
         try run("/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", comment, "-f", privateKey.path])
         let key = try PublicSSHKey.read(publicURL)
+        try installationTests(root: root, key: key)
         try check(key.fingerprint.contains("SHA256:") && key.comment == comment, "public key fingerprint and comment")
         let mapped = SSHAlias(name: "mapped", source: url, line: 1, options: [SSHOption(key: "IdentityFile", value: privateKey.path)])
         try check(key.usedBy([mapped]) == ["mapped"], "alias key mapping")
@@ -77,6 +78,55 @@ import Foundation
         try sftpTests(root, entry: mapped, config: url)
         print("PASS: JSON transfer, group metadata, conflict/injection rejection, atomic batch import/undo, missing config, public key validation and discovery, fingerprints, key mapping, installer command, terminal escaping and cleanup")
         print("PASS: duplicate preserves source/options/shared aliases/implicit hostname/Include/CRLF, conflicts and stale changes; bounded history, rename, persistence; SFTP CLI delegates correct alias/config/subsystem without network")
+    }
+    static func installationTests(root: URL, key: PublicSSHKey) throws {
+        let fm = FileManager.default
+        let home = root.appendingPathComponent("remote-home"), bin = root.appendingPathComponent("fixture-bin")
+        try fm.createDirectory(at: home, withIntermediateDirectories: true)
+        try fm.createDirectory(at: bin, withIntermediateDirectories: true)
+        let shim = bin.appendingPathComponent("sudo")
+        try Data("#!/bin/sh\n[ \"$1\" = -H ] && [ \"$2\" = -u ] && [ \"$3\" = root ] && [ \"$4\" = -- ] || exit 91\nshift 4\nexec \"$@\"\n".utf8).write(to: shim)
+        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: shim.path)
+        func execute(_ plan: PublicKeyInstallation, at home: URL = home) throws -> Int32 {
+            let process = Process(); process.executableURL = URL(fileURLWithPath: "/bin/sh"); process.arguments = ["-c", plan.remoteCommand]
+            // An isolated child HOME models the remote account; never use ~/.ssh.
+            var environment = ProcessInfo.processInfo.environment
+            environment["HOME"] = home.path; environment["PATH"] = bin.path + ":/usr/bin:/bin:/usr/sbin:/sbin"
+            process.environment = environment; process.standardInput = FileHandle.nullDevice
+            process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+            try process.run(); process.waitUntilExit(); return process.terminationStatus
+        }
+        let plan = try PublicKeyInstallation(key: key, method: .current, username: "")
+        let directory = home.appendingPathComponent(".ssh"), file = directory.appendingPathComponent("authorized_keys")
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("existing-without-newline".utf8).write(to: file)
+        try check(execute(plan) == 0, "embedded install script succeeds")
+        let bytes = try Data(contentsOf: file)
+        try check(String(decoding: bytes, as: UTF8.self) == "existing-without-newline\n" + key.text + "\n", "existing keys and quoted comment preserved")
+        try check(execute(plan) == 0 && Data(contentsOf: file) == bytes, "install is idempotent")
+        let same = PublicSSHKey(url: key.url, text: key.text.split(separator: " ").prefix(2).joined(separator: " ") + " changed-comment", fingerprint: key.fingerprint)
+        try check(execute(PublicKeyInstallation(key: same, method: .current, username: "")) == 0 && Data(contentsOf: file) == bytes, "same key with another comment is not duplicated")
+        try check((fm.attributesOfItem(atPath: directory.path)[.posixPermissions] as? NSNumber)?.intValue == 0o700, "remote ssh directory mode")
+        try check((fm.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600, "remote authorized_keys mode")
+        let entry = SSHAlias(name: "fixture", source: root.appendingPathComponent("config"), line: 1, options: [SSHOption(key: "User", value: "demo")])
+        let sudo = try PublicKeyInstallation(key: key, method: .sudo, username: "root")
+        let direct = try PublicKeyInstallation(key: key, method: .direct, username: "root")
+        try check(sudo.loginUser(for: entry) == "demo" && sudo.reusesLoginPassword(for: entry), "sudo keeps record login credentials")
+        try check(direct.loginUser(for: entry) == "root" && !direct.reusesLoginPassword(for: entry), "direct root never reuses another account password")
+        try check(execute(sudo) == 0 && Data(contentsOf: file) == bytes, "sudo argv shim runs only selected user command, never real sudo")
+        for username in ["", "-root", "root;false", "root\nother", "root name", "$(false)"] {
+            do { _ = try PublicKeyInstallation(key: key, method: .sudo, username: username); throw ConfigError.message("TEST FAILED: unsafe target accepted") }
+            catch ConfigError.message(let text) { try check(!text.hasPrefix("TEST FAILED"), "unsafe installation user rejected") }
+        }
+        let linkedHome = root.appendingPathComponent("linked-home")
+        try fm.createDirectory(at: linkedHome, withIntermediateDirectories: true)
+        try fm.createSymbolicLink(at: linkedHome.appendingPathComponent(".ssh"), withDestinationURL: directory)
+        try check(execute(plan, at: linkedHome) != 0 && Data(contentsOf: file) == bytes, "symlink directory rejected without changing its destination")
+        let linkedFileHome = root.appendingPathComponent("linked-file-home")
+        try fm.createDirectory(at: linkedFileHome.appendingPathComponent(".ssh"), withIntermediateDirectories: true)
+        try fm.createSymbolicLink(at: linkedFileHome.appendingPathComponent(".ssh/authorized_keys"), withDestinationURL: file)
+        try check(execute(plan, at: linkedFileHome) != 0 && Data(contentsOf: file) == bytes, "symlink file rejected without changing its destination")
+        print("PASS: key installation quoting, append/deduplication, modes, sudo target argv, distinct login credentials and symlink refusal on owned temporary files")
     }
     static func duplicateTests(_ root: URL) throws {
         let url = root.appendingPathComponent("duplicate-config"), config = SSHConfig(url: url)

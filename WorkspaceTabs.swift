@@ -90,6 +90,9 @@ struct WorkspacePageTab: View {
                 Button("Закрыть другие вкладки") { store.keepPage(page) }
                 Button("Закрыть все вкладки") { store.closeAllTabs() }
                 Divider()
+                if let entry = store.entry(for: page), entry.isQuickConnection {
+                    Button("Создать запись из подключения…", systemImage: "plus.rectangle.on.folder") { store.createRecord(fromQuickConnection: entry) }
+                }
                 if let entry = store.entry(for: page), !entry.isQuickConnection {
                     Button("Панель управления") { store.showDashboard(entry) }
                     Button("Документация") { store.showDocumentation(entry) }
