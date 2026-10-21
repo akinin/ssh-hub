@@ -4,6 +4,10 @@
 
 Нативное приложение для macOS 14+ на Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
 
+## Изменения 3.6.1 (сборка 53)
+
+- RecordActionRows группирует представление по effectivePlacement. Stable ID bindings, общий persisted массив прежний; RecordAction.moving переставляет filtered group по её индексам и возвращает значения в прежние slots, не меняет соседнюю группу. Разделители только tiles. Контекстное меню вставляет разделитель непосредственно за соответствующим ID; не использовать displayed index как storage index. Global/record drafts, Cancel и CAS прежние.
+
 ## Изменения 3.6.0 (сборка 52)
 
 - RecordActionStyle optional placement читает старые данные: прежние действия tiles, пять новых header по умолчанию. Один общий bounded массив для обоих мест, без дублирования. Divider — только ID divider_ + 32 hex, не исполняемое действие; sections фильтрует header/hidden и пустые группы. Saving не возвращает удалённые divider из previous; недоступные типу действия сохраняет. Unknown IDs никогда не исполнять. Изменения global/record остаются draft до Save; Cancel/CAS global прежние. Верхние кнопки и плитки делегируют прежним callbacks, destructive confirm сохраняется. Не добавлять GeometryReader→State в layout.

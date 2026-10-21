@@ -21,8 +21,8 @@ struct RecordActionsEditor: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label(entry == nil ? "Плитки всех записей" : "Плитки записи", systemImage: "square.grid.2x2").font(.title2.bold())
-            Text(entry == nil ? "Общие настройки действий для записей без индивидуального оформления. Выбери плитку или значок вверху; добавь разделители между группами." : "Настройки только этой записи. Можно вернуться к общему варианту. Перетаскивай строки или используй стрелки.").font(.caption).foregroundStyle(.secondary)
+            Label(entry == nil ? "Действия всех записей" : "Действия записи", systemImage: "square.grid.2x2").font(.title2.bold())
+            Text(entry == nil ? "Общие настройки действий для записей без индивидуального оформления. Выбери плитку или значок вверху; добавь разделители между группами." : "Настройки только этой записи. Можно вернуться к общему варианту. Перетаскивай строки внутри группы или используй стрелки.").font(.caption).foregroundStyle(.secondary)
             RecordActionRows(draft: $draft)
             HStack {
                 Button(entry == nil ? "По умолчанию" : "Использовать общие") {
@@ -49,34 +49,68 @@ struct GlobalRecordActionsEditor: View {
 
 private struct RecordActionRows: View {
     @Binding var draft: [RecordActionStyle]
-    private func move(_ id: String, by delta: Int) { guard let index = draft.firstIndex(where: { $0.id == id }), draft.indices.contains(index + delta) else { return }; draft.swapAt(index, index + delta) }
+    private func group(_ placement: RecordActionPlacement) -> [RecordActionStyle] { draft.filter { $0.effectivePlacement == placement } }
+    private func binding(_ item: RecordActionStyle) -> Binding<RecordActionStyle> {
+        Binding(get: { draft.first { $0.id == item.id } ?? item }, set: { value in
+            if let index = draft.firstIndex(where: { $0.id == item.id }) { draft[index] = value }
+        })
+    }
+    private func move(_ id: String, by delta: Int, placement: RecordActionPlacement) {
+        let rows = group(placement)
+        guard let index = rows.firstIndex(where: { $0.id == id }), rows.indices.contains(index + delta) else { return }
+        draft = RecordAction.moving(draft, placement: placement, from: IndexSet(integer: index), to: delta < 0 ? index - 1 : index + 2)
+    }
+    private func addDivider(after id: String) {
+        guard draft.count < 32, let index = draft.firstIndex(where: { $0.id == id }), draft[index].effectivePlacement == .tiles else { return }
+        draft.insert(.divider(), at: index + 1)
+    }
     var body: some View {
         List {
-            ForEach($draft) { $style in
-                HStack(spacing: 8) {
-                    Image(systemName: style.isDivider ? "minus" : RecordAction(rawValue: style.id)?.icon ?? "questionmark").foregroundStyle(style.tint).frame(width: 22)
-                    Text(style.isDivider ? "Горизонтальный разделитель" : RecordAction(rawValue: style.id)?.title ?? style.id).frame(maxWidth: .infinity, alignment: .leading)
-                    if !style.isDivider {
-                        Picker("Размещение: " + (RecordAction(rawValue: style.id)?.title ?? ""), selection: Binding(get: { style.effectivePlacement }, set: { style.placement = $0 })) { ForEach(RecordActionPlacement.allCases) { Text($0.title).tag($0) } }.labelsHidden().frame(width: 150)
-                        Picker("Цвет", selection: $style.color) { ForEach(RecordActionStyle.colors, id: \.self) { Text(RecordActionStyle.colorTitle($0)).tag($0) } }.labelsHidden().frame(width: 100)
-                    } else { Rectangle().fill(.quaternary).frame(maxWidth: 240).frame(height: 1) }
-                    Button { move(style.id, by: -1) } label: { Image(systemName: "arrow.up") }.disabled(draft.first?.id == style.id).help("Выше")
-                    Button { move(style.id, by: 1) } label: { Image(systemName: "arrow.down") }.disabled(draft.last?.id == style.id).help("Ниже")
-                    if style.isDivider {
-                        Button { let id = style.id; draft.removeAll { $0.id == id } } label: { Image(systemName: "trash") }.help("Убрать разделитель")
-                    } else {
-                        Toggle("Показать " + (RecordAction(rawValue: style.id)?.title ?? "действие"), isOn: Binding(get: { !style.hidden }, set: { style.hidden = !$0 })).labelsHidden().toggleStyle(.checkbox)
-                    }
-                }.padding(.vertical, 4).accessibilityElement(children: .contain)
-                    .contextMenu {
-                        if !style.isDivider {
-                            Button("Разделитель после этого действия", systemImage: "minus") {
-                                if let index = draft.firstIndex(where: { $0.id == style.id }), draft.count < 32 { draft.insert(.divider(), at: index + 1) }
-                            }.disabled(draft.count >= 32)
-                        }
-                    }
-            }.onMove { source, destination in draft.move(fromOffsets: source, toOffset: destination) }
-        }.frame(minHeight: 330)
+            actionGroup(.header, title: "Значки вверху", icon: "rectangle.topthird.inset.filled")
+            actionGroup(.tiles, title: "Плитки", icon: "square.grid.2x2")
+        }.frame(minHeight: 380)
+    }
+    private func actionGroup(_ placement: RecordActionPlacement, title: String, icon: String) -> some View {
+        let rows = group(placement)
+        return Section {
+            if rows.isEmpty { Text("Нет действий в этой группе").foregroundStyle(.secondary).font(.caption) }
+            ForEach(rows) { item in
+                actionRow(binding(item), placement: placement, rows: rows)
+            }.onMove { source, destination in draft = RecordAction.moving(draft, placement: placement, from: source, to: destination) }
+        } header: {
+            HStack {
+                Label(title, systemImage: icon).font(.subheadline.weight(.semibold))
+                Text("\(rows.filter { !$0.isDivider }.count)").foregroundStyle(.secondary)
+                Spacer()
+                if placement == .tiles {
+                    Button("Добавить разделитель", systemImage: "plus") { draft.append(.divider()) }.font(.caption).disabled(draft.count >= 32)
+                }
+            }.padding(.vertical, 5)
+        }
+    }
+    private func actionRow(_ binding: Binding<RecordActionStyle>, placement: RecordActionPlacement, rows: [RecordActionStyle]) -> some View {
+        let style = binding.wrappedValue
+        return HStack(spacing: 8) {
+            Image(systemName: style.isDivider ? "minus" : RecordAction(rawValue: style.id)?.icon ?? "questionmark").foregroundStyle(style.tint).frame(width: 22)
+            Text(style.isDivider ? "Разделитель" : RecordAction(rawValue: style.id)?.title ?? style.id).frame(maxWidth: .infinity, alignment: .leading)
+            if !style.isDivider {
+                Picker("Размещение: " + (RecordAction(rawValue: style.id)?.title ?? ""), selection: Binding(get: { binding.wrappedValue.effectivePlacement }, set: { binding.wrappedValue.placement = $0 })) { ForEach(RecordActionPlacement.allCases) { Text($0.title).tag($0) } }.labelsHidden().frame(width: 150)
+                Picker("Цвет", selection: binding.color) { ForEach(RecordActionStyle.colors, id: \.self) { Text(RecordActionStyle.colorTitle($0)).tag($0) } }.labelsHidden().frame(width: 100)
+            } else { Rectangle().fill(.quaternary).frame(width: 258, height: 1) }
+            Button { move(style.id, by: -1, placement: placement) } label: { Image(systemName: "arrow.up").frame(width: 14) }.frame(width: 36).disabled(rows.first?.id == style.id).help("Выше в группе")
+            Button { move(style.id, by: 1, placement: placement) } label: { Image(systemName: "arrow.down").frame(width: 14) }.frame(width: 36).disabled(rows.last?.id == style.id).help("Ниже в группе")
+            if style.isDivider {
+                Button { draft.removeAll { $0.id == style.id } } label: { Image(systemName: "trash").frame(width: 14) }.frame(width: 36).help("Убрать разделитель")
+            } else {
+                Toggle("Показать " + (RecordAction(rawValue: style.id)?.title ?? "действие"), isOn: Binding(get: { !binding.wrappedValue.hidden }, set: { binding.wrappedValue.hidden = !$0 })).labelsHidden().toggleStyle(.checkbox).frame(width: 36)
+            }
+
+        }.padding(.vertical, 4).accessibilityElement(children: .contain)
+            .contextMenu {
+                if placement == .tiles {
+                    Button("Разделитель после этой строки", systemImage: "minus") { addDivider(after: style.id) }.disabled(draft.count >= 32)
+                }
+            }
     }
 }
 private struct RecordActionAddMenu: View {
@@ -133,7 +167,7 @@ struct RecordTileCustomizationView: View {
             Picker("Область настройки", selection: $scope) {
                 ForEach(RecordTileScope.allCases) { Text($0.title).tag($0) }
             }.pickerStyle(.segmented).accessibilityIdentifier("recordTileScope")
-            Text(scope == .record ? "Выбери размещение: плитка или значок вверху. Перетаскивай строки или используй стрелки; разделители делят плитки на группы." : "Общие настройки действий для записей без индивидуального оформления. Выбери плитку или значок вверху; добавь разделители между группами.").font(.caption).foregroundStyle(.secondary)
+            Text(scope == .record ? "Выбери размещение: плитка или значок вверху. Порядок меняется внутри каждой группы. Правой кнопкой по плитке можно добавить разделитель сразу после неё." : "Общие настройки действий для записей без индивидуального оформления. Выбери плитку или значок вверху; добавь разделители между группами.").font(.caption).foregroundStyle(.secondary)
             RecordActionRows(draft: draft)
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
             HStack {

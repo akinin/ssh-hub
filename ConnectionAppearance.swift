@@ -105,6 +105,17 @@ enum RecordAction: String, CaseIterable, Identifiable {
         var id: String
         var actions: [RecordActionStyle]
     }
+    // Reorder only the displayed placement, preserving the other group's slots and values.
+    static func moving(_ styles: [RecordActionStyle], placement: RecordActionPlacement, from offsets: IndexSet, to destination: Int) -> [RecordActionStyle] {
+        let slots = styles.indices.filter { styles[$0].effectivePlacement == placement }
+        guard !offsets.isEmpty, offsets.allSatisfy({ slots.indices.contains($0) }), (0...slots.count).contains(destination) else { return styles }
+        let group = slots.map { styles[$0] }, moved = offsets.map { group[$0] }
+        var remaining = group.enumerated().filter { !offsets.contains($0.offset) }.map(\.element)
+        remaining.insert(contentsOf: moved, at: destination - offsets.filter { $0 < destination }.count)
+        var result = styles
+        for (slot, value) in zip(slots, remaining) { result[slot] = value }
+        return result
+    }
     static func sections(_ styles: [RecordActionStyle]) -> [Section] {
         var result: [Section] = [], actions: [RecordActionStyle] = [], id = "first"
         for style in styles where !style.hidden && style.effectivePlacement == .tiles {

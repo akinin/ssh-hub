@@ -75,6 +75,14 @@ import AppKit
         check(try JSONDecoder().decode([RecordActionStyle].self, from: JSONEncoder().encode(unique)) == unique, "placements and separators round trip")
         check(!RecordAction.saving([RecordActionStyle(id: "connect")], previous: unique).contains(where: \.isDivider), "deleted separators do not return during merge")
         check(RecordAction.layout(unique, entry: website).contains(where: \.isDivider), "separator metadata applies to other record types")
+        let interleaved = [RecordActionStyle(id: "favorite", color: "purple"), RecordActionStyle(id: "connect"), RecordActionStyle(id: "check", placement: .header), separator, RecordActionStyle(id: "inventory")]
+        let movedTile = RecordAction.moving(interleaved, placement: .tiles, from: IndexSet(integer: 2), to: 1)
+        check(movedTile.filter { $0.effectivePlacement == .tiles }.map(\.id) == ["connect", "inventory", separator.id], "tile moves use displayed group positions including separators")
+        check(movedTile[0] == interleaved[0] && movedTile[2] == interleaved[2], "tile movement leaves header metadata and positions unchanged")
+        let movedHeader = RecordAction.moving(interleaved, placement: .header, from: IndexSet(integer: 1), to: 0)
+        check(movedHeader.filter { $0.effectivePlacement == .header }.map(\.id) == ["check", "favorite"] && movedHeader.filter { $0.effectivePlacement == .tiles } == interleaved.filter { $0.effectivePlacement == .tiles }, "header movement leaves tile and separator order unchanged")
+        check(RecordAction.moving(interleaved, placement: .tiles, from: IndexSet([0, 2]), to: 3).filter { $0.effectivePlacement == .tiles }.map(\.id) == [separator.id, "connect", "inventory"], "multi-row group drag preserves moved row order")
+        check(RecordAction.moving(interleaved, placement: .header, from: IndexSet(integer: 5), to: 0) == interleaved, "stale drag indexes do not change either group")
         print("PASS: display names, fallback, logo resizing/transparency, settings, rename/undo, reset, JSON compatibility and validation")
     }
 }
