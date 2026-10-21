@@ -168,6 +168,7 @@ struct RecordReminderFields: View {
     var kind: RecordReminderKind
     @Binding var useGlobal: Bool
     @Binding var style: RecordReminderAppearance
+    @State private var showingAppearance = false
     var body: some View {
                 VStack(alignment: .leading, spacing: 14) {
                     if !reminders.contains(where: { $0.kind == kind }) { Text("Укажи дату и за сколько дней показать предупреждение рядом с записью.").foregroundStyle(.secondary) }
@@ -186,17 +187,46 @@ struct RecordReminderFields: View {
                         } }
                     }
                     Button(kind == .license ? "Добавить лицензию" : "Добавить оплату", systemImage: kind == .license ? "key" : "creditcard") { var value = RecordReminder(); value.kind = kind; reminders.append(value) }.disabled(reminders.count >= 20)
-                    DisclosureGroup("Оформление индикатора") {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Toggle("Использовать общие настройки", isOn: $useGlobal)
-                            if useGlobal { Text("Настройки → Внешний вид → Индикаторы сроков. Здесь можно включить индивидуальный вариант.").font(.caption).foregroundStyle(.secondary) }
-                            else { ReminderAppearanceFields(value: $style) }
-                        }.padding(.top, 10)
-                    }.disclosureGroupStyle(FullRowDisclosureStyle())
+                    HStack {
+                        Button("Настройки индикатора…", systemImage: "slider.horizontal.3") { showingAppearance = true }
+                        Text(useGlobal ? "Общие настройки" : "Индивидуальные настройки").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .sheet(isPresented: $showingAppearance) {
+                        ReminderAppearanceEditor(useGlobal: useGlobal, style: style) { common, value in
+                            useGlobal = common
+                            if !common { style = value }
+                        }
+                    }
                 }.onChange(of: reminders) { _, values in files.retain(values) }
     }
     private static var dateRange: ClosedRange<Date> { let calendar = RecordReminder.calendar(); return calendar.date(from: DateComponents(year: 1970, month: 1, day: 1))!...calendar.date(from: DateComponents(year: 2100, month: 12, day: 31))! }
 }
+private struct ReminderAppearanceEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @State var useGlobal: Bool
+    @State var style: RecordReminderAppearance
+    let apply: (Bool, RecordReminderAppearance) -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HubSheetHeader(title: "Настройки индикатора", subtitle: "Лицензии и оплаты этой записи", icon: "slider.horizontal.3")
+            Picker("Оформление", selection: $useGlobal) {
+                Text("Общие настройки").tag(true)
+                Text("Для этой записи").tag(false)
+            }.pickerStyle(.segmented).labelsHidden()
+            ScrollView {
+                if useGlobal {
+                    Text("Используются настройки из раздела «Внешний вид → Индикаторы сроков».").font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                } else { ReminderAppearanceFields(value: $style) }
+            }
+            HStack {
+                Spacer()
+                Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Применить") { apply(useGlobal, style); dismiss() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(!useGlobal && !style.valid)
+            }
+        }.padding(20).frame(width: 620, height: 540)
+    }
+}
+
 struct RecordReminderDraftFields: View {
     var kind: RecordReminderKind
     @Binding var appearance: ConnectionAppearance

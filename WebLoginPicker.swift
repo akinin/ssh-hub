@@ -11,7 +11,7 @@ enum WebLoginPickerScript {
         if (!window.__sshHubPickerEnabled) return;
         if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;
         e.preventDefault(); e.stopImmediatePropagation();
-        if (e.type === 'click') window.__sshHubLoginPicker?.choose?.(e);
+        if (e.type === 'click' || e.type === 'pointerdown' && e.target instanceof Element && e.target.closest('button:disabled,input[type=submit]:disabled,input[type=button]:disabled')) window.__sshHubLoginPicker?.choose?.(e);
       };
       for (const type of ['pointerdown','mousedown','click','submit','keydown']) window.addEventListener(type,block,true);
     })();
@@ -45,7 +45,7 @@ enum WebLoginPickerScript {
         }
         return null;
       };
-      const visible = e => e?.isConnected && !e.disabled && !e.readOnly && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && getComputedStyle(e).display !== 'none';
+      const visible = e => e?.isConnected && (!e.disabled || e.matches('button,input[type=submit],input[type=button],[role=button]')) && !e.readOnly && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && getComputedStyle(e).display !== 'none';
       state.valid = () => (state.twoStep ? (state.role==='username' || state.role==='next' ? ['username','next'] : ['password','submit']) : ['username','password','submit']).every(role=>visible(nodes[role]) && unique(selectors[role],nodes[role]));
       state.draw = () => {
         shadow.replaceChildren();
@@ -114,7 +114,7 @@ enum WebLoginPickerScript {
     func advance() {
         guard twoStep, firstVerified, verified, !checking else { return }
         generation = UUID(); passwordStep = true; role = "password"; selecting = false; revision = -1; verified = false
-        status = "Введи логин на странице и нажми «Далее», затем включи режим выбора и укажи пароль и кнопку входа."
+        status = "Введи логин на странице и нажми «Далее», затем нажми «Пароль» сверху и укажи поле и кнопку входа."
     }
     var currentComplete: Bool { twoStep ? (passwordStep ? !selectors.password.isEmpty && !selectors.submit.isEmpty && firstVerified : !selectors.username.isEmpty && !(selectors.next ?? "").isEmpty) : selectors.validation == nil }
     var canApply: Bool { verified && (!twoStep || passwordStep) }
@@ -136,7 +136,7 @@ enum WebLoginPickerScript {
                 if passwordStep { selectors.password = selected["password"] ?? ""; selectors.submit = selected["submit"] ?? "" }
                 else { selectors.username = selected["username"] ?? ""; selectors.next = selected["next"] ?? ""; firstVerified = false }
             } else { selectors = WebLoginSelectors(username: selected["username"] ?? "", password: selected["password"] ?? "", submit: selected["submit"] ?? "") }
-            status = twoStep && passwordStep && !selecting ? "Введи логин на странице и нажми «Далее», затем включи выбор пароля и кнопки входа." : currentComplete ? "Все элементы выбраны. Нажми «Проверить настройку»." : "Выбери оставшиеся элементы."
+            status = twoStep && passwordStep && !selecting ? "Введи логин на странице и нажми «Далее», затем нажми «Пароль» сверху и выбери поле и кнопку входа." : currentComplete ? "Все элементы выбраны. Нажми «Проверить настройку»." : "Выбери оставшиеся элементы."
         }
         if state["valid"] as? Bool != true { verified = false }
         if let error = state["error"] as? String, !error.isEmpty { status = error == "origin" ? "Открой форму на исходном адресе записи." : "Выбери подходящее поле или кнопку входа." }
@@ -164,7 +164,13 @@ enum WebLoginPickerScript {
             let result = try await WebLoginForm.run(in: web.view, origin: origin, probe: true, selectors: choice, stage: twoStep ? (passwordStep ? "password" : "username") : "combined")
             let after = try await WebLoginPickerScript.run(in: web.view, origin: origin, role: role, twoStep: twoStep)
             guard !closed, token == generation, !web.view.isLoading, WebLoginOrigin(web.view.url) == WebLoginOrigin(origin), after["revision"] as? Int == number, after["valid"] as? Bool == true, result == "ready" else {
-                status = "Проверка не пройдена: форма изменилась или требует ручного входа. Проверь поля, метод отправки и адрес формы."; return nil
+                switch result {
+                case "origin": status = "Адрес формы отличается от адреса записи. Выбери форму на исходном сайте."
+                case "waiting", "selectors": status = "Выбранное поле или кнопка больше недоступны. Укажи их на странице заново."
+                case "manual": status = "Форма требует ручного подтверждения. Проверь, что выбран именно вход, без одноразового кода или CAPTCHA."
+                default: status = "Страница изменилась во время проверки. Выбери поля и кнопку заново."
+                }
+                return nil
             }
             if twoStep && !passwordStep { firstVerified = true }
             verified = true; status = "Шаг проверен. Поля и кнопка доступны на этом сайте. Пароль не вводился, вход не выполнялся."

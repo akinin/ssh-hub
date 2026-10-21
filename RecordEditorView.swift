@@ -114,7 +114,7 @@ struct RecordEditorShell<Content: View, Actions: View>: View {
                 Divider()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        Text(selection.title).font(.headline)
+                        if selection != .availability { Text(selection.title).font(.headline) }
                         content()
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
                 }
@@ -427,12 +427,14 @@ struct RecordEditorView: View {
     private var tunnelFields: some View {
         VStack(alignment: .leading, spacing: 8) {
             Divider()
-            Toggle("Подключаться через SSH-туннель", isOn: Binding(get: { settings.wrappedValue.tunnel != nil }, set: { enabled in settings.wrappedValue.tunnel = enabled ? RecordTunnelSettings(sshID: store.aliases.first(where: \.canSSH)?.favoriteID ?? "") : nil }))
-            if settings.wrappedValue.tunnel != nil {
-                Picker("SSH-запись", selection: Binding(get: { settings.wrappedValue.tunnel?.sshID ?? "" }, set: { settings.wrappedValue.tunnel = RecordTunnelSettings(sshID: $0) })) {
-                    Text("Выбери запись").tag("")
+            RecordFieldRow("SSH-туннель") {
+                Picker("SSH-туннель", selection: Binding(get: { settings.wrappedValue.tunnel?.sshID ?? "" }, set: { settings.wrappedValue.tunnel = $0.isEmpty ? nil : RecordTunnelSettings(sshID: $0) })) {
+                    Text("Без SSH-туннеля").tag("")
                     ForEach(store.ordered.filter(\.canSSH)) { Text(store.title($0)).tag($0.favoriteID) }
-                }
+                    if let id = settings.wrappedValue.tunnel?.sshID, !id.isEmpty, !store.ordered.contains(where: { $0.canSSH && $0.favoriteID == id }) { Text("Назначенная запись недоступна").tag(id) }
+                }.labelsHidden()
+            }
+            if settings.wrappedValue.tunnel != nil {
                 Text("Туннель запускается вместе с вкладкой и завершается при её закрытии. Сервер сервиса указывай так, как он доступен с SSH-сервера. Для веба весь трафик этой вкладки проходит через SSH; вход и cookies действуют в пределах сеанса.").font(.caption).foregroundStyle(.secondary)
             }
         }

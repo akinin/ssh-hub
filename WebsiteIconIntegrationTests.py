@@ -22,6 +22,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.headers.get('Cookie') or self.headers.get('Authorization'):
             Handler.credentials_received = True
         path = self.path.split('?')[0]
+        if getattr(self.server, 'auth_all', False):
+            self.send_response(401); self.send_header('WWW-Authenticate', 'Basic realm="owned protected icon"'); self.end_headers(); return
         if path == '/favicon.ico' and getattr(self.server, 'tls_fixture', False):
             self.send_response(404); self.end_headers(); return
         if path == '/external-icon':
@@ -92,7 +94,12 @@ if __name__ == '__main__':
                         threading.Thread(target=fixture.serve_forever, daemon=True).start(); tls_servers.append(fixture)
                     tls_bases = ['https://127.0.0.1:%d' % fixture.server_port for fixture in tls_servers]
                     tls_servers[0].other_base = tls_bases[1]; tls_servers[1].other_base = tls_bases[0]
-                    subprocess.run([sys.argv[1], base, *tls_bases], check=True)
+                    protected = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler); protected.daemon_threads = True; protected.auth_all = True
+                    threading.Thread(target=protected.serve_forever, daemon=True).start()
+                    try:
+                        subprocess.run([sys.argv[1], base, *tls_bases, 'http://127.0.0.1:%d' % protected.server_port], check=True)
+                    finally:
+                        protected.shutdown(); protected.server_close()
                     assert not Handler.credentials_received, 'icon loader sent authentication or cookies'
                 finally:
                     for fixture in tls_servers: fixture.shutdown(); fixture.server_close()

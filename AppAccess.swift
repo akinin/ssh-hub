@@ -182,11 +182,11 @@ struct AppUnlockView: View {
         VStack(spacing: 18) {
             Image(systemName: "lock.shield").font(.system(size: 44)).foregroundStyle(.tint)
             Text("Вход в SSH Hub").font(.title.bold())
-            if access.usesTouchID { Button("Войти с Touch ID", systemImage: "touchid") { Task { await access.biometricLogin() } }.buttonStyle(.borderedProminent).disabled(access.busy) }
+            if access.usesTouchID { Button { Task { await access.biometricLogin() } } label: { Label("Войти с Touch ID", systemImage: "touchid").frame(width: 260, height: 36) }.buttonStyle(.borderedProminent).controlSize(.large).font(.title3.weight(.semibold)).frame(width: 300, height: 52).disabled(access.busy) }
             if passwordMode || !access.usesTouchID {
                 SecureField("Пароль приложения", text: $password).textFieldStyle(.roundedBorder).frame(width: 280).onSubmit { login() }.disabled(access.busy)
             }
-            Button("Войти по паролю") { access.cancelBiometrics(); if passwordMode || !access.usesTouchID { login() } else { passwordMode = true } }.disabled(access.busy)
+            Button { access.cancelBiometrics(); if passwordMode || !access.usesTouchID { login() } else { passwordMode = true } } label: { Text("Войти по паролю").frame(width: 260, height: 36) }.buttonStyle(.bordered).controlSize(.large).font(.title3.weight(.semibold)).frame(width: 300, height: 52).disabled(access.busy)
             if access.needsKeychainRetry { Button("Повторить доступ к Связке ключей") { Task { await access.retryKeychain() } }.disabled(access.busy) }
             if access.busy { ProgressView().controlSize(.small) }
             if let error = access.error { Text(error).font(.caption).foregroundStyle(.red).frame(maxWidth: 360) }

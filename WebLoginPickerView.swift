@@ -15,7 +15,6 @@ struct WebLoginPickerView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HubSheetHeader(title: "Настройка автовхода", subtitle: picker.origin.absoluteString, icon: "cursorarrow.click")
-            Toggle("Логин и пароль на разных шагах", isOn: Binding(get: { picker.twoStep }, set: { picker.setTwoStep($0) }))
             HStack(spacing: 10) {
                 if !picker.twoStep || !picker.passwordStep { roleButton("Логин", role: "username", selected: !picker.selectors.username.isEmpty, color: .blue) }
                 if picker.twoStep && !picker.passwordStep { roleButton("Далее", role: "next", selected: !(picker.selectors.next ?? "").isEmpty, color: .green) }
@@ -25,10 +24,12 @@ struct WebLoginPickerView: View {
                 Button { picker.setTwoStep(picker.twoStep); session.stop(); session.start() } label: { Image(systemName: "arrow.clockwise").frame(width: 24, height: 24) }.help("Загрузить исходную страницу заново").accessibilityLabel("Загрузить заново").disabled(picker.checking)
             }
             HStack {
-                Toggle("Режим выбора", isOn: $picker.selecting).toggleStyle(.switch).disabled(picker.checking)
-                Text(picker.selecting ? "Выбери тип поля и нажми на него на странице." : (picker.twoStep && picker.passwordStep ? "Введи логин и нажми «Далее» на странице, затем включи выбор." : "Перейди к форме входа, затем включи выбор.")).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Toggle("Логин и пароль на разных шагах", isOn: Binding(get: { picker.twoStep }, set: { picker.setTwoStep($0) })).toggleStyle(.switch).disabled(picker.checking)
+                Spacer()
+                if picker.selecting { Button("Перейти по странице") { picker.selecting = false }.disabled(picker.checking) }
             }
-            DisclosureGroup("Поддерживаемые формы") { Text("Элементы каждого шага должны быть на одном сайте. Поддерживаются обычные кнопки и кнопки входа на JavaScript вне формы. При двухэтапном входе сначала проверь логин и «Далее», перейди к паролю вручную, затем проверь второй шаг. Проверка не вводит пароль и не выполняет вход. CAPTCHA, SSO и одноразовые коды подтверждаются вручную.").font(.caption).foregroundStyle(.secondary).padding(.top, 4) }.font(.caption)
+            Text(picker.selecting ? "Нажми «Логин», «Пароль» или кнопку входа сверху, затем укажи элемент на странице." : (picker.twoStep && picker.passwordStep ? "Введи логин и нажми «Далее» на странице. Затем нажми «Пароль» сверху и укажи поле." : "Перейди к форме входа. Затем нажми тип поля сверху, чтобы выбрать его на странице."))
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Divider()
             if session.entry.transport?.tunnel != nil { ConnectionTunnelStatus(tunnel: session.tunnel, cancel: session.stop) }
             if let error = picker.web.error { Text(error).foregroundStyle(.red).font(.caption) }

@@ -87,9 +87,6 @@ struct ToolbarSearchField: View {
                 onEditing: { active in editing = active; if active { search() } else { state.stop() } },
                 onMove: { direction in editing = true; if !state.visible { search() }; state.move(direction) },
                 onSubmit: submit, onDismiss: { state.stop() })
-            Button(action: fullSearch) { Image(systemName: "arrow.turn.down.left").font(.system(size: 11)) }
-                .buttonStyle(.plain).help("Все результаты · ⌘⇧F").accessibilityLabel("Открыть общий поиск")
-                .keyboardShortcut("f", modifiers: [.command, .shift])
         }.padding(.horizontal, 10).frame(minWidth: 180, idealWidth: 300, maxWidth: 340).frame(height: 30)
             .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
             .onChange(of: store.globalSearchQuery) { _, _ in if editing { search() } else { state.stop() } }

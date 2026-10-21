@@ -23,7 +23,7 @@ enum WebLoginForm {
     // Probe before reading Keychain. Recheck everything in fill to cover navigation/DOM changes.
     static let script = #"""
     if (window !== window.top || location.origin !== origin) return 'origin';
-    const visible = e => !e.disabled && !e.readOnly && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && getComputedStyle(e).display !== 'none';
+    const visible = e => e && (!e.disabled || selectors !== null && validButton(e)) && !e.readOnly && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && getComputedStyle(e).display !== 'none';
     const roleButton = e => e instanceof HTMLElement && !e.matches('input,button,a,[href]') && !e.closest('button,a[href]') && e.getAttribute('role') === 'button';
     const validButton = e => roleButton(e) || (e instanceof HTMLButtonElement || e instanceof HTMLInputElement) && ['submit','button'].includes(e.type);
     const jsButton = e => roleButton(e) || e.type === 'button';
@@ -70,9 +70,11 @@ enum WebLoginForm {
     if (!associated(button, form)) return 'manual';
     if (button.formAction && new URL(button.formAction, location.href).origin !== origin) return 'origin';
     const method = button.hasAttribute('formmethod') ? button.formMethod : form?.method;
-    // Ordinary GET forms can expose a password in a URL. JS-only buttons are supported.
+    // Explicit JS form selection may use the default GET method. Dispatch only a
+    // cancelable submit event to its handler; never invoke native GET submission.
     const post = form && method?.toLowerCase() === 'post';
-    if (!post && !jsButton(button)) return 'manual';
+    const scripted = manual && form && owner(button) === form && button.type === 'submit' && method?.toLowerCase() === 'get';
+    if (!post && !scripted && !jsButton(button)) return 'manual';
     if (user?.value && user.value !== username && operation !== 'probe') return 'manual';
     if (password?.value) return 'manual';
     if (operation === 'probe') return 'ready';
@@ -87,12 +89,18 @@ enum WebLoginForm {
     // Input handlers may re-render or switch the form. Do not submit a changed destination.
     let sameSelection = true;
     if (manual) { try { sameSelection = (second || unique(selectors.username) === user) && (first || unique(selectors.password) === password) && unique(first ? selectors.next : selectors.submit) === button; } catch (_) { sameSelection = false; } }
-    if (!sameSelection || location.origin !== origin || (!second && !user.isConnected) || (!first && !password.isConnected) || !button.isConnected || !validButton(button) || !visible(button) || button.getAttribute('aria-disabled') === 'true' ||
+    if (!sameSelection || location.origin !== origin || (!second && !user.isConnected) || (!first && !password.isConnected) || !button.isConnected || !validButton(button) || !visible(button) || button.disabled || button.getAttribute('aria-disabled') === 'true' ||
         (form && new URL(form.action || location.href, location.href).origin !== origin) ||
         (button.formAction && new URL(button.formAction, location.href).origin !== origin) ||
         (!second && user.form !== form) || (!first && password.form !== form) || !associated(button, form) ||
         (post && (button.hasAttribute('formmethod') ? button.formMethod : form?.method)?.toLowerCase() !== 'post') ||
-        (!post && !jsButton(button))) return 'filled';
+        (scripted && (button.type !== 'submit' || owner(button) !== form || (button.hasAttribute('formmethod') ? button.formMethod : form.method)?.toLowerCase() !== 'get')) ||
+        (!post && !scripted && !jsButton(button))) return 'filled';
+    if (scripted) {
+      if (!form.checkValidity()) return 'filled';
+      const event = new SubmitEvent('submit', {bubbles:true, cancelable:true, submitter:button});
+      return form.dispatchEvent(event) ? 'filled' : 'submitted';
+    }
     if (post && button.type === 'submit') form.requestSubmit(button);
     else button.click();
     return 'submitted';

@@ -27,7 +27,7 @@ import AppKit
         }
         check(WebsiteIconOrigin(URL(string: "http://example.test/")!) == nil, "only HTTPS origins can receive an exception")
         check(WebsiteIconCertificateFailure.from(URLError(.timedOut), requestedURL: page) == nil && WebsiteIconCertificateFailure.from(URLError(.secureConnectionFailed), requestedURL: page) == nil, "timeouts and protocol failures are not certificate approvals")
-        for path in ["/declared", "/fallback", "/redirect", "/large-icon"] {
+        for path in ["/declared", "/fallback", "/redirect", "/large-icon", "/auth"] {
             let data = try await WebsiteIcon.load(base + path)
             check(ConnectionAppearance.validLogo(data), "normalized bounded PNG")
             let bitmap = NSBitmapImageRep(data: data)!
@@ -57,8 +57,14 @@ import AppKit
         }
         let styled = Data("<?xml version='1.0' encoding='UTF-8'?><svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><rect width='24' height='24' style='fill:#0078ff;opacity:1'/></svg>".utf8)
         check(ConnectionAppearance.validLogo(try WebsiteIcon.normalizeIcon(styled, mimeType: "image/svg+xml")), "self-contained inline SVG paint styles supported")
-        for path in ["/huge-page", "/stream", "/bad-page", "/bad-image", "/auth", "/redirect-cross", "/loop"] {
+        for path in ["/huge-page", "/stream", "/bad-page", "/bad-image", "/redirect-cross", "/loop"] {
             await reject { _ = try await WebsiteIcon.load(base + path) }
+        }
+        do {
+            _ = try await WebsiteIcon.load(CommandLine.arguments[4] + "/protected")
+            fatalError("fully protected site accepted")
+        } catch {
+            check(error.localizedDescription.contains("авторизац") && !error.localizedDescription.contains("cancelled"), "HTTP authentication refusal has an actionable error")
         }
         let start = Date(), slow = Task { try await WebsiteIcon.load(base + "/slow") }
         try await Task.sleep(nanoseconds: 80_000_000); slow.cancel()

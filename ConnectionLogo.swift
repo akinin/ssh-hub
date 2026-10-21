@@ -50,8 +50,14 @@ struct WebsiteIconCertificateFailure: LocalizedError {
         return Self(origin: origin)
     }
 }
+private struct WebsiteIconAuthenticationRequired: LocalizedError {
+    var errorDescription: String? { "Сайт требует авторизацию и не отдаёт публичную иконку. Укажи прямой адрес доступного изображения или выбери файл с Mac." }
+}
 private final class WebsiteIconPolicy: NSObject, URLSessionTaskDelegate {
     private var redirects = 0
+    private let authenticationLock = NSLock()
+    private var authenticationDenied = false
+    var refusedAuthentication: Bool { authenticationLock.withLock { authenticationDenied } }
     private let acceptedOrigins: Set<WebsiteIconOrigin>
     init(acceptedOrigins: Set<WebsiteIconOrigin>) { self.acceptedOrigins = acceptedOrigins }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
@@ -67,7 +73,7 @@ private final class WebsiteIconPolicy: NSObject, URLSessionTaskDelegate {
     }
     private func authenticate(_ challenge: URLAuthenticationChallenge, completionHandler: (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         let space = challenge.protectionSpace
-        guard space.authenticationMethod == NSURLAuthenticationMethodServerTrust else { completionHandler(.cancelAuthenticationChallenge, nil); return }
+        guard space.authenticationMethod == NSURLAuthenticationMethodServerTrust else { authenticationLock.withLock { authenticationDenied = true }; completionHandler(.cancelAuthenticationChallenge, nil); return }
         if acceptedOrigins.contains(where: { $0.matches(space) }), let trust = space.serverTrust {
             completionHandler(.useCredential, URLCredential(trust: trust))
         } else { completionHandler(.performDefaultHandling, nil) }
@@ -86,7 +92,7 @@ enum WebsiteIcon {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard text.utf8.count <= 4096, !text.contains(where: { $0.isWhitespace || $0 == "\0" }),
               var parts = URLComponents(string: text), ["https", "http"].contains(parts.scheme?.lowercased() ?? ""), parts.host?.isEmpty == false,
-              parts.user == nil, parts.password == nil, parts.port.map({ (1...65535).contains($0) }) ?? true else { throw ConfigError.message("Укажи адрес сайта: https://example.com, без логина и пароля в URL.") }
+              parts.user == nil, parts.password == nil, parts.port.map({ (1...65535).contains($0) }) ?? true else { throw ConfigError.message("Укажи адрес HTTP или HTTPS, без логина и пароля в URL.") }
         parts.scheme = parts.scheme?.lowercased()
         parts.query = nil; parts.fragment = nil
         guard let url = parts.url else { throw ConfigError.message("Некорректный адрес сайта.") }; return url
@@ -124,14 +130,20 @@ enum WebsiteIcon {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil; configuration.httpCookieStorage = nil; configuration.urlCredentialStorage = nil
         configuration.httpShouldSetCookies = false; configuration.timeoutIntervalForRequest = timeout; configuration.timeoutIntervalForResource = timeout
-        let session = URLSession(configuration: configuration, delegate: WebsiteIconPolicy(acceptedOrigins: acceptedOrigins), delegateQueue: nil)
+        let policy = WebsiteIconPolicy(acceptedOrigins: acceptedOrigins)
+        let session = URLSession(configuration: configuration, delegate: policy, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         request.setValue("SSH-Hub-Website-Icon", forHTTPHeaderField: "User-Agent")
         let result: (URLSession.AsyncBytes, URLResponse)
         do { result = try await session.bytes(for: request) }
-        catch { throw WebsiteIconCertificateFailure.from(error, requestedURL: url) ?? error }
+        catch {
+            try Task.checkCancellation()
+            if policy.refusedAuthentication { throw WebsiteIconAuthenticationRequired() }
+            throw WebsiteIconCertificateFailure.from(error, requestedURL: url) ?? error
+        }
         let (bytes, response) = result
+        if let response = response as? HTTPURLResponse, [401, 403].contains(response.statusCode) { throw WebsiteIconAuthenticationRequired() }
         guard let response = response as? HTTPURLResponse, response.statusCode == 200, response.expectedContentLength <= Int64(maximum) else { throw ConfigError.message("Сайт не отдал подходящий файл иконки или файл слишком большой.") }
         var data = Data()
         for try await byte in bytes {
@@ -143,7 +155,17 @@ enum WebsiteIcon {
     }
     static func load(_ text: String, acceptingCertificatesFor acceptedOrigins: Set<WebsiteIconOrigin> = []) async throws -> Data {
         let url = try address(text), deadline = Date().addingTimeInterval(25)
-        let (pageData, response) = try await fetch(url, maximum: 1_000_000, timeout: 8, acceptedOrigins: acceptedOrigins)
+        let pageData: Data, response: HTTPURLResponse
+        do { (pageData, response) = try await fetch(url, maximum: 1_000_000, timeout: 8, acceptedOrigins: acceptedOrigins) }
+        catch let denied as WebsiteIconAuthenticationRequired {
+            try Task.checkCancellation()
+            guard let favicon = URL(string: "/favicon.ico", relativeTo: url)?.absoluteURL else { throw denied }
+            do {
+                let (data, reply) = try await fetch(favicon, maximum: 524_288, timeout: 6, acceptedOrigins: acceptedOrigins)
+                let png = try normalizeIcon(data, mimeType: reply.mimeType); try Task.checkCancellation(); return png
+            } catch let certificate as WebsiteIconCertificateFailure { throw certificate }
+            catch { try Task.checkCancellation(); throw denied }
+        }
         if response.mimeType?.hasPrefix("image/") == true { return try normalizeIcon(pageData, mimeType: response.mimeType) }
         guard response.mimeType == "text/html" || response.mimeType == "application/xhtml+xml",
               let html = String(data: pageData, encoding: .utf8) ?? String(data: pageData, encoding: .isoLatin1) else { throw ConfigError.message("По этому адресу нет HTML-страницы или изображения.") }

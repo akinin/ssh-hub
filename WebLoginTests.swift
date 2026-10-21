@@ -76,6 +76,29 @@ import WebKit
         let invalidOrigin = await picker.check()
         try check(invalidOrigin == nil && !picker.verified && picker.selectors.username.isEmpty, "navigation and different origin clear selection")
         picker.close(); setupWindow.close()
+        var scriptedReads = 0
+        let scriptedSetup = WebPageModel(entry: entry(base + "/scripted-form"), config: config, setupOnly: true, credentialReader: { _,_ in scriptedReads += 1; return (user, password) })
+        let scriptedWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 500), styleMask: [.titled], backing: .buffered, defer: false)
+        scriptedWindow.isReleasedWhenClosed = false; scriptedWindow.contentView = scriptedSetup.view
+        let scriptedPicker = WebLoginPickerModel(web: scriptedSetup, origin: URL(string: base)!)
+        scriptedSetup.start(); scriptedPicker.start()
+        try await wait { scriptedSetup.view.url?.path == "/scripted-form" && !scriptedSetup.view.isLoading }
+        for (role, selector) in [("username", "#account"), ("password", "#credential"), ("submit", "#enter")] {
+            scriptedPicker.role = role
+            _ = try await WebLoginPickerScript.run(in: scriptedSetup.view, origin: URL(string: base)!, role: role)
+            _ = try await scriptedSetup.view.callAsyncJavaScript("document.querySelector(selector).dispatchEvent(new MouseEvent('pointerdown',{bubbles:true,cancelable:true})); if(role!=='submit') document.querySelector(selector).click();", arguments: ["selector": selector, "role": role], in: nil, contentWorld: .defaultClient)
+        }
+        let scriptedChoice = await scriptedPicker.check()
+        try check(scriptedChoice == custom && scriptedReads == 0, "disabled submit and default-method JS form can be selected without credentials")
+        let untouched = try await scriptedSetup.view.callAsyncJavaScript("return document.querySelector('#enter').disabled && [...document.querySelectorAll('input')].every(e=>e.value==='');", arguments: [:], in: nil, contentWorld: .defaultClient)
+        try check(untouched as? Bool == true, "JS-form setup performs no fill or submit")
+        scriptedPicker.close()
+        var scriptedEntry = entry(base + "/scripted-form"); scriptedEntry.transport?.webLoginSelectors = custom
+        let scriptedRuntime = WebPageModel(entry: scriptedEntry, config: config, credentialReader: { _,_ in scriptedReads += 1; return (user, password) })
+        scriptedWindow.contentView = scriptedRuntime.view; scriptedRuntime.start()
+        try await wait { scriptedRuntime.view.title == "Scripted success" }
+        try check(scriptedReads == 1 && scriptedRuntime.view.url?.path == "/scripted-form" && scriptedRuntime.view.url?.query == nil, "JS handler called once with reactive button enablement and no native GET")
+        scriptedRuntime.stop(); scriptedWindow.close()
         var stepSetupReads = 0
         let stepSetup = WebPageModel(entry: entry(base + "/two"), config: config, setupOnly: true, credentialReader: { _,_ in stepSetupReads += 1; return (user, password) })
         setupWindow.contentView = stepSetup.view
@@ -192,7 +215,7 @@ import WebKit
         let view = model.view; window.contentView = view
         view.load(URLRequest(url: URL(string: base + "/blank")!)); try await wait { view.url?.path == "/blank" && !view.isLoading }
         let secondHTML = #"<form method="post" action="/submit"><input id="step-password" type="password"><button id="finish" type="submit">Войти</button></form>"#
-        for (html, expected) in [(secondHTML, "ready"), (secondHTML.replacingOccurrences(of: "post", with: "get"), "manual"), (secondHTML.replacingOccurrences(of: "</form>", with: "<input autocomplete='one-time-code'></form>"), "manual"), (secondHTML.replacingOccurrences(of: "/submit", with: other + "/submit"), "origin"), (secondHTML.replacingOccurrences(of: "type=\"password\"", with: "type=\"password\" autocomplete=\"new-password\""), "manual")] {
+        for (html, expected) in [(secondHTML, "ready"), (secondHTML.replacingOccurrences(of: "post", with: "get"), "ready"), (secondHTML.replacingOccurrences(of: "</form>", with: "<input autocomplete='one-time-code'></form>"), "manual"), (secondHTML.replacingOccurrences(of: "/submit", with: other + "/submit"), "origin"), (secondHTML.replacingOccurrences(of: "type=\"password\"", with: "type=\"password\" autocomplete=\"new-password\""), "manual")] {
             _ = try await view.callAsyncJavaScript("document.body.innerHTML=html;", arguments: ["html": html], in: nil, contentWorld: .defaultClient)
             let status = try await WebLoginForm.run(in: view, origin: URL(string: base)!, probe: true, selectors: steps, stage: "password")
             try check(status == expected, "second step preserves form guards " + expected)
@@ -232,7 +255,7 @@ import WebKit
             (unusual, custom, "ready"),
             (unusual, .init(username: "[", password: "#credential", submit: "#enter"), "selectors"),
             (unusual, .init(username: "input", password: "#credential", submit: "#enter"), "waiting"),
-            (unusual.replacingOccurrences(of: "method=\"post\"", with: "method=\"get\""), custom, "manual"),
+            (unusual.replacingOccurrences(of: "method=\"post\"", with: "method=\"get\""), custom, "ready"),
             (unusual.replacingOccurrences(of: "/submit", with: other + "/submit"), custom, "origin"),
             (unusual.replacingOccurrences(of: "id=\"credential\"", with: "id=\"credential\" autocomplete=\"new-password\""), custom, "manual"),
             (unusual.replacingOccurrences(of: "<button id", with: "<input name=\"otp\"><button id"), custom, "manual"),
@@ -244,6 +267,10 @@ import WebKit
             let result = try await WebLoginForm.run(in: view, origin: URL(string: base)!, probe: true, selectors: selectors)
             try check(result == expected, "manual selector guard " + expected + " got " + result)
         }
+        _ = try await view.callAsyncJavaScript("document.body.innerHTML=html;", arguments: ["html": unusual.replacingOccurrences(of: "method=\"post\"", with: "method=\"get\"")], in: nil, contentWorld: .defaultClient)
+        let unhandled = try await WebLoginForm.run(in: view, origin: URL(string: base)!, username: user, password: password, probe: false, selectors: custom)
+        try await Task.sleep(for: .milliseconds(100))
+        try check(unhandled == "filled" && view.url?.path == "/blank" && view.url?.query == nil, "unhandled GET form never invokes native submission")
         _ = try await view.callAsyncJavaScript("document.body.innerHTML=html; document.querySelector('#account').addEventListener('input', ()=>document.querySelector('#enter').id='replaced');", arguments: ["html": unusual], in: nil, contentWorld: .defaultClient)
         let replaced = try await WebLoginForm.run(in: view, origin: URL(string: base)!, username: user, password: password, probe: false, selectors: custom)
         try check(replaced == "filled", "manual selector mutation cannot submit stale element")

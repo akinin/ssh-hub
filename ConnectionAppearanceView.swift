@@ -80,7 +80,7 @@ struct WebsiteIconView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Label("Иконка с сайта", systemImage: "globe").font(.title3).bold()
-            TextField("https://example.com", text: $address).textFieldStyle(.roundedBorder).accessibilityIdentifier("websiteIconURL").disabled(task != nil)
+            TextField("http:// или https://", text: $address).textFieldStyle(.roundedBorder).accessibilityIdentifier("websiteIconURL").disabled(task != nil)
             Text("Загрузится иконка страницы или favicon. Пароли и cookies браузера не используются. Изменение логотипа применяется после сохранения.").font(.caption).foregroundStyle(.secondary)
             if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
             if certificateFailure != nil {

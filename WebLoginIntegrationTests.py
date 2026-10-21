@@ -10,7 +10,7 @@ import urllib.parse
 
 USER = "fixture@example.test"
 PASSWORD = "fixture-'\"\\</script>"
-state = {"posts": [], "basic": 0, "steps": [], "roles": []}
+state = {"posts": [], "basic": 0, "steps": [], "roles": [], "scripted": [], "get_leaks": 0}
 form = '<form action="/submit" method="post"><input name="username" autocomplete="username"><input name="password" type="password" autocomplete="current-password"><button type="submit">Войти</button></form>'
 # A DSM-like layout: input in a default-GET form, JS role button outside it,
 # a hidden password autofill field, nested arrow and delayed reactive enablement.
@@ -41,6 +41,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers(); self.wfile.write(body.encode())
     def do_GET(self):
         route = urllib.parse.urlsplit(self.path).path
+        if urllib.parse.urlsplit(self.path).query: state["get_leaks"] += 1
+        if route == "/scripted-form": return self.send('''<form id="login"><input id="account" name="username" type="email" required><input id="credential" name="password" type="password" required><button id="enter" type="submit" disabled>Вход</button></form><script>
+const form=document.querySelector('form'), button=document.querySelector('button');
+form.addEventListener('input',()=>setTimeout(()=>button.disabled=!form.checkValidity(),0));
+form.addEventListener('submit',event=>{event.preventDefault();fetch('/scripted-submit',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(new FormData(form))}).then(()=>document.title='Scripted success');});
+</script>''')
         if route == "/state": return self.send(json.dumps(state))
         if route == "/basic":
             expected = "Basic " + base64.b64encode((USER + ":" + PASSWORD).encode()).decode()
@@ -60,6 +66,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self.send("unknown", 404)
     def do_POST(self):
         data = self.rfile.read(min(int(self.headers.get("Content-Length", "0")), 8192)).decode()
+        if self.path == '/scripted-submit':
+            state['scripted'].append(urllib.parse.parse_qs(data)); return self.send('<h1>Scripted success</h1>')
         if self.path == '/role-finish':
             state['roles'].append(urllib.parse.parse_qs(data)); return self.send('<h1>Role success</h1>')
         if self.path.startswith('/step-'):
@@ -80,6 +88,8 @@ try:
     subprocess.run([sys.argv[1], "http://127.0.0.1:" + str(servers[0].server_port), second_url], check=True, timeout=105)
     assert [x["fields"] for x in state["steps"]] == [{"username": ["fixture-setup"]}, {"username": [USER]}, {"password": [PASSWORD]}, {"username": [USER]}], "two-step payloads and cross-origin stop"
     assert state["roles"] == [{"username": [USER], "password": [PASSWORD]}], "role buttons, delayed DOM and exact synthetic credentials"
+    assert state["scripted"] == [{"username": [USER], "password": [PASSWORD]}], "explicit JS form submits via handler once"
+    assert state["get_leaks"] == 0, "credentials never reach GET query strings"
     assert state["basic"] == 1, "single Basic authentication"
     assert len(state["posts"]) == 5, "normal, delayed, SPA, manual selectors and one failed form attempt only"
     assert all(x["fields"] == {"username": [USER], "password": [PASSWORD]} for x in state["posts"]), "argument values preserved"

@@ -20,8 +20,7 @@ struct RecordCredentialFields: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if vault.isLocked {
-                HStack { Label("Учётные данные заблокированы", systemImage: "lock"); Spacer(); Button("Разблокировать…") { Task { do { try await vault.unlock() } catch { self.error = error.localizedDescription } } }.disabled(vault.authenticating) }
-                Text("Для выбора KeePass или общего набора разблокируй учётные данные. Текущая привязка сохранится, если её не менять.").font(.caption).foregroundStyle(.secondary)
+                HStack { Text("KeePass"); Spacer(); Button("Разблокировать…") { Task { do { try await vault.unlock() } catch { self.error = error.localizedDescription } } }.disabled(vault.authenticating) }
             } else {
                 Picker("Учётные данные", selection: source) {
                     Text("Из этой записи").tag("record")

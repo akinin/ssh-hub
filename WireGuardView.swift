@@ -86,11 +86,13 @@ struct WireGuardProfilePicker: View {
     @Binding var selected: UUID?
     @ObservedObject var workspace: WireGuardWorkspace
     var body: some View {
-        Picker("VPN", selection: $selected) {
-            Text("Без VPN").tag(Optional<UUID>.none)
-            ForEach(workspace.document.profiles) { Text($0.name).tag(Optional($0.id)) }
-            if let selected, !workspace.document.profiles.contains(where: { $0.id == selected }) { Text("Назначенный профиль недоступен").tag(Optional(selected)) }
-        }.accessibilityIdentifier("wireGuardProfile")
+        RecordFieldRow("VPN") {
+            Picker("VPN", selection: $selected) {
+                Text("Без VPN").tag(Optional<UUID>.none)
+                ForEach(workspace.document.profiles) { Text($0.name).tag(Optional($0.id)) }
+                if let selected, !workspace.document.profiles.contains(where: { $0.id == selected }) { Text("Назначенный профиль недоступен").tag(Optional(selected)) }
+            }.labelsHidden().accessibilityIdentifier("wireGuardProfile")
+        }
         if let error = workspace.error { Text(error).font(.caption).foregroundStyle(.red) }
     }
 }

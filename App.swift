@@ -631,6 +631,7 @@ struct HubCommands: Commands {
         }
         CommandGroup(after: .newItem) {
             Group {
+                Button("Поиск…") { store.operationsPanel = .search }.keyboardShortcut("f", modifiers: [.command, .shift])
                 Button("Палитра действий…") { store.showingPalette = true }.keyboardShortcut("p", modifiers: .command)
                 Button("Корзина записей…") { store.showingTrash = true }
                 Button("Резервное копирование…") { store.showingBackup = true }
