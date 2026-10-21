@@ -57,6 +57,7 @@ final class ToolkitProcess: @unchecked Sendable {
         }, onCancel: { self.cancel() })
     }
     func ssh(_ command: String, entry: SSHAlias, config: URL, environment: [String:String] = [:], timeout: TimeInterval = 20) async throws -> ToolkitResult {
+        guard entry.transport?.wireGuardID == nil || entry.networkProxyCommand != nil else { throw ConfigError.message("Сначала подготовь маршрут WireGuard для SSH-записи.") }
         guard entry.canSSH, SSHConfig.matches(entry.sshTarget, "^[A-Za-z0-9_][A-Za-z0-9_.-]*$"), command.utf8.count <= 16384, !command.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw ConfigError.message("Нужна SSH-запись и однострочная команда до 16 КБ.") }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("ssh-hub-tool-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700]); defer { try? FileManager.default.removeItem(at: root) }

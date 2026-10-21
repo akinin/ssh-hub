@@ -33,6 +33,10 @@ struct SSHAlias: Identifiable {
     var sharedCredentialScope: String?
     var preparedConfigSource: URL?
     var preparedSSHTarget: String?
+    var wireGuardRevision: String?
+    var networkProxyPort: Int?
+    var networkForwardPort: Int?
+    var networkProxyCommand: String?
     var id: String { localID.map { "record:" + $0.uuidString } ?? "\(source.path):\(line):\(name)" }
     var canSSH: Bool { recordKind == nil || recordKind == .ssh }
     var canConnect: Bool { canSSH || recordKind?.isSession == true }
@@ -116,6 +120,7 @@ struct ConnectionSettings: Codable, Equatable {
     var height = 800
     var ftpsImplicit = false
     var certificateAuthority = ""
+    var wireGuardID: UUID? = nil
     var tunnel: RecordTunnelSettings? = nil
     var webAutoLogin: Bool? = nil
     var webLoginSelectors: WebLoginSelectors? = nil
@@ -125,6 +130,7 @@ struct ConnectionSettings: Codable, Equatable {
     var rdpAutoResize: Bool? = nil
     var validation: String? {
         guard (320...3840).contains(width), (200...2160).contains(height) else { return "Проверь размер рабочего стола." }
+        if wireGuardID != nil && tunnel != nil { return "Выбери WireGuard или SSH-туннель." }
         if let tunnel, let error = tunnel.validation { return error }
         if let selectors = webLoginSelectors, let error = selectors.validation { return error }
         let monitors = rdpMonitors ?? 1
@@ -171,6 +177,7 @@ extension SSHAlias {
         return .automatic
     }
     var availabilityEndpoint: (host: String, port: UInt16)? {
+        guard transport?.wireGuardID == nil else { return nil }
         if recordKind?.isWeb == true || recordKind == .webdav {
             guard let text = website, let url = URL(string: text), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), let host = url.host, !host.isEmpty,
                   url.user == nil, url.password == nil, !text.contains(where: { $0.isWhitespace || $0 == "\0" }),
@@ -446,4 +453,11 @@ struct SerialSettings: Codable, Equatable {
     }
     var arguments: [String] { [device, String(baud), String(dataBits), parity, String(stopBits), flow] }
     static var devices: [String] { ((try? FileManager.default.contentsOfDirectory(atPath: "/dev")) ?? []).filter { $0.hasPrefix("cu.") || $0.hasPrefix("tty.") }.sorted().map { "/dev/" + $0 } }
+}
+
+// Kept with transport schemas so every import/editor validates the same combinations.
+enum WireGuardRecordValidation {
+    static func check(kind: RecordKind, tunnel: RecordTunnelSettings?) throws {
+        guard [.ssh, .rdp, .vnc, .web, .website, .telnet, .ftp, .ftps, .webdav].contains(kind), tunnel == nil else { throw ConfigError.message("WireGuard поддерживает SSH/SFTP, RDP, VNC, Telnet, FTP/FTPS, WebDAV и сайты. Совмещение с SSH-туннелем не поддерживается.") }
+    }
 }

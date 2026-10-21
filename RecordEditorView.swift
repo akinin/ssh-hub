@@ -263,6 +263,7 @@ struct RecordEditorView: View {
                 else if kind.isSession { transportFields }
                 else { Text("Добавь инструкции в документации и файлы во вложениях после сохранения записи.").foregroundStyle(.secondary) }
                 if [.rdp, .vnc].contains(kind) || kind.isWeb { tunnelFields }
+                if [.ssh, .rdp, .vnc, .web, .website, .telnet, .ftp, .ftps, .webdav].contains(kind) { WireGuardProfilePicker(selected: Binding(get: { record.transport?.wireGuardID }, set: { value in var settings = record.transport ?? ConnectionSettings(); settings.wireGuardID = value; record.transport = settings }), workspace: store.wireGuardWorkspace()) }
             case .key: RecordSSHKeyFields(identity: $record.identity, entry: installationEntry).environmentObject(store)
             case .availability: availabilityFields
             case .commands:

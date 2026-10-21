@@ -45,6 +45,10 @@ import Network
     }
     func start() {
         guard let url = URL(string: address), LocalConnectionRecord.validWebsite(address) else { error = "Укажи полный HTTP/HTTPS-адрес без учётных данных в URL."; return }
+        if entry.transport?.wireGuardID != nil {
+            do { let prepared = try SSHPasswordStore.preparedNetworkConnection(for: entry, config: config); guard let port = prepared.networkProxyPort else { throw ConfigError.message("Маршрут WireGuard недоступен.") }; configureProxy(port) }
+            catch { self.error = error.localizedDescription; return }
+        }
         cancelLogin(); formAttempted = false; httpAttempted = false; manualLogin = false; loginStatus = nil
         started = true; error = nil; view.load(URLRequest(url: url))
     }

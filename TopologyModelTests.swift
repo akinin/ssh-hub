@@ -48,6 +48,15 @@ import CryptoKit
         let limit = Date().addingTimeInterval(8)
         while TopologyModel.pending && Date() < limit { try await Task.sleep(for:.milliseconds(20)) }
         precondition(!TopologyModel.pending && model.document == before)
+        let vpn = TopologyModel(profileID: UUID(), config: config, repository: repository)
+        var transport = ConnectionSettings(); transport.wireGuardID = UUID()
+        let vpnEntry = SSHAlias(name: "owned-vpn", source: config, line: 1, options: [SSHOption(key: "HostName", value: "127.0.0.1"), SSHOption(key: "Port", value: "9")], transport: transport)
+        vpn.entries = [vpnEntry]
+        let vpnNode = TopologyNode(recordKey: vpnEntry.favoriteID, name: "Owned VPN destination", address: "127.0.0.1")
+        vpn.saveNode(vpnNode); vpn.checkAvailability()
+        let vpnLimit = Date().addingTimeInterval(3)
+        while vpn.busy && Date() < vpnLimit { try await Task.sleep(for: .milliseconds(20)) }
+        precondition(!vpn.busy && vpn.measured.isEmpty, "VPN record must not be probed directly from Mac")
         if CommandLine.arguments.contains("--keychain") { try credentialRollback(root:root) }
         print("Topology model checks passed: manual preservation, delete/undo, external reload invalidates undo/cache, inactive restore, corrupt-file guard, cancellation and drain")
     }

@@ -108,6 +108,7 @@ enum WinboxApplication {
         else { error = "WinBox не найден. Установи версию для macOS с сайта MikroTik или выбери приложение." }
     }
     func start() {
+        guard entry.transport?.wireGuardID == nil else { status = "Winbox пока не поддерживает WireGuard записи. Используй SSH-консоль."; return }
         guard loadSucceeded else { return }
         guard !busy, !running else { showApplication(); return }
         guard settings.enabled else { error = "Включи WinBox для этой записи."; return }

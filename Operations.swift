@@ -58,6 +58,7 @@ extension AliasStore {
         if let sharedCredentials { return sharedCredentials }
         let scope = SharedCredentialRepository(config: config.url, profileID: profiles.active).scope
         let workspace = KDBXWorkspace(unlockStorage: KDBXUnlockKeychain(scope: scope), authorized: { AppAccess.shared.enabled && !AppAccess.shared.locked }); kdbx = workspace
+        _ = wireGuardWorkspace()
         let value = SharedCredentialVault(config: config.url, profileID: profiles.active, kdbxSource: workspace.runtime); value.install(); sharedCredentials = value; reloadKeePassCopies(); return value
     }
     func unlockRememberedKDBX() {
@@ -107,6 +108,7 @@ extension AliasStore {
         }
     }
     func stopOperations(clear: Bool = false) {
+        wireGuard?.suspend()
         keePassTransfer = nil
         AssistantAPI.stopAll(); assistant?.stop(); assistantCommandTask?.cancel(); assistantCommandTask = nil; assistantCommandRunID = nil
         MonitoringInstallationModel.stopAll(); LoginNotificationModel.stopAll(); loginNotifications?.close()
@@ -115,6 +117,7 @@ extension AliasStore {
             batchTarget = nil; selectedRecordKeys = []; clearUndo(); assistantDiagnosticsSetup = false; assistantDiagnosticReport = nil; assistantDiagnosticReview = nil
             loginNotifications = nil
             operationsPanel = nil; assistantVisible = false; assistantExpanded = false; assistantCommandReview = nil; assistantProposalReview = nil; assistantRecordDraft = nil; assistantAppliedActions = []; assistant = nil; infrastructureImport = nil
+            wireGuard = nil
             sharedCredentials?.deactivate(); sharedCredentials = nil; kdbx?.cancel(); kdbx = nil
             infrastructure = nil; monitoring = nil; maintenance = nil
         }

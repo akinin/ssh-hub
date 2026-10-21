@@ -83,7 +83,7 @@ struct WebPageView: View {
                 TextField("Адрес", text: $model.address).textFieldStyle(.roundedBorder).onSubmit { if model.started { model.start() } else { model.requestStart() } }
                 Button { if model.started { model.view.reload() } else { model.requestStart() } } label: { Image(systemName: "arrow.clockwise") }.help("Обновить")
                 Button { model.login() } label: { Image(systemName: "person.badge.key") }.disabled(!model.canLogin).help("Войти с сохранённым логином и паролем").accessibilityLabel("Войти с сохранённым паролем").accessibilityIdentifier("webLogin")
-                Button { if let url = model.view.url ?? URL(string: model.address) { NSWorkspace.shared.open(url) } } label: { Image(systemName: "arrow.up.forward.square") }.help("Открыть в браузере")
+                Button { if let url = model.view.url ?? URL(string: model.address) { NSWorkspace.shared.open(url) } } label: { Image(systemName: "arrow.up.forward.square") }.disabled(model.entry.transport?.wireGuardID != nil).help(model.entry.transport?.wireGuardID == nil ? "Открыть в браузере" : "WireGuard записи работает во встроенной веб-панели")
             }.padding(8).controlSize(.small)
             Divider()
             if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).padding(8) }

@@ -97,7 +97,7 @@ struct FailedSFTPTransfer: Identifiable {
     init(entry: SSHAlias, config: URL) { self.entry = entry; self.config = config }
     func connect() {
         guard !busy, !connected else { return }
-        do { activeEntry = try SSHPasswordStore.preparedEntry(for: entry, config: config) } catch { self.error = error.localizedDescription; return }
+        do { activeEntry = try SSHPasswordStore.preparedConnection(for: entry, config: config) } catch { self.error = error.localizedDescription; return }
         let entry = activeEntry ?? self.entry
         if entry.authentication.usesPassword {
             let token = generation

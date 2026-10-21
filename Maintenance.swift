@@ -107,7 +107,8 @@ struct MaintenancePlan: Identifiable {
     let targets: [MaintenanceTargetPlan]
     static func fingerprint(_ entry: SSHAlias) -> String {
         [entry.favoriteID, entry.source.standardizedFileURL.path, entry.sshTarget, entry.host, entry.user, entry.port,
-         entry.sharedCredentialScope ?? "", entry.sharedCredentialScope == nil ? entry.connectionFile?.path ?? "" : "",
+         entry.sharedCredentialScope ?? "", entry.sharedCredentialScope == nil && entry.transport?.wireGuardID == nil ? entry.connectionFile?.path ?? "" : "",
+         entry.transport?.wireGuardID?.uuidString ?? "", entry.wireGuardRevision ?? "",
          entry.options.map { $0.key + "=" + $0.value }.joined(separator: "\n")].joined(separator: "\0")
     }
     static func safeTemplate(_ text: String) -> Bool {
@@ -210,7 +211,7 @@ typealias MaintenanceStepRunner = (String, SSHAlias, URL, [String: String], Time
                 for target in plan.targets {
                     try Task.checkCancellation()
                     activeTarget = target; activeStep = target.steps.first; activeStart = Date()
-                    let entry = try SSHPasswordStore.preparedEntry(for: target.entry, config: config)
+                    let entry = try SSHPasswordStore.preparedConnection(for: target.entry, config: config)
                     guard MaintenancePlan.fingerprint(entry) == target.fingerprint else { throw ConfigError.message("Общие учётные данные изменились после проверки плана.") }
                     for planned in target.steps {
                         activeStep = planned; activeStart = Date()

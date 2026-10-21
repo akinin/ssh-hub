@@ -50,6 +50,8 @@ import ConsoleSupport
     @Published var loginNotifications: LoginNotificationModel?
     @Published var infrastructureImport: InfrastructureImportTarget?
     var sharedCredentials: SharedCredentialVault?
+    var wireGuard: WireGuardWorkspace?
+    @Published var selectingWireGuard: SSHAlias?
     var kdbx: KDBXWorkspace?
     var infrastructure: InfrastructureIntegrationModel?
     var monitoring: MonitoringModel?
@@ -175,6 +177,7 @@ import ConsoleSupport
         openPage(entry, section: .connection)
     }
     func openWebsiteInBrowser(_ entry: SSHAlias) {
+        guard entry.transport?.wireGuardID == nil else { openWebsite(entry); return }
         guard entry.recordKind?.isWeb == true, let text = entry.website, LocalConnectionRecord.validWebsite(text), let url = URL(string: text) else { return }
         NSWorkspace.shared.open(url)
     }
@@ -391,12 +394,14 @@ import ConsoleSupport
     }
     func check(_ entry: SSHAlias) {
         guard entry.canSSH, checkingID == nil else { return }
-        let runner = ConnectionProbe(), key = entry.favoriteID, url = entry.connectionConfig(fallback: config.url), name = entry.sshTarget
+        let prepared: SSHAlias
+        do { prepared = try SSHPasswordStore.preparedConnection(for: entry, config: config.url) } catch { self.error = error.localizedDescription; return }
+        let runner = ConnectionProbe(), key = entry.favoriteID, url = prepared.connectionConfig(fallback: config.url), name = prepared.sshTarget
         probe = runner; checkingID = key; results[key] = nil
         checkTask = Task {
             let result = await Task.detached { runner.run(config: url, alias: name) }.value
             // A user may edit the server while a check is running. Do not attach an old result to new settings.
-            if aliases.contains(where: { $0.favoriteID == key && $0.options == entry.options }) { results[key] = result }
+            if aliases.contains(where: { $0.favoriteID == key && $0.options == entry.options && $0.transport == entry.transport }) { results[key] = result }
             checkingID = nil; probe = nil; checkTask = nil
         }
     }
@@ -435,6 +440,14 @@ import ConsoleSupport
                     let replacement = ConnectionPageSession(entry: entry, config: config.url, restored: true)
                     replacement.gateway = gateway; connectionSessions[id] = replacement
                 }
+            }
+            for (id, model) in sftpModels {
+                if let latest = aliases.first(where: { $0.favoriteID == model.entry.favoriteID }), model.entry.transport?.wireGuardID != latest.transport?.wireGuardID {
+                    model.disconnect(); sftpModels[id] = SFTPModel(entry: latest, config: config.url)
+                }
+            }
+            for session in ConsoleStore.shared.sessions {
+                if let latest = aliases.first(where: { $0.favoriteID == session.entry.favoriteID }), session.entry.transport?.wireGuardID != latest.transport?.wireGuardID { session.disconnect() }
             }
             availability.configure(entries: aliases)
             data = snapshot.data
@@ -480,7 +493,7 @@ import ConsoleSupport
     func connectExternally(_ entry: SSHAlias) {
         guard entry.canSSH else { return }
         let prepared: SSHAlias
-        do { prepared = try SSHPasswordStore.preparedEntry(for: entry, config: config.url) } catch { self.error = error.localizedDescription; return }
+        do { prepared = try SSHPasswordStore.preparedConnection(for: entry, config: config.url) } catch { self.error = error.localizedDescription; return }
         let entry = prepared
         runInTerminal(TerminalCommands.connection(entry, config: config.url), record: entry, kind: .ssh)
     }
@@ -490,7 +503,7 @@ import ConsoleSupport
     }
     func terminalSFTP(_ entry: SSHAlias) {
         guard entry.canSSH else { return }
-        do { let entry = try SSHPasswordStore.preparedEntry(for: entry, config: config.url); runInTerminal(try TerminalCommands.sftp(entry, config: config.url), record: entry, kind: .sftp) }
+        do { let entry = try SSHPasswordStore.preparedConnection(for: entry, config: config.url); runInTerminal(try TerminalCommands.sftp(entry, config: config.url), record: entry, kind: .sftp) }
         catch { self.error = error.localizedDescription }
     }
     func copySFTP(_ entry: SSHAlias) {
@@ -568,7 +581,7 @@ import ConsoleSupport
             .windowResizability(.contentMinSize)
             .commands { HubCommands(session: session) }
     }
-    private func initializeStore(restore: Bool = false) { if !access.locked { let starting = session.store == nil; session.start(); if starting || restore { session.store?.unlockRememberedKDBX() } } }
+    private func initializeStore(restore: Bool = false) { if !access.locked { let starting = session.store == nil; session.start(); if starting || restore { session.store?.wireGuardWorkspace().runtime.activate(); session.store?.unlockRememberedKDBX() } } }
 }
 
 struct HubCommands: Commands {
@@ -988,7 +1001,8 @@ struct MainView: View {
         .sheet(isPresented: $store.showingBackup) { BackupView().environmentObject(store) }
         .sheet(isPresented: $store.showingTemplates) { TemplatesView().environmentObject(store) }
         .sheet(isPresented: $store.showingAvailability) { AvailabilityView(monitor: store.availability).environmentObject(store) }
-        .sheet(item: $store.keePassTransfer) { KDBXTransferView(entry: $0, vault: store.credentialVault(), workspace: store.kdbx!).environmentObject(store) }
+        .sheet(item: $store.selectingWireGuard) { entry in WireGuardSelectionView(entry: entry).environmentObject(store) }
+            .sheet(item: $store.keePassTransfer) { KDBXTransferView(entry: $0, vault: store.credentialVault(), workspace: store.kdbx!).environmentObject(store) }
         .sheet(item: $store.operationsPanel) { OperationsPanelView(panel: $0).environmentObject(store) }
         .sheet(item: $store.loginNotifications) { model in LoginNotificationsView(model: model).onDisappear { model.close() } }
         .sheet(isPresented: $store.assistantExpanded, onDismiss: { if !store.assistantVisible { store.assistant?.stop() } }) { AssistantHostView(expanded: true).environmentObject(store).frame(width: 900, height: 720) }
@@ -1055,7 +1069,8 @@ struct AliasDetail: View {
     private var density: InterfaceDensity { InterfaceDensity(rawValue: densityValue) ?? .normal }
     private var visibleActions: [RecordActionStyle] { RecordAction.layout(store.appearance(entry).actionTiles, global: RecordActionDefaults.decode(globalTiles), entry: entry).filter { !$0.hidden } }
     private var visibleTiles: [RecordActionStyle] { visibleActions.filter { $0.effectivePlacement == .tiles } }
-    private var headerActions: [RecordActionStyle] { visibleActions.filter { !$0.isDivider && $0.effectivePlacement == .header } }
+    private var headerActions: [RecordActionStyle] { visibleActions.filter { !$0.isDivider && $0.effectivePlacement == .header && $0.id != RecordAction.keePass.id } }
+    private var keePassBadgeStyle: RecordActionStyle? { visibleActions.first { $0.id == RecordAction.keePass.id && $0.effectivePlacement == .header } }
     private var sections: [RecordAction.Section] { RecordAction.sections(visibleTiles) }
     private var primaryAction: String? {
         let preferred: [RecordAction] = entry.recordKind == .website ? [.browser, .inside] : entry.recordKind == .web ? [.inside, .browser] : [.connect]
@@ -1101,7 +1116,7 @@ struct AliasDetail: View {
                             if let name = entry.sshAlias { parameter("SSH-алиас", name) }
                             if let jump = entry.value("ProxyJump") { parameter("ProxyJump", jump) }
                         }.padding(.top, 12)
-                    }
+                    }.disclosureGroupStyle(FullRowDisclosureStyle())
                     HStack { Text(entry.command).font(.system(.caption, design: .monospaced)).textSelection(.enabled); Spacer(); Button { store.copy(entry.command) } label: { Image(systemName: "doc.on.doc") }.help("Копировать команду SSH") }.padding(12).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
                 }
                 Text(entry.localID == nil ? "SSH-алиас из " + entry.source.path.replacingOccurrences(of: NSHomeDirectory(), with: "~") : entry.sshAlias == nil ? "Запись хранится в SSH Hub." : "Запись связана с SSH-алиасом «" + (entry.sshAlias ?? "") + "».").font(.caption).foregroundStyle(.secondary)
@@ -1147,7 +1162,11 @@ struct AliasDetail: View {
             Button { store.stylingAlias = entry } label: { Text(store.title(entry)).font(.title2).bold().lineLimit(2) }.buttonStyle(.plain).help("Изменить название и логотип")
             Text(entry.secondaryTitle).font(.callout).foregroundStyle(.secondary).textSelection(.enabled).lineLimit(2)
             Text((entry.recordKind ?? .ssh).title + (entry.canSSH ? " · \(entry.user) · порт \(entry.port)" : "")).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-            RecordFeatureBadges(tags: store.featureTags[entry.favoriteID, default: []])
+            HStack(spacing: 6) {
+                RecordFeatureBadges(tags: store.featureTags[entry.favoriteID, default: []])
+                if WireGuardSupport.supports(entry) { RecordWireGuardBadge(entry: entry, workspace: store.wireGuardWorkspace()) { store.selectingWireGuard = entry } }
+                if let style = keePassBadgeStyle { keePassAction(style, header: true) }
+            }
         }
     }
     private func keePassAction(_ style: RecordActionStyle, header: Bool) -> some View {
@@ -1167,7 +1186,6 @@ struct AliasDetail: View {
                 }
             }.buttonStyle(.plain).fixedSize()
             HStack(spacing: 6) {
-                if let style = headerActions.first(where: { $0.id == RecordAction.keePass.id }) { keePassAction(style, header: true) }
                 if headerActions.contains(where: { $0.id != RecordAction.keePass.id }) {
                     Menu {
                         ForEach(headerActions.filter { $0.id != RecordAction.keePass.id }) { style in

@@ -21,7 +21,7 @@ enum ConnectionTunnelPort {
     var onFailure: ((String) -> Void)?
     func start(entry: SSHAlias, gateway: SSHAlias, config: URL) async throws -> Int {
         stop(); let token = UUID(); generation = token
-        let gateway = try SSHPasswordStore.preparedEntry(for: gateway, config: config)
+        let gateway = try SSHPasswordStore.preparedConnection(for: gateway, config: config)
         guard gateway.canSSH else { throw ConfigError.message("Для туннеля нужна SSH-запись.") }
         let port = try ConnectionTunnelPort.available()
         let profile = TunnelProfile(name: String(entry.name.prefix(60)), aliasID: gateway.favoriteID, aliasName: gateway.name, kind: entry.recordKind == .vnc ? .local : .socks, localPort: port, destinationHost: entry.host, destinationPort: Int(entry.port) ?? 5900)

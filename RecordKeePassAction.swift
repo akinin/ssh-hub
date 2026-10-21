@@ -18,8 +18,8 @@ struct RecordKeePassAction: View {
         Group {
             if header {
                 Button(action: onTap) {
-                    HStack(spacing: 5) { Image(systemName: "key").foregroundStyle(statusColor); Circle().fill(statusColor).frame(width: 5, height: 5); Text("KeePass").font(.caption.weight(.medium)).foregroundStyle(statusColor) }.padding(.horizontal, 8).frame(height: 28)
-                }.buttonStyle(.plain).background(statusColor.opacity(0.13), in: Capsule()).overlay { Capsule().strokeBorder(statusColor.opacity(0.4)) }.fixedSize()
+                    Label("KeePass", systemImage: "key").font(.caption.weight(.medium)).lineLimit(1).padding(.horizontal, 8).padding(.vertical, 4)
+                }.buttonStyle(.plain).foregroundStyle(statusColor).background(.quaternary, in: Capsule()).fixedSize()
             } else {
                 RecordActionTile(title: "KeePass", detail: state.title, icon: "key", color: style.tint, density: density, action: onTap)
                     .overlay(alignment: .topTrailing) { Circle().fill(statusColor).frame(width: 7, height: 7).padding(10).allowsHitTesting(false) }

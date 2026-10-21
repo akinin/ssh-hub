@@ -154,7 +154,7 @@ final class MonitoringInstallProcess: @unchecked Sendable {
             defer { login?.stop(); login = nil; worker = nil; task = nil; busy = false; Self.active[id] = nil; if let directory { try? FileManager.default.removeItem(at: directory) } }
             do {
                 try Task.checkCancellation()
-                let entry = try SSHPasswordStore.preparedEntry(for: plan.entry, config: config)
+                let entry = try SSHPasswordStore.preparedConnection(for: plan.entry, config: config)
                 try plan.configurationSnapshot.validate()
                 guard entry.user == "root" else { throw ConfigError.message("Общие учётные данные изменили пользователя. Для этой установки нужен root; просмотри план заново.") }
                 let saved = monitoring.settings.instanceID == plan.id ? try MonitoringKeyStore.read(scope: monitoring.repository.scope, endpoint: MonitoringEndpoint(plan.endpoint), instanceID: plan.id) : nil
@@ -197,7 +197,7 @@ final class MonitoringInstallProcess: @unchecked Sendable {
     #endif
     func start(entry: SSHAlias, config: URL, remotePort: Int) async throws -> Int {
         let prepared: SSHAlias
-        do { prepared = try SSHPasswordStore.preparedEntry(for: entry, config: config) }
+        do { prepared = try SSHPasswordStore.preparedConnection(for: entry, config: config) }
         catch { stop(); throw error }
         let entry = prepared
         let binding = MonitoringInstallationPlan.fingerprint(entry) + ":" + String(remotePort)

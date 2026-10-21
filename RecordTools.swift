@@ -40,7 +40,7 @@ extension AliasStore {
     func refreshRecordTools() {
         loginNotifications?.refreshBinding()
         topologyModels.values.forEach { model in
-            if model.entries.map(\.id) != profileEntries.map(\.id) || model.entries.map(\.options) != profileEntries.map(\.options) { model.stop() }
+            if model.entries.map(\.id) != profileEntries.map(\.id) || model.entries.map(\.options) != profileEntries.map(\.options) || model.entries.map(\.transport) != profileEntries.map(\.transport) { model.stop() }
             model.entries = profileEntries
         }
         func changed(_ old: SSHAlias, _ new: SSHAlias) -> Bool {

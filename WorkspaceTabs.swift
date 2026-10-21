@@ -58,6 +58,7 @@ extension AliasStore {
     func keepPage(_ page: EntryPage) { for session in Array(ConsoleStore.shared.sessions) { closeConsole(session) }; pages.filter { $0.id != page.id }.forEach { closePage($0) }; arrangeWorkspace(.none); selectPage(page) }
     func keepConsole(_ session: ConsoleSession) { pages.forEach { closePage($0) }; for other in Array(ConsoleStore.shared.sessions) where other.id != session.id { closeConsole(other) }; arrangeWorkspace(.none); selectConsole(session) }
     func openScanner(_ entry: SSHAlias? = nil, tool: NetworkTool? = nil) {
+        guard entry?.transport?.wireGuardID == nil else { error = "Nmap и локальные сетевые инструменты не поддерживают VPN записи. Для проверки сервера через WireGuard используй «Проверить» или диагностику по SSH."; return }
         if let entry, !scanner.running, !tools.runner.busy {
             tools.setEntry(entry); scanner.target = tools.host
         }

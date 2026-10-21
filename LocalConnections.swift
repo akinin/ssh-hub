@@ -67,6 +67,8 @@ struct LocalConnectionRecord: Codable, Identifiable, Equatable {
         if let originIdentity, kind != .ssh || !originIdentity.valid { return "Некорректная исходная SSH-запись." }
         if let error = AliasDraft.validateRawOptions(rawSSHOptions ?? []) { return error }
         if kind == .serial { return (serial ?? SerialSettings()).validation }
+        if let error = transport?.validation { return error }
+        if transport?.wireGuardID != nil { do { try WireGuardRecordValidation.check(kind: kind, tunnel: transport?.tunnel) } catch { return error.localizedDescription } }
         if kind == .ssh { return draft.validation(existing: []) }
         if kind.isWeb || kind == .webdav, !Self.validWebsite(website) { return "Укажи полный адрес: https://example.com." }
         if let error = transport?.validation { return error }

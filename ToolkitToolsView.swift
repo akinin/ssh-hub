@@ -54,6 +54,7 @@ import AppKit
     func ports(host: String, ports: [Int], gateway: SSHAlias?, config: URL) {
         perform("Проверка TCP-портов") { owner in
             guard ToolkitText.hostValid(host), !ports.isEmpty, ports.count <= 20, ports.allSatisfy({ (1...65535).contains($0) }) else { throw ConfigError.message("Проверь адрес и порты.") }
+            let gateway = try gateway.map { try SSHPasswordStore.preparedConnection(for: $0, config: config) }
             let environment: [String: String]
             if let gateway { environment = try await owner.loginEnvironment(gateway, config: config) } else { environment = [:] }
             var rows = ["\(host) · \(gateway.map { "через SSH " + $0.name } ?? "с этого Mac")\n\(Date().formatted())"]
@@ -146,6 +147,7 @@ extension ToolkitSession {
     func sshDiagnostic(_ entry: SSHAlias, config: URL) {
         perform("Проверка входа SSH") { owner in
             guard entry.canSSH else { throw ConfigError.message("Выбери SSH-запись.") }
+            let entry = try SSHPasswordStore.preparedConnection(for: entry, config: config)
             let probe = ConnectionProbe(); owner.probe = probe
             let result = await withTaskCancellationHandler(operation: { await Task.detached { probe.run(config:entry.connectionConfig(fallback:config),alias:entry.sshTarget) }.value }, onCancel:{ probe.cancel() })
             return result.title + "\n" + result.detail + "\n\n" + result.log

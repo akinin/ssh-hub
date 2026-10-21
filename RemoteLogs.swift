@@ -312,7 +312,7 @@ import Combine
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ssh-hub-logs-" + UUID().uuidString)
             defer { running.remove(token); try? FileManager.default.removeItem(at: directory); if generation == token { login?.stop(); login = nil; self.worker = nil; capturing = false; task = nil } }
             do {
-                let entry = try SSHPasswordStore.preparedEntry(for: self.entry, config: config)
+                let entry = try SSHPasswordStore.preparedConnection(for: self.entry, config: config)
                 let executable: String, arguments: [String]; var environment: [String: String] = [:]
                 if entry.canSSH {
                     let mayUseSavedPassword = entry.authentication.usesPassword ? await SSHLoginPolicy.permitsSavedPassword(for: entry, config: config) : false

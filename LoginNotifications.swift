@@ -222,7 +222,7 @@ enum LoginNotificationFailure {
     }
     private func current() throws -> SSHAlias {
         guard let latest = resolveEntry(), latest.favoriteID == entry.favoriteID, latest.canSSH, !latest.isQuickConnection else { throw ConfigError.message("Запись или профиль изменились. Открой уведомления заново.") }
-        let value = try SSHPasswordStore.preparedEntry(for: latest, config: config)
+        let value = try SSHPasswordStore.preparedConnection(for: latest, config: config)
         guard value.user == "root" else { throw ConfigError.message("Для управления уведомлениями нужна сохранённая SSH-запись с пользователем root.") }
         guard MaintenancePlan.fingerprint(value) == MaintenancePlan.fingerprint(entry) else { throw ConfigError.message("Параметры записи или общих учётных данных изменились. Открой уведомления заново.") }; return value
     }

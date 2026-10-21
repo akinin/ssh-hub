@@ -86,3 +86,18 @@ struct RecordActionTile: View {
     }
 }
 
+
+struct FullRowDisclosureStyle: DisclosureGroupStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button { configuration.isExpanded.toggle() } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: configuration.isExpanded ? "chevron.down" : "chevron.right").font(.caption.weight(.semibold)).frame(width: 12)
+                    configuration.label
+                    Spacer(minLength: 0)
+                }.frame(maxWidth: .infinity, minHeight: 28, alignment: .leading).contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityValue(configuration.isExpanded ? "Развёрнуто" : "Свёрнуто")
+            if configuration.isExpanded { configuration.content }
+        }
+    }
+}

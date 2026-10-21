@@ -19,10 +19,10 @@ enum SSHLoginPolicy {
             let worker = ToolkitProcess()
             let result = try await worker.run("/usr/bin/ssh", ["-G", "-F", resolvedConfig.path, "-o", "PermitLocalCommand=no", "--", entry.sshTarget], timeout: 3)
             guard !Task.isCancelled, !result.timedOut, result.status == 0 else { return false }
-            return directConnection(in: result.output)
+            return directConnection(in: result.output, expectedProxy: entry.networkProxyCommand)
         } catch { return false }
     }
-    static func directConnection(in output: String) -> Bool {
+    static func directConnection(in output: String, expectedProxy: String? = nil) -> Bool {
         guard output.utf8.count <= 1_000_000 else { return false }
         let important = Set(["host", "hostname", "user", "port", "proxyjump", "proxycommand"])
         var values: [String: String] = [:]
@@ -35,6 +35,7 @@ enum SSHLoginPolicy {
         }
         guard values["host"] != nil, values["hostname"] != nil, values["user"] != nil,
               let port = values["port"].flatMap(Int.init), (1...65535).contains(port) else { return false }
+        if let expectedProxy { return values["proxycommand"] == expectedProxy && (values["proxyjump"] == nil || values["proxyjump"] == "none") }
         return ["proxyjump", "proxycommand"].allSatisfy { values[$0] == nil || values[$0] == "none" }
     }
 }

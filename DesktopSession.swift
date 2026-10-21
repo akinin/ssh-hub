@@ -118,19 +118,20 @@ final class DesktopFrameDelivery: @unchecked Sendable {
     func start() {
         guard !starting, !connected else { return }
         do {
-            let entry = try SSHPasswordStore.preparedEntry(for: self.entry, config: config)
+            let entry = try SSHPasswordStore.preparedConnection(for: self.entry, config: config)
             let password = try ConnectionPassword.read(entry, config: config)
             generation = UUID(); let token = generation; displayControl = false; lastSize = .zero; clipboardChange = -1; starting = true; status = "Подключение…"; image = nil
             let frames = DesktopFrameDelivery { [weak self] w,h,data in if self?.generation == token { self?.update(w,h,data) } }
             if entry.recordKind == .rdp {
                 let bridge = RDPBridge(); self.bridge = bridge
-                try bridge.start(entry: entry, password: password, proxyPort: tunnelPort, clipboard: { [weak self] text in Task { @MainActor in if self?.generation == token { self?.receiveClipboard(text) } } }, channelStatus: { [weak self] _ in Task { @MainActor in if self?.generation == token { self?.displayControl = true } } }, frame: { w,h,data in frames.submit(w,h,data) }, trust: { [weak self] certificate in
+                try bridge.start(entry: entry, password: password, proxyPort: entry.networkProxyPort ?? tunnelPort, clipboard: { [weak self] text in Task { @MainActor in if self?.generation == token { self?.receiveClipboard(text) } } }, channelStatus: { [weak self] _ in Task { @MainActor in if self?.generation == token { self?.displayControl = true } } }, frame: { w,h,data in frames.submit(w,h,data) }, trust: { [weak self] certificate in
                     var accepted = false
                     DispatchQueue.main.sync { if self?.generation == token { accepted = self?.trust(certificate) == true } }
                     return accepted
                 }, finished: { [weak self] text in Task { @MainActor in if self?.generation == token { self?.status = text; self?.connected = false; self?.starting = false } } })
             } else {
                 guard let port = UInt16(entry.port), port > 0 else { throw ConfigError.message("Некорректный порт VNC.") }
+                let tunnelPort = entry.networkForwardPort ?? self.tunnelPort
                 let client = VNCConnection(host: tunnelPort == 0 ? entry.host : "127.0.0.1", port: tunnelPort == 0 ? port : UInt16(tunnelPort)); vnc = client
                 task = Task { [weak self] in
                     do { try await client.run(password: password) { w,h,data in frames.submit(w,h,data) } }

@@ -16,15 +16,31 @@ enum SSHPasswordStore {
     private static let providerLock = NSLock()
     private static var sharedHasPassword: ((SSHAlias, URL) -> Bool)?
     private static var sharedPassword: ((SSHAlias, URL) -> SSHSharedPasswordResolution)?
+    private static var networkPrepare: ((SSHAlias, URL, Bool) throws -> SSHAlias)?
+    static func installNetworkRouting(_ prepare: ((SSHAlias, URL, Bool) throws -> SSHAlias)?) { providerLock.lock(); networkPrepare = prepare; providerLock.unlock() }
     private static var sharedPreparedEntry: ((SSHAlias, URL) throws -> SSHAlias)?
     static func installSharedCredentials(hasPassword: ((SSHAlias, URL) -> Bool)?, password: ((SSHAlias, URL) -> SSHSharedPasswordResolution)?, preparedEntry: ((SSHAlias, URL) throws -> SSHAlias)?) {
         providerLock.lock(); defer { providerLock.unlock() }
         sharedHasPassword = hasPassword; sharedPassword = password; sharedPreparedEntry = preparedEntry
     }
-    static func preparedEntry(for entry: SSHAlias, config: URL) throws -> SSHAlias {
-        providerLock.lock(); let provider = sharedPreparedEntry; providerLock.unlock()
-        if let provider { return try provider(entry, config) }
-        guard entry.sharedCredentialScope == nil && entry.credentialRuntimeScope == nil else { throw ConfigError.message("Профиль общих учётных данных больше не активен.") }
+    static func preparedEntry(for entry: SSHAlias, config: URL) throws -> SSHAlias { try prepare(entry, config: config, connect: false) }
+    static func preparedConnection(for entry: SSHAlias, config: URL) throws -> SSHAlias { try prepare(entry, config: config, connect: true) }
+    private static func prepare(_ entry: SSHAlias, config: URL, connect: Bool) throws -> SSHAlias {
+        providerLock.lock(); let provider = sharedPreparedEntry, network = networkPrepare; providerLock.unlock()
+        let value: SSHAlias
+        if let provider { value = try provider(entry, config) }
+        else {
+            guard entry.sharedCredentialScope == nil && entry.credentialRuntimeScope == nil else { throw ConfigError.message("Профиль общих учётных данных больше не активен.") }
+            value = entry
+        }
+        if let network { return try network(value, config, connect) }
+        guard value.transport?.wireGuardID == nil else { throw ConfigError.message("Профиль WireGuard недоступен.") }
+        return value
+    }
+    static func preparedNetworkConnection(for entry: SSHAlias, config: URL) throws -> SSHAlias {
+        providerLock.lock(); let network = networkPrepare; providerLock.unlock()
+        if let network { return try network(entry, config, true) }
+        guard entry.transport?.wireGuardID == nil else { throw ConfigError.message("Профиль WireGuard недоступен.") }
         return entry
     }
     static func hasStoredPassword(for entry: SSHAlias, config: URL) -> Bool {

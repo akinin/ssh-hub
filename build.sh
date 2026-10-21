@@ -144,6 +144,11 @@ mkdir -p "$app_dir/Contents/Resources/LoginNotifications"
 for notification_file in manage.py notify.py; do
     cp "LoginNotifications/$notification_file" "$app_dir/Contents/Resources/LoginNotifications/$notification_file"
 done
+zsh build-wireguard.sh "$build_dir"
+cp "$build_dir/SSHWG" "$app_dir/Contents/MacOS/SSHWG"
+cp "$build_dir/WireGuard-LICENSES.txt" "$app_dir/Contents/Resources/WireGuard-LICENSES.txt"
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift WorkspaceProfiles.swift ConnectionAppearance.swift ConnectionTree.swift AliasTransfer.swift LocalConnections.swift SavedCommands.swift HubFeatureStorage.swift SSHCredentials.swift ToolkitRuntime.swift Tunnels.swift ConnectionProbe.swift TerminalLauncher.swift PublicKeys.swift SSHLoginPolicy.swift Maintenance.swift SharedCredentials.swift KDBX.swift WireGuard.swift WireGuardTests.swift -o "$build_dir/wireguard-tests" -framework AppKit -framework Security -framework LocalAuthentication
+"$build_dir/wireguard-tests" "$build_dir/SSHWG"
 clang -arch arm64 -mmacosx-version-min=14.0 -isysroot "$sdk_dir" -O2 TelnetHelper.c -o "$app_dir/Contents/MacOS/SSHTelnet"
 zsh build-rdp.sh "${SSH_HUB_RDP_CACHE:-$build_dir/rdp}" "$app_dir/Contents/MacOS/SSHRDP" "$sdk_dir" "$build_dir/rdp-fixture"
 cp "${SSH_HUB_RDP_CACHE:-$build_dir/rdp}/freerdp-3.32.2/LICENSE" "$app_dir/Contents/Resources/FreeRDP-LICENSE.txt"

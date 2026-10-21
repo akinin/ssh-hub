@@ -70,7 +70,7 @@ import AppKit
             guard let self else { return }
             defer { running.remove(token) }
             do {
-                let entry = try SSHPasswordStore.preparedEntry(for: self.entry, config: config)
+                let entry = try SSHPasswordStore.preparedConnection(for: self.entry, config: config)
                 let process = ToolkitProcess(); worker = process
                 let result: ToolkitResult
                 if isLocal { result = try await process.run("/bin/sh", ["-c", InventoryCollection.command(.macOS)], timeout: 25) }

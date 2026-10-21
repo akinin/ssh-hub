@@ -23,7 +23,7 @@ enum ConnectionLaunch {
             guard ["/bin/zsh", "/bin/bash", "/bin/sh"].contains(settings.shell) else { throw ConfigError.message("Некорректная оболочка Mac.") }
             return ConsoleLaunch(executable: settings.shell, arguments: ["-l"])
         case .telnet:
-            return ConsoleLaunch(executable: try resolve("SSHTelnet"), arguments: [entry.host, entry.port])
+            return ConsoleLaunch(executable: try resolve("SSHTelnet"), arguments: entry.networkForwardPort.map { ["127.0.0.1", String($0)] } ?? [entry.host, entry.port])
         case .mosh:
             let ssh = ["/usr/bin/ssh", "-p", entry.port, "-o", "StrictHostKeyChecking=ask", "-F", config.path].map(SSHConfig.shellQuote).joined(separator: " ")
             return ConsoleLaunch(executable: try resolve("mosh"), arguments: ["--ssh", ssh, "--", entry.user + "@" + entry.host])

@@ -911,7 +911,7 @@ struct InfrastructureUniFiSite: Identifiable, Equatable { let id: String; let na
     }
     private func collectDocker(_ connection: InfrastructureConnection) async throws -> InfrastructureSnapshot {
         guard let originalEntry = entries.first(where: { $0.favoriteID == connection.dockerRecordKey }), originalEntry.canSSH else { throw ConfigError.message("SSH-запись сервера Docker удалена или недоступна в этом профиле.") }
-        let entry = try SSHPasswordStore.preparedEntry(for: originalEntry, config: configURL)
+        let entry = try SSHPasswordStore.preparedConnection(for: originalEntry, config: configURL)
         let autofill = entry.authentication.usesPassword ? await SSHLoginPolicy.permitsSavedPassword(for: entry, config: configURL) : false
         try Task.checkCancellation()
         let password = autofill ? try SSHPasswordStore.password(for: entry, config: entry.credentialConfig(fallback: configURL)) : nil

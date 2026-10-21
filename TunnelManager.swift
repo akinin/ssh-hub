@@ -43,7 +43,7 @@ import Combine
             reports[profile.id] = TunnelReport(phase: .failed, detail: "SSH-алиас недоступен. Отредактируй туннель и выбери другой."); return
         }
         let prepared: SSHAlias
-        do { prepared = try SSHPasswordStore.preparedEntry(for: original, config: config) }
+        do { prepared = try SSHPasswordStore.preparedConnection(for: original, config: config) }
         catch { reports[profile.id] = TunnelReport(phase: .failed, detail: error.localizedDescription); return }
         let entry = prepared
         if let conflict = profiles.first(where: { $0.id != profile.id && $0.localPort == profile.localPort && report($0.id).phase.busy }) {

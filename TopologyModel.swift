@@ -34,7 +34,7 @@ struct TopologyTrafficPoint { let date: Date; let rx: Double; let tx: Double }
     @Published var trafficHistory: [UUID:[TopologyTrafficPoint]] = [:]
     var entries: [SSHAlias] = [] {
         didSet {
-            if oldValue.map(\.options) != entries.map(\.options) || oldValue.map(\.website) != entries.map(\.website) || oldValue.map(\.favoriteID) != entries.map(\.favoriteID) { measured = [:]; measuredLatency = [:] }
+            if oldValue.map(\.transport) != entries.map(\.transport) || oldValue.map(\.options) != entries.map(\.options) || oldValue.map(\.website) != entries.map(\.website) || oldValue.map(\.favoriteID) != entries.map(\.favoriteID) { measured = [:]; measuredLatency = [:] }
         }
     }
     var config: URL
@@ -355,7 +355,7 @@ struct TopologyTrafficPoint { let date: Date; let rx: Double; let tx: Double }
     func collect(_ entry: SSHAlias, collector: TopologyCollector) {
         run("Сбор сетевых сведений · " + entry.name) { [weak self] in
             guard let self else { return }
-            let entry = try SSHPasswordStore.preparedEntry(for: entry, config: self.config)
+            let entry = try SSHPasswordStore.preparedConnection(for: entry, config: self.config)
             let worker = ToolkitProcess(); self.process = worker
             defer { self.process = nil; self.login?.stop(); self.login = nil }
             let result: ToolkitResult
@@ -469,6 +469,7 @@ struct TopologyTrafficPoint { let date: Date; let rx: Double; let tx: Double }
     private func probeTarget(_ node:TopologyNode)->(String,UInt16)? {
         guard ToolkitText.hostValid(node.displayAddress) else { return nil }
         let entry = entries.first { $0.favoriteID == node.recordKey }
+        guard entry?.transport?.wireGuardID == nil else { return nil }
         if entry?.recordKind == .localShell && node.checkPort == nil { return nil }
         let website = entry?.website.flatMap(URL.init(string:))
         let port = node.checkPort ?? website.map { $0.port ?? ($0.scheme == "https" ? 443 : 80) }.flatMap(UInt16.init(exactly:)) ?? entry.flatMap { UInt16($0.port) } ?? node.observed?.services.first(where: { $0.proto == "tcp" && $0.state == "open" })?.port
