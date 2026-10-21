@@ -14,6 +14,9 @@ import Network
     private var loginTask: Task<Void, Never>?
     private var generation = UUID()
     private var formAttempted = false
+    private var usernameAttempted = false
+    private var stepUsername: String?
+    private var stepDeadline: Date?
     private var httpAttempted = false
     private var manualLogin = false
     @Published var loginStatus: String?
@@ -49,14 +52,14 @@ import Network
             do { let prepared = try SSHPasswordStore.preparedNetworkConnection(for: entry, config: config); guard let port = prepared.networkProxyPort else { throw ConfigError.message("Маршрут WireGuard недоступен.") }; configureProxy(port) }
             catch { self.error = error.localizedDescription; return }
         }
-        cancelLogin(); formAttempted = false; httpAttempted = false; manualLogin = false; loginStatus = nil
+        cancelLogin(); usernameAttempted = false; stepUsername = nil; stepDeadline = nil; formAttempted = false; httpAttempted = false; manualLogin = false; loginStatus = nil
         started = true; error = nil; view.load(URLRequest(url: url))
     }
-    func stop() { started = false; cancelLogin(); loginStatus = nil; manualLogin = false; view.stopLoading(); view.loadHTMLString("", baseURL: nil) }
+    func stop() { started = false; stepUsername = nil; stepDeadline = nil; cancelLogin(); loginStatus = nil; manualLogin = false; view.stopLoading(); view.loadHTMLString("", baseURL: nil) }
     private func cancelLogin() { generation = UUID(); loginTask?.cancel(); loginTask = nil }
     func login() {
         guard !setupOnly, canLogin else { return }
-        cancelLogin(); formAttempted = false; httpAttempted = false; manualLogin = true
+        cancelLogin(); usernameAttempted = false; stepUsername = nil; stepDeadline = nil; formAttempted = false; httpAttempted = false; manualLogin = true
         if view.isLoading { return }
         // A rejected HTTP challenge needs a fresh load. Forms can be retried in place.
         if error != nil, let url = URL(string: entry.website ?? "") { error = nil; view.load(URLRequest(url: url)) } else { fillLogin() }
@@ -71,18 +74,29 @@ import Network
             defer { if generation == token { loginTask = nil } }
             do {
                 // Some panels create their form after the main document finishes loading.
-                for _ in 0..<20 {
+                for _ in 0..<60 {
                     guard !Task.isCancelled, generation == token, started, origin == WebLoginOrigin(view.url) else { return }
-                    let status = try await WebLoginForm.run(in: view, origin: destination, probe: true, selectors: entry.transport?.webLoginSelectors)
+                    let selectors = entry.transport?.webLoginSelectors
+                    let twoStep = selectors?.isTwoStep == true
+                    let stage = twoStep ? (usernameAttempted ? "password" : "username") : "combined"
+                    if stage == "password", stepUsername == nil { loginStatus = "Начни вход заново или заверши его вручную."; return }
+                    if let deadline = stepDeadline, deadline < Date() { loginStatus = "Время ожидания шага пароля истекло. Заверши вход вручную."; return }
+                    let status = try await WebLoginForm.run(in: view, origin: destination, probe: true, selectors: selectors, stage: stage)
                     guard !Task.isCancelled, generation == token, started, origin == WebLoginOrigin(view.url) else { return }
                     if status == "waiting" { try await Task.sleep(for: .milliseconds(250)); continue }
                     guard status == "ready" else { loginStatus = "Войди вручную: форма требует подтверждения или не распознана."; return }
-                    formAttempted = true // A rejected password must never cause an automatic retry loop.
+                    if stage == "username" { usernameAttempted = true; stepDeadline = Date().addingTimeInterval(15) }
+                    else { formAttempted = true } // Never automatically retry either step.
                     guard let (username, secret) = try credentials(entry, config) else { loginStatus = "Сохрани логин и пароль в настройках записи."; return }
                     guard !Task.isCancelled, generation == token, started, origin == WebLoginOrigin(view.url) else { return }
-                    let result = try await WebLoginForm.run(in: view, origin: destination, username: username, password: secret, probe: false, selectors: entry.transport?.webLoginSelectors)
+                    if stage == "password", stepUsername != username { loginStatus = "Учётные данные изменились. Начни вход заново."; return }
+                    if stage == "username" { stepUsername = username }
+                    let result = try await WebLoginForm.run(in: view, origin: destination, username: username, password: stage == "username" ? "" : secret, probe: false, selectors: selectors, stage: stage)
                     guard !Task.isCancelled, generation == token, started else { return }
-                    loginStatus = result == "submitted" ? nil : "Проверь форму и заверши вход вручную."
+                    loginStatus = result == "submitted" ? (stage == "username" ? "Ожидание шага пароля…" : nil) : "Проверь форму и заверши вход вручную."
+                    if stage == "username", result == "submitted" { try await Task.sleep(for: .milliseconds(250)); continue }
+                    stepUsername = nil; stepDeadline = nil
+                    if stage == "username" { formAttempted = true }
                     return
                 }
                 if manualLogin { loginStatus = "Форма входа не найдена на этой странице." }
@@ -95,6 +109,7 @@ import Network
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { self.error = error.localizedDescription }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { self.error = error.localizedDescription }
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        if navigationAction.targetFrame?.isMainFrame != false, let url = navigationAction.request.url, WebLoginOrigin(url) != WebLoginOrigin(URL(string: entry.website ?? "")) { stepUsername = nil; stepDeadline = nil; if usernameAttempted { formAttempted = true } }
         guard let url = navigationAction.request.url, ["http", "https", "about"].contains(url.scheme?.lowercased() ?? "") else { decisionHandler(.cancel); return }
         if navigationAction.targetFrame == nil { webView.load(navigationAction.request); decisionHandler(.cancel) } else { decisionHandler(.allow) }
     }

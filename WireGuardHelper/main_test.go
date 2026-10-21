@@ -280,6 +280,13 @@ func TestOwnedEncryptedIsolation(t *testing.T) {
 		t.Fatal("DNS/route two", got)
 	}
 	for _, c := range []*clientProcess{a, b} {
+		result := c.request(t, map[string]any{"op": "probe", "host": "10.77.0.1", "port": 8080, "dns_host": "owned.test"})
+		if result["tcp"] != true || result["dns"] != "resolved" || result["handshake"].(float64) <= 0 {
+			t.Fatal("explicit probe failed")
+		}
+		if len(result) != 5 {
+			t.Fatal("probe returned unexpected fields")
+		}
 		stats := c.request(t, map[string]any{"op": "stats"})
 		for _, field := range []string{"rx_bytes", "tx_bytes", "rx_packets", "tx_packets", "handshake"} {
 			if value, ok := stats[field].(float64); !ok || value <= 0 {
@@ -327,6 +334,10 @@ func TestOwnedEncryptedIsolation(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer r.close()
+	failed := r.probe("127.0.0.1", 8080, "")
+	if failed["tcp"] != false || failed["dns"] != "not_requested" {
+		t.Fatal("probe bypassed unavailable VPN")
+	}
 	deadline, stop := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer stop()
 	if s, e := r.dial(deadline, "127.0.0.1", 8080); e == nil {

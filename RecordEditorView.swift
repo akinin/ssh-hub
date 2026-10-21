@@ -303,10 +303,12 @@ struct RecordEditorView: View {
             if settings.wrappedValue.webLoginSelectors != nil {
                 DisclosureGroup("CSS-селекторы", isExpanded: $advancedWebLogin) {
                     VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Логин и пароль на разных шагах", isOn: Binding(get: { settings.wrappedValue.webLoginSelectors?.isTwoStep == true }, set: { value in var choice = settings.wrappedValue.webLoginSelectors ?? WebLoginSelectors(); choice.next = value ? "" : nil; settings.wrappedValue.webLoginSelectors = choice }))
+                    if settings.wrappedValue.webLoginSelectors?.isTwoStep == true { RecordFieldRow("Далее") { TextField("Например, #next", text: Binding(get: { settings.wrappedValue.webLoginSelectors?.next ?? "" }, set: { settings.wrappedValue.webLoginSelectors?.next = $0 })) } }
                     RecordFieldRow("Логин") { TextField("Например, #username", text: selectorBinding(\.username)).accessibilityIdentifier("webLoginUsernameSelector") }
                     RecordFieldRow("Пароль") { TextField("Например, #password", text: selectorBinding(\.password)).accessibilityIdentifier("webLoginPasswordSelector") }
                     RecordFieldRow("Кнопка") { TextField("Например, button[type='submit']", text: selectorBinding(\.submit)).accessibilityIdentifier("webLoginSubmitSelector") }
-                    Text("CSS-селекторы должны указывать на одно видимое поле или кнопку: #id, input[name='login']. Поля и кнопка должны принадлежать одной форме на этом сайте. CAPTCHA и одноразовые коды вводятся вручную.").font(.caption).foregroundStyle(.secondary)
+                    Text("CSS-селекторы должны указывать на одно видимое поле или кнопку: #id, input[name='login']. Элементы каждого шага должны принадлежать одной форме на этом сайте. CAPTCHA и одноразовые коды вводятся вручную.").font(.caption).foregroundStyle(.secondary)
                     }.padding(.top, 8).textFieldStyle(.roundedBorder)
                 }
                 if settings.wrappedValue.webLoginSelectors?.validation == nil { Label("Поля входа настроены", systemImage: "checkmark.circle").font(.caption).foregroundStyle(.secondary) }

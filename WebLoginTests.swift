@@ -9,7 +9,7 @@ import WebKit
         let app = NSApplication.shared; app.setActivationPolicy(.prohibited)
         var done = false, failure: String?
         Task { do { try await run(); print("Web login tests passed: isolated WebKit, exact origins, form guards, no restore login, Keychain failure, stop and no retries") } catch { failure = error.localizedDescription }; done = true }
-        let deadline = Date().addingTimeInterval(75)
+        let deadline = Date().addingTimeInterval(90)
         while !done && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
         if let failure { fputs("Web login test failed: \(failure)\n", stderr); exit(1) }
         if !done { fputs("Web login test timed out\n", stderr); exit(1) }
@@ -76,6 +76,31 @@ import WebKit
         let invalidOrigin = await picker.check()
         try check(invalidOrigin == nil && !picker.verified && picker.selectors.username.isEmpty, "navigation and different origin clear selection")
         picker.close(); setupWindow.close()
+        var stepSetupReads = 0
+        let stepSetup = WebPageModel(entry: entry(base + "/two"), config: config, setupOnly: true, credentialReader: { _,_ in stepSetupReads += 1; return (user, password) })
+        setupWindow.contentView = stepSetup.view
+        let stepPicker = WebLoginPickerModel(web: stepSetup, origin: URL(string: base)!)
+        stepPicker.setTwoStep(true); stepSetup.start(); stepPicker.start()
+        try await wait { stepSetup.view.url?.path == "/two" && !stepSetup.view.isLoading }
+        for (role, selector) in [("username", "#step-user"), ("next", "#next")] {
+            stepPicker.role = role
+            _ = try await WebLoginPickerScript.run(in: stepSetup.view, origin: URL(string: base)!, role: role, twoStep: true)
+            _ = try await stepSetup.view.callAsyncJavaScript("document.querySelector(selector).click();", arguments: ["selector": selector], in: nil, contentWorld: .defaultClient)
+        }
+        let firstStep = await stepPicker.check()
+        try check(firstStep?.next == "#next" && stepPicker.verified && !stepPicker.canApply, "first step separately verified without submission")
+        stepPicker.advance()
+        _ = try await WebLoginPickerScript.run(in: stepSetup.view, origin: URL(string: base)!, operation: "pause", role: "password", twoStep: true)
+        _ = try await stepSetup.view.callAsyncJavaScript("document.querySelector('#step-user').value='fixture-setup';document.querySelector('#next').click();", arguments: [:], in: nil, contentWorld: .defaultClient)
+        try await wait { stepSetup.view.url?.path == "/step-next" && !stepSetup.view.isLoading }
+        for (role, selector) in [("password", "#step-password"), ("submit", "#finish")] {
+            stepPicker.role = role
+            _ = try await WebLoginPickerScript.run(in: stepSetup.view, origin: URL(string: base)!, operation: "resume", role: role, twoStep: true)
+            _ = try await stepSetup.view.callAsyncJavaScript("document.querySelector(selector).click();", arguments: ["selector": selector], in: nil, contentWorld: .defaultClient)
+        }
+        let secondStep = await stepPicker.check()
+        try check(secondStep?.validation == nil && secondStep?.username == "#step-user" && stepPicker.canApply && stepSetupReads == 0, "visual two-step setup retains first selectors, verifies second without credentials")
+        stepPicker.close()
         var reads = 0
         let model = WebPageModel(entry: entry(base + "/form", automatic: false), config: config, credentialReader: { _,_ in reads += 1; return (user, password) })
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 500), styleMask: [.titled], backing: .buffered, defer: false); window.isReleasedWhenClosed = false; window.contentView = model.view
@@ -95,6 +120,20 @@ import WebKit
             if path == "/spa" { try await wait { auto.view.title == "SPA success" } }
             if path == "/repeat" { try check(auto.view.url?.path == "/repeat-submit", "failed form stays manual") }
             auto.stop()
+        }
+        let steps = WebLoginSelectors(username: "#step-user", password: "#step-password", submit: "#finish", next: "#next")
+        try check(steps.validation == nil && (try? JSONDecoder().decode(WebLoginSelectors.self, from: JSONEncoder().encode(custom)))?.next == nil, "two-step backward compatibility")
+        for path in ["/two", "/two-spa", "/two-redirect"] {
+            var stepEntry = entry(base + path); stepEntry.transport?.webLoginSelectors = steps
+            var stepReads = 0
+            let step = WebPageModel(entry: stepEntry, config: config, credentialReader: { _,_ in stepReads += 1; return (user, password) })
+            window.contentView = step.view; step.start()
+            if path == "/two" { try await wait { step.view.url?.path == "/step-finish" && !step.view.isLoading } }
+            else if path == "/two-spa" { try await wait { step.view.title == "Two success" } }
+            else { try await wait { step.view.url?.absoluteString == other + "/form" && !step.view.isLoading } }
+            try await Task.sleep(for: .milliseconds(350))
+            try check(stepReads == (path == "/two-redirect" ? 1 : 2), "bounded two-step credential reads " + path)
+            step.stop()
         }
         var manualEntry = entry(base + "/manual"); manualEntry.transport?.webLoginSelectors = custom
         var customReads = 0
@@ -119,6 +158,12 @@ import WebKit
         // Exercise the real script in the same isolated content world against synthetic DOM.
         let view = model.view; window.contentView = view
         view.load(URLRequest(url: URL(string: base + "/blank")!)); try await wait { view.url?.path == "/blank" && !view.isLoading }
+        let secondHTML = #"<form method="post" action="/submit"><input id="step-password" type="password"><button id="finish" type="submit">Войти</button></form>"#
+        for (html, expected) in [(secondHTML, "ready"), (secondHTML.replacingOccurrences(of: "post", with: "get"), "manual"), (secondHTML.replacingOccurrences(of: "</form>", with: "<input autocomplete='one-time-code'></form>"), "manual"), (secondHTML.replacingOccurrences(of: "/submit", with: other + "/submit"), "origin"), (secondHTML.replacingOccurrences(of: "type=\"password\"", with: "type=\"password\" autocomplete=\"new-password\""), "manual")] {
+            _ = try await view.callAsyncJavaScript("document.body.innerHTML=html;", arguments: ["html": html], in: nil, contentWorld: .defaultClient)
+            let status = try await WebLoginForm.run(in: view, origin: URL(string: base)!, probe: true, selectors: steps, stage: "password")
+            try check(status == expected, "second step preserves form guards " + expected)
+        }
         let normal = #"<form method="post" action="/submit"><input name="username"><input type="password" name="password"><button type="submit">Войти</button></form>"#
         let cases: [(String, String)] = [
             (normal, "ready"),

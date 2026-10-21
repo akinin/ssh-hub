@@ -15,18 +15,20 @@ struct WebLoginPickerView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HubSheetHeader(title: "Настройка автовхода", subtitle: picker.origin.absoluteString, icon: "cursorarrow.click")
+            Toggle("Логин и пароль на разных шагах", isOn: Binding(get: { picker.twoStep }, set: { picker.setTwoStep($0) }))
             HStack(spacing: 10) {
-                roleButton("Логин", role: "username", selected: !picker.selectors.username.isEmpty, color: .blue)
-                roleButton("Пароль", role: "password", selected: !picker.selectors.password.isEmpty, color: .purple)
-                roleButton("Кнопка входа", role: "submit", selected: !picker.selectors.submit.isEmpty, color: .green)
+                if !picker.twoStep || !picker.passwordStep { roleButton("Логин", role: "username", selected: !picker.selectors.username.isEmpty, color: .blue) }
+                if picker.twoStep && !picker.passwordStep { roleButton("Далее", role: "next", selected: !(picker.selectors.next ?? "").isEmpty, color: .green) }
+                if !picker.twoStep || picker.passwordStep { roleButton("Пароль", role: "password", selected: !picker.selectors.password.isEmpty, color: .purple)
+                roleButton("Кнопка входа", role: "submit", selected: !picker.selectors.submit.isEmpty, color: .green) }
                 Spacer()
-                Button { session.stop(); session.start() } label: { Image(systemName: "arrow.clockwise").frame(width: 24, height: 24) }.help("Загрузить исходную страницу заново").accessibilityLabel("Загрузить заново").disabled(picker.checking)
+                Button { picker.setTwoStep(picker.twoStep); session.stop(); session.start() } label: { Image(systemName: "arrow.clockwise").frame(width: 24, height: 24) }.help("Загрузить исходную страницу заново").accessibilityLabel("Загрузить заново").disabled(picker.checking)
             }
             HStack {
                 Toggle("Режим выбора", isOn: $picker.selecting).toggleStyle(.switch).disabled(picker.checking)
-                Text(picker.selecting ? "Выбери тип поля и нажми на него на странице." : "Перейди к форме входа, затем включи выбор.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(picker.selecting ? "Выбери тип поля и нажми на него на странице." : (picker.twoStep && picker.passwordStep ? "Введи логин и нажми «Далее» на странице, затем включи выбор." : "Перейди к форме входа, затем включи выбор.")).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            DisclosureGroup("Поддерживаемые формы") { Text("Поля и кнопка должны быть на одном сайте и в одной форме. Проверка не вводит пароль и не выполняет вход. CAPTCHA, SSO и одноразовые коды подтверждаются вручную.").font(.caption).foregroundStyle(.secondary).padding(.top, 4) }.font(.caption)
+            DisclosureGroup("Поддерживаемые формы") { Text("Элементы каждого шага должны быть на одном сайте и в одной форме. При двухэтапном входе сначала проверь логин и «Далее», перейди к паролю вручную, затем проверь второй шаг. Проверка не вводит пароль и не выполняет вход. CAPTCHA, SSO и одноразовые коды подтверждаются вручную.").font(.caption).foregroundStyle(.secondary).padding(.top, 4) }.font(.caption)
             Divider()
             if session.entry.transport?.tunnel != nil { ConnectionTunnelStatus(tunnel: session.tunnel, cancel: session.stop) }
             if let error = picker.web.error { Text(error).foregroundStyle(.red).font(.caption) }
@@ -36,10 +38,11 @@ struct WebLoginPickerView: View {
             HStack {
                 Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("Проверить настройку") { Task { _ = await picker.check() } }.disabled(picker.selectors.validation != nil || picker.checking)
-                Button("Использовать настройку") {
+                Button("Проверить настройку") { Task { _ = await picker.check() } }.disabled(!picker.currentComplete || picker.checking)
+                if picker.twoStep && !picker.passwordStep { Button("Перейти к шагу пароля") { picker.advance() }.disabled(!picker.verified || picker.checking) }
+                if !picker.twoStep || picker.passwordStep { Button("Использовать настройку") {
                     Task { if let choice = await picker.check() { apply(choice); dismiss() } }
-                }.buttonStyle(.borderedProminent).disabled(!picker.verified || picker.checking).accessibilityIdentifier("webLoginPickerApply")
+                }.buttonStyle(.borderedProminent).disabled(!picker.canApply || picker.checking).accessibilityIdentifier("webLoginPickerApply") }
             }
         }.padding(20).frame(minWidth: 680, idealWidth: 900, maxWidth: 1100, minHeight: 620, idealHeight: 680, maxHeight: 900)
             .task { picker.start(); session.start() }

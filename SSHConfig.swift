@@ -99,9 +99,11 @@ struct WebLoginSelectors: Codable, Equatable {
     var username = ""
     var password = ""
     var submit = ""
+    var next: String? = nil
+    var isTwoStep: Bool { next != nil }
     var validation: String? {
-        let values = [username, password, submit]
-        return values.allSatisfy { !$0.trimmingCharacters(in: .whitespaces).isEmpty && $0.utf8.count <= 512 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) } && Set(values).count == 3 ? nil : "Укажи три разных CSS-селектора полей логина, пароля и кнопки входа, до 512 байт каждый."
+        let values = [username, password, submit] + (next.map { [$0] } ?? [])
+        return values.allSatisfy { !$0.trimmingCharacters(in: .whitespaces).isEmpty && $0.utf8.count <= 512 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) } && (isTwoStep ? username != next! && password != submit : Set(values).count == 3) ? nil : "Укажи CSS-селекторы полей логина, пароля и кнопки входа, до 512 байт каждый."
     }
 }
 

@@ -75,6 +75,13 @@ import AppKit
         check(try JSONDecoder().decode([RecordActionStyle].self, from: JSONEncoder().encode(unique)) == unique, "placements and separators round trip")
         check(!RecordAction.saving([RecordActionStyle(id: "connect")], previous: unique).contains(where: \.isDivider), "deleted separators do not return during merge")
         check(RecordAction.layout(unique, entry: website).contains(where: \.isDivider), "separator metadata applies to other record types")
+        let legacyBadge = RecordActionStyle(id: "keePass", color: "purple", hidden: true, placement: .tiles)
+        let migrated = RecordAction.layout([legacyBadge], entry: alias)
+        check(migrated.first { $0.id == "keePass" } == legacyBadge && legacyBadge.effectivePlacement == .badges, "legacy KeePass moves to badges without losing hidden/order/color metadata")
+        check(migrated.first { $0.id == "vpn" }?.effectivePlacement == .badges, "VPN is added to badge catalog")
+        let badges = [RecordActionStyle(id: "keePass"), RecordActionStyle(id: "connect"), RecordActionStyle(id: "vpn")]
+        let reordered = RecordAction.moving(badges, placement: .badges, from: IndexSet(integer: 1), to: 0)
+        check(reordered.map(\.id) == ["vpn", "connect", "keePass"] && reordered[1] == badges[1], "badge drag preserves action slots")
         let interleaved = [RecordActionStyle(id: "favorite", color: "purple"), RecordActionStyle(id: "connect"), RecordActionStyle(id: "check", placement: .header), separator, RecordActionStyle(id: "inventory")]
         let movedTile = RecordAction.moving(interleaved, placement: .tiles, from: IndexSet(integer: 2), to: 1)
         check(movedTile.filter { $0.effectivePlacement == .tiles }.map(\.id) == ["connect", "inventory", separator.id], "tile moves use displayed group positions including separators")

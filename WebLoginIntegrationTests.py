@@ -10,7 +10,7 @@ import urllib.parse
 
 USER = "fixture@example.test"
 PASSWORD = "fixture-'\"\\</script>"
-state = {"posts": [], "basic": 0}
+state = {"posts": [], "basic": 0, "steps": []}
 form = '<form action="/submit" method="post"><input name="username" autocomplete="username"><input name="password" type="password" autocomplete="current-password"><button type="submit">Войти</button></form>'
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_): pass
@@ -32,11 +32,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if route == "/spa": return self.send('<input name="username"><input name="password" type="password"><button type="button" onclick="fetch(\'/submit\',{method:\'POST\',headers:{\'Content-Type\':\'application/x-www-form-urlencoded\'},body:new URLSearchParams({username:document.querySelector(\'[name=username]\').value,password:document.querySelector(\'[name=password]\').value})}).then(()=>document.title=\'SPA success\')">Login</button>')
         if route == "/repeat": return self.send(form.replace('/submit', '/repeat-submit'))
         if route == "/manual": return self.send('<form action="/submit" method="post"><input id="account" name="username"><input id="credential" name="password" type="password"><button id="enter" type="submit">Continue to dashboard</button></form><form><input type="password"></form>')
+        if route in ["/two", "/two-redirect"]: return self.send('<form action="/step-next' + ('-redirect' if route.endswith('redirect') else '') + '" method="post"><input id="step-user" name="username"><button id="next" type="submit">Далее</button></form>')
+        if route == "/two-spa": return self.send('<input id="step-user"><button id="next" type="button">Далее</button><script>document.getElementById("next").onclick=()=>setTimeout(()=>document.body.innerHTML=' + json.dumps('<input id="step-password" type="password"><button id="finish" type="button" onclick="document.title=\'Two success\'">Войти</button>') + ',200)</script>')
         if route == "/form": return self.send(form)
         if route == "/blank": return self.send("<h1>Blank</h1>")
         return self.send("unknown", 404)
     def do_POST(self):
         data = self.rfile.read(min(int(self.headers.get("Content-Length", "0")), 8192)).decode()
+        if self.path.startswith('/step-'):
+            state["steps"].append({"path": self.path, "fields": urllib.parse.parse_qs(data)})
+            if self.path == '/step-next-redirect': return self.send('', 302, {'Location': second_url + '/form'})
+            if self.path == '/step-next': return self.send('<form action="/step-finish" method="post"><input id="step-password" name="password" type="password"><button id="finish" type="submit">Войти</button></form>')
+            return self.send('<h1>Two success</h1>')
         state["posts"].append({"path": self.path, "fields": urllib.parse.parse_qs(data)})
         self.send(form.replace('/submit', '/repeat-submit') if self.path == '/repeat-submit' else '<h1>Form success</h1>')
 class Server(http.server.ThreadingHTTPServer):
@@ -47,7 +54,8 @@ servers = [Server(("127.0.0.1", 0), Handler) for _ in range(2)]
 second_url = "http://127.0.0.1:" + str(servers[1].server_port)
 for server in servers: threading.Thread(target=server.serve_forever, daemon=True).start()
 try:
-    subprocess.run([sys.argv[1], "http://127.0.0.1:" + str(servers[0].server_port), second_url], check=True, timeout=90)
+    subprocess.run([sys.argv[1], "http://127.0.0.1:" + str(servers[0].server_port), second_url], check=True, timeout=105)
+    assert [x["fields"] for x in state["steps"]] == [{"username": ["fixture-setup"]}, {"username": [USER]}, {"password": [PASSWORD]}, {"username": [USER]}], "two-step payloads and cross-origin stop"
     assert state["basic"] == 1, "single Basic authentication"
     assert len(state["posts"]) == 5, "normal, delayed, SPA, manual selectors and one failed form attempt only"
     assert all(x["fields"] == {"username": [USER], "password": [PASSWORD]} for x in state["posts"]), "argument values preserved"

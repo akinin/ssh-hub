@@ -62,7 +62,7 @@ private struct RecordActionRows: View {
         draft = RecordAction.moving(draft, placement: placement, from: IndexSet(integer: index), to: delta < 0 ? index - 1 : index + 2)
     }
     private func addDivider(after id: String) {
-        guard draft.count < 32, let index = draft.firstIndex(where: { $0.id == id }), draft[index].effectivePlacement == .tiles else { return }
+        guard draft.count < RecordActionStyle.limit, let index = draft.firstIndex(where: { $0.id == id }), draft[index].effectivePlacement == .tiles else { return }
         draft.insert(.divider(), at: index + 1)
     }
     var body: some View {
@@ -80,8 +80,11 @@ private struct RecordActionRows: View {
             }.contentShape(Rectangle()).help("Перетащи строку, чтобы изменить порядок внутри группы")
                 .accessibilityAction(named: "Выше в группе") { move(style.id, by: -1, placement: placement) }
                 .accessibilityAction(named: "Ниже в группе") { move(style.id, by: 1, placement: placement) }
-            if !style.isDivider {
-                Picker("Размещение: " + (RecordAction(rawValue: style.id)?.title ?? ""), selection: Binding(get: { binding.wrappedValue.effectivePlacement }, set: { binding.wrappedValue.placement = $0 })) { ForEach(RecordActionPlacement.allCases) { Text($0.title).tag($0) } }.labelsHidden().frame(width: 150)
+            if style.isBadge {
+                Text("Бейдж записи").font(.caption).foregroundStyle(.secondary).frame(width: 150)
+                Text("По состоянию").font(.caption).foregroundStyle(.secondary).frame(width: 100)
+            } else if !style.isDivider {
+                Picker("Размещение: " + (RecordAction(rawValue: style.id)?.title ?? ""), selection: Binding(get: { binding.wrappedValue.effectivePlacement }, set: { binding.wrappedValue.placement = $0 })) { ForEach([RecordActionPlacement.tiles, .header]) { Text($0.title).tag($0) } }.labelsHidden().frame(width: 150)
                 Picker("Цвет", selection: binding.color) { ForEach(RecordActionStyle.colors, id: \.self) { Text(RecordActionStyle.colorTitle($0)).tag($0) } }.labelsHidden().frame(width: 100)
             } else { Rectangle().fill(.quaternary).frame(width: 258, height: 1) }
             if style.isDivider {
@@ -93,7 +96,7 @@ private struct RecordActionRows: View {
         }.padding(.vertical, 4).accessibilityElement(children: .contain)
             .contextMenu {
                 if placement == .tiles {
-                    Button("Разделитель после этой строки", systemImage: "minus") { addDivider(after: style.id) }.disabled(draft.count >= 32)
+                    Button("Разделитель после этой строки", systemImage: "minus") { addDivider(after: style.id) }.disabled(draft.count >= RecordActionStyle.limit)
                 }
             }
     }
@@ -170,27 +173,37 @@ private struct RecordActionTable: NSViewRepresentable {
         var parent: RecordActionTable
         weak var table: NSTableView?
         init(_ parent: RecordActionTable) { self.parent = parent }
-        private var header: [RecordActionStyle] { parent.draft.filter { $0.effectivePlacement == .header } }
-        private var tiles: [RecordActionStyle] { parent.draft.filter { $0.effectivePlacement == .tiles } }
-        func style(at row: Int) -> RecordActionStyle? {
-            if row > 0 && row <= header.count { return header[row - 1] }
-            let index = row - header.count - 2
-            return tiles.indices.contains(index) ? tiles[index] : nil
+        private let placements: [RecordActionPlacement] = [.header, .tiles, .badges]
+        private var groups: [[RecordActionStyle]] { placements.map { placement in parent.draft.filter { $0.effectivePlacement == placement } } }
+        private func groupStart(_ placement: RecordActionPlacement) -> Int {
+            guard let index = placements.firstIndex(of: placement) else { return 0 }
+            return groups.prefix(index).reduce(0) { $0 + $1.count + 1 }
         }
-        func numberOfRows(in tableView: NSTableView) -> Int { header.count + tiles.count + 2 }
+        private func placement(at row: Int) -> RecordActionPlacement? {
+            placements.first { groupStart($0) == row }
+        }
+        func style(at row: Int) -> RecordActionStyle? {
+            for (placement, values) in zip(placements, groups) {
+                let index = row - groupStart(placement) - 1
+                if values.indices.contains(index) { return values[index] }
+            }
+            return nil
+        }
+        func numberOfRows(in tableView: NSTableView) -> Int { parent.draft.count + placements.count }
         func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { style(at: row) == nil ? 38 : 42 }
         func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { style(at: row) != nil }
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
             let view: AnyView
             if let style = style(at: row) { view = parent.content(style) }
             else {
-                let isHeader = row == 0
+                let placement = placement(at: row) ?? .header
+                let values = parent.draft.filter { $0.effectivePlacement == placement }
                 view = AnyView(HStack {
-                    Label(isHeader ? "Значки вверху" : "Плитки", systemImage: isHeader ? "rectangle.topthird.inset.filled" : "square.grid.2x2").font(.subheadline.weight(.semibold))
-                    Text("\((isHeader ? header : tiles).filter { !$0.isDivider }.count)").foregroundStyle(.secondary)
+                    Label(placement == .header ? "Значки вверху" : placement == .tiles ? "Плитки" : "Бейджи записи", systemImage: placement == .header ? "rectangle.topthird.inset.filled" : placement == .tiles ? "square.grid.2x2" : "tag").font(.subheadline.weight(.semibold))
+                    Text("\(values.filter { !$0.isDivider }.count)").foregroundStyle(.secondary)
                     Spacer()
-                    if !isHeader {
-                        Button("Добавить разделитель", systemImage: "plus") { self.parent.draft.append(.divider()) }.font(.caption).disabled(parent.draft.count >= 32)
+                    if placement == .tiles {
+                        Button("Добавить разделитель", systemImage: "plus") { self.parent.draft.append(.divider()) }.font(.caption).disabled(parent.draft.count >= RecordActionStyle.limit)
                     }
                 }.padding(.vertical, 5))
             }
@@ -206,8 +219,8 @@ private struct RecordActionTable: NSViewRepresentable {
             guard let source = info.draggingSource as? NSTableView, source === table,
                   let id = info.draggingPasteboard.string(forType: Self.dragType),
                   let style = parent.draft.first(where: { $0.id == id }) else { return nil }
-            let start = style.effectivePlacement == .header ? 1 : header.count + 2
-            let count = style.effectivePlacement == .header ? header.count : tiles.count
+            let start = groupStart(style.effectivePlacement) + 1
+            let count = parent.draft.filter { $0.effectivePlacement == style.effectivePlacement }.count
             guard row >= start, row <= start + count else { return nil }
             return (style, row - start)
         }
@@ -223,7 +236,7 @@ private struct RecordActionTable: NSViewRepresentable {
         }
         func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
             guard dropOperation == .above, let (style, destination) = insertion(info, row: row) else { return false }
-            let group = style.effectivePlacement == .header ? header : tiles
+            let group = parent.draft.filter { $0.effectivePlacement == style.effectivePlacement }
             guard let index = group.firstIndex(where: { $0.id == style.id }) else { return false }
             parent.draft = RecordAction.moving(parent.draft, placement: style.effectivePlacement, from: IndexSet(integer: index), to: destination)
             return true
@@ -235,7 +248,7 @@ private struct RecordActionAddMenu: View {
     @Binding var draft: [RecordActionStyle]
     var body: some View {
         Menu("Добавить") {
-            Button("Горизонтальный разделитель", systemImage: "minus") { draft.append(.divider()) }.disabled(draft.count >= 32)
+            Button("Горизонтальный разделитель", systemImage: "minus") { draft.append(.divider()) }.disabled(draft.count >= RecordActionStyle.limit)
             if draft.contains(where: \.hidden) { Divider() }
             ForEach(draft.filter { $0.hidden && !$0.isDivider }) { style in
                 Button(RecordAction(rawValue: style.id)?.title ?? style.id) { if let index = draft.firstIndex(where: { $0.id == style.id }) { draft[index].hidden = false } }
@@ -285,7 +298,7 @@ struct RecordTileCustomizationView: View {
             Picker("Область настройки", selection: $scope) {
                 ForEach(RecordTileScope.allCases) { Text($0.title).tag($0) }
             }.pickerStyle(.segmented).accessibilityIdentifier("recordTileScope")
-            Text(scope == .record ? "Выбери размещение: плитка или значок вверху. Перетаскивай строки за ручку слева внутри группы. Правой кнопкой по плитке можно добавить разделитель сразу после неё." : "Общие настройки действий для записей без индивидуального оформления. Выбери плитку или значок вверху; добавь разделители между группами.").font(.caption).foregroundStyle(.secondary).frame(height: 34, alignment: .topLeading)
+            Text(scope == .record ? "Перетаскивай строки внутри группы. KeePass и VPN — в «Бейджах записи». Правой кнопкой по плитке можно добавить разделитель." : "Общие настройки действий для записей без индивидуального оформления. Выбери плитку или значок вверху; добавь разделители между группами.").font(.caption).foregroundStyle(.secondary).frame(height: 34, alignment: .topLeading)
             RecordActionRows(draft: draft).id(scope)
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
             HStack {

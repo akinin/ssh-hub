@@ -11,7 +11,7 @@ struct ConnectionAppearance: Codable, Equatable {
         if name.count > 80 || name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) {
             return "Название должно занимать одну строку до 80 символов."
         }
-        if let actionTiles, actionTiles.count > 32 || Set(actionTiles.map(\.id)).count != actionTiles.count || !actionTiles.allSatisfy(\.valid) { return "Некорректные настройки плиток." }
+        if let actionTiles, actionTiles.count > RecordActionStyle.limit || Set(actionTiles.map(\.id)).count != actionTiles.count || !actionTiles.allSatisfy(\.valid) { return "Некорректные настройки плиток." }
         if let logo, !Self.validLogo(logo) { return "Логотип должен быть PNG до 256 × 256 пикселей и 256 КБ." }
         return nil
     }
@@ -41,29 +41,32 @@ struct ConnectionAppearance: Codable, Equatable {
 }
 
 enum RecordActionPlacement: String, Codable, CaseIterable, Identifiable {
-    case tiles, header
+    case tiles, header, badges
     var id: String { rawValue }
-    var title: String { self == .tiles ? "Плитка" : "Значок вверху" }
+    var title: String { self == .tiles ? "Плитка" : self == .header ? "Значок вверху" : "Бейдж" }
 }
 struct RecordActionStyle: Codable, Equatable, Identifiable {
+    static let limit = 40
     var id: String
     var color: String = "blue"
     var hidden = false
     var placement: RecordActionPlacement? = nil
     var isDivider: Bool { id.hasPrefix("divider_") && id.count == 40 && id.dropFirst(8).allSatisfy { $0.isHexDigit && $0.isASCII } }
-    var effectivePlacement: RecordActionPlacement { isDivider ? .tiles : placement ?? RecordAction(rawValue: id)?.defaultPlacement ?? .tiles }
+    var effectivePlacement: RecordActionPlacement { isDivider ? .tiles : isBadge ? .badges : placement == .badges ? .tiles : placement ?? RecordAction(rawValue: id)?.defaultPlacement ?? .tiles }
+    var isBadge: Bool { id == RecordAction.keePass.id || id == RecordAction.vpn.id }
     static func divider() -> Self { Self(id: "divider_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased(), color: "gray") }
     static let colors = ["blue", "green", "orange", "red", "purple", "pink", "gray"]
     var valid: Bool { !id.isEmpty && id.utf8.count <= 40 && id.unicodeScalars.allSatisfy { CharacterSet.alphanumerics.contains($0) || $0 == "_" } && Self.colors.contains(color) }
 }
 
 enum RecordAction: String, CaseIterable, Identifiable {
-    case inside, browser, connect, sftp, logs, inventory, documentation, attachments, tools, edit, check, notifications, terminal, favorite, duplicate, export, keePass, delete
+    case inside, browser, connect, sftp, logs, inventory, documentation, attachments, tools, edit, check, notifications, terminal, favorite, duplicate, export, keePass, vpn, delete
     var id: String { rawValue }
-    var defaultPlacement: RecordActionPlacement { switch self { case .favorite, .duplicate, .export, .keePass, .delete: return .header; default: return .tiles } }
-    var title: String { switch self { case .favorite: return "Избранное"; case .duplicate: return "Дублировать"; case .export: return "Экспортировать"; case .keePass: return "KeePass"; case .delete: return "Удалить"; case .inside: return "Открыть внутри"; case .browser: return "Открыть в браузере"; case .connect: return "Подключиться"; case .sftp: return "SFTP"; case .logs: return "Логи"; case .inventory: return "Инвентаризация"; case .documentation: return "Документация"; case .attachments: return "Вложения"; case .tools: return "Инструменты"; case .edit: return "Редактировать"; case .check: return "Проверить"; case .notifications: return "Уведомления"; case .terminal: return "Внешний терминал" } }
-    var icon: String { switch self { case .favorite: return "star"; case .duplicate: return "plus.square.on.square"; case .export: return "square.and.arrow.up"; case .keePass: return "key"; case .delete: return "trash"; case .inside: return "macwindow"; case .browser, .terminal: return "arrow.up.forward.square"; case .connect: return "cable.connector"; case .sftp: return "folder"; case .logs: return "text.alignleft"; case .inventory: return "shippingbox"; case .documentation: return "doc.richtext"; case .attachments: return "paperclip"; case .tools: return "wrench.and.screwdriver"; case .edit: return "pencil"; case .check: return "network"; case .notifications: return "bell.badge" } }
+    var defaultPlacement: RecordActionPlacement { switch self { case .keePass, .vpn: return .badges; case .favorite, .duplicate, .export, .delete: return .header; default: return .tiles } }
+    var title: String { switch self { case .favorite: return "Избранное"; case .duplicate: return "Дублировать"; case .export: return "Экспортировать"; case .keePass: return "KeePass"; case .vpn: return "VPN"; case .delete: return "Удалить"; case .inside: return "Открыть внутри"; case .browser: return "Открыть в браузере"; case .connect: return "Подключиться"; case .sftp: return "SFTP"; case .logs: return "Логи"; case .inventory: return "Инвентаризация"; case .documentation: return "Документация"; case .attachments: return "Вложения"; case .tools: return "Инструменты"; case .edit: return "Редактировать"; case .check: return "Проверить"; case .notifications: return "Уведомления"; case .terminal: return "Внешний терминал" } }
+    var icon: String { switch self { case .favorite: return "star"; case .duplicate: return "plus.square.on.square"; case .export: return "square.and.arrow.up"; case .keePass: return "key"; case .vpn: return "network.badge.shield.half.filled"; case .delete: return "trash"; case .inside: return "macwindow"; case .browser, .terminal: return "arrow.up.forward.square"; case .connect: return "cable.connector"; case .sftp: return "folder"; case .logs: return "text.alignleft"; case .inventory: return "shippingbox"; case .documentation: return "doc.richtext"; case .attachments: return "paperclip"; case .tools: return "wrench.and.screwdriver"; case .edit: return "pencil"; case .check: return "network"; case .notifications: return "bell.badge" } }
     func available(_ entry: SSHAlias) -> Bool { switch self {
+        case .vpn: return entry.canSSH || [.rdp, .vnc, .web, .website, .telnet, .ftp, .ftps, .webdav].contains(entry.recordKind)
         case .inside: return entry.recordKind?.isWeb == true
         case .browser: return entry.recordKind?.isWeb == true && entry.transport?.wireGuardID == nil
         case .connect: return entry.canConnect && entry.recordKind?.isWeb != true
@@ -76,6 +79,7 @@ enum RecordAction: String, CaseIterable, Identifiable {
         case .duplicate: return "Создать копию записи"
         case .export: return "Сохранить в файл"
         case .keePass: return "Состояние и перенос данных"
+        case .vpn: return "Маршрут WireGuard записи"
         case .delete: return "Удалить с подтверждением"
         case .inside: return "Во вкладке SSH Hub"
         case .browser: return entry.transport?.tunnel == nil ? "Браузер по умолчанию" : "Напрямую, без SSH-туннеля"
@@ -134,7 +138,7 @@ enum RecordAction: String, CaseIterable, Identifiable {
 // App preference across profiles; per-record metadata remains an optional override.
 enum RecordActionDefaults {
     static let key = "globalRecordActionTiles.v1"
-    static func valid(_ values: [RecordActionStyle]) -> Bool { values.count <= 32 && Set(values.map(\.id)).count == values.count && values.allSatisfy(\.valid) }
+    static func valid(_ values: [RecordActionStyle]) -> Bool { values.count <= RecordActionStyle.limit && Set(values.map(\.id)).count == values.count && values.allSatisfy(\.valid) }
     static func decode(_ data: Data?) -> [RecordActionStyle]? {
         guard let data, data.count <= 16384, let values = try? JSONDecoder().decode([RecordActionStyle].self, from: data), valid(values) else { return nil }
         return values

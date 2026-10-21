@@ -42,13 +42,13 @@ enum WebLoginPickerScript {
         return null;
       };
       const visible = e => e?.isConnected && !e.disabled && !e.readOnly && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && getComputedStyle(e).display !== 'none';
-      state.valid = () => ['username','password','submit'].every(role=>visible(nodes[role]) && unique(selectors[role],nodes[role]));
+      state.valid = () => (state.twoStep ? (state.role==='username' || state.role==='next' ? ['username','next'] : ['password','submit']) : ['username','password','submit']).every(role=>visible(nodes[role]) && unique(selectors[role],nodes[role]));
       state.draw = () => {
         shadow.replaceChildren();
         for (const [role,node] of Object.entries(nodes)) {
           if (!node.isConnected) continue;
           const r=node.getBoundingClientRect(), box=document.createElement('div');
-          box.style.cssText='position:fixed;box-sizing:border-box;border:3px solid '+({username:'#1688ff',password:'#b76dff',submit:'#26ad67'}[role])+';border-radius:4px;';
+          box.style.cssText='position:fixed;box-sizing:border-box;border:3px solid '+({username:'#1688ff',password:'#b76dff',submit:'#26ad67',next:'#26ad67'}[role])+';border-radius:4px;';
           Object.assign(box.style,{left:r.left+'px',top:r.top+'px',width:r.width+'px',height:r.height+'px'}); shadow.append(box);
         }
       };
@@ -64,14 +64,17 @@ enum WebLoginPickerScript {
       };
       state.choose=choose;
     }
-    const state = window[key]; state.role = role;
+    const state = window[key]; state.role = role; state.twoStep = twoStep;
+    const group = twoStep ? (role === 'username' || role === 'next' ? 'first' : 'second') : 'combined';
+    if (state.group && state.group !== group) { for (const key of Object.keys(state.nodes)) delete state.nodes[key]; for (const key of Object.keys(state.selectors)) delete state.selectors[key]; state.revision++; }
+    state.group = group;
     if (operation === 'pause') window.__sshHubPickerEnabled=false;
     if (operation === 'resume') window.__sshHubPickerEnabled=true;
     state.draw();
     return {selectors:state.selectors, revision:state.revision, valid:state.valid(), error:state.error};
     """#
-    @MainActor static func run(in view: WKWebView, origin: URL, operation: String = "poll", role: String = "username") async throws -> [String: Any] {
-        try await view.callAsyncJavaScript(script, arguments: ["origin": WebLoginForm.originString(origin), "operation": operation, "role": role], in: nil, contentWorld: .defaultClient) as? [String: Any] ?? [:]
+    @MainActor static func run(in view: WKWebView, origin: URL, operation: String = "poll", role: String = "username", twoStep: Bool = false) async throws -> [String: Any] {
+        try await view.callAsyncJavaScript(script, arguments: ["origin": WebLoginForm.originString(origin), "operation": operation, "role": role, "twoStep": twoStep], in: nil, contentWorld: .defaultClient) as? [String: Any] ?? [:]
     }
 }
 
@@ -80,6 +83,9 @@ enum WebLoginPickerScript {
     let origin: URL
     @Published var role = "username"
     @Published var selecting = true
+    @Published var twoStep = false
+    @Published private(set) var passwordStep = false
+    private var firstVerified = false
     @Published private(set) var selectors = WebLoginSelectors()
     @Published private(set) var verified = false
     @Published private(set) var checking = false
@@ -92,7 +98,22 @@ enum WebLoginPickerScript {
         self.web = web; self.origin = origin
         web.onNavigation = { [weak self] in self?.invalidate() }
     }
-    private func invalidate() { generation = UUID(); revision = -1; selectors = WebLoginSelectors(); verified = false; status = "Страница изменилась. Выбери поля заново." }
+    private func invalidate() {
+        generation = UUID(); revision = -1; verified = false
+        if twoStep && passwordStep && firstVerified && WebLoginOrigin(web.view.url) == WebLoginOrigin(origin) {
+            selectors.password = ""; selectors.submit = ""; status = "Выбери поле пароля и кнопку входа на втором шаге."
+        } else if twoStep && passwordStep && firstVerified && web.view.url == nil { status = "Ожидание второго шага…" }
+        else if !twoStep || !passwordStep { selectors = WebLoginSelectors(next: twoStep ? "" : nil); firstVerified = false; status = "Страница изменилась. Выбери поля заново." }
+        else { firstVerified = false; status = "Переход на другой сайт: начни настройку заново." }
+    }
+    func setTwoStep(_ value: Bool) { generation = UUID(); twoStep = value; passwordStep = false; firstVerified = false; role = "username"; selecting = true; selectors = WebLoginSelectors(next: value ? "" : nil); revision = -1; verified = false }
+    func advance() {
+        guard twoStep, firstVerified, verified, !checking else { return }
+        generation = UUID(); passwordStep = true; role = "password"; selecting = false; revision = -1; verified = false
+        status = "Введи логин на странице и нажми «Далее», затем включи режим выбора и укажи пароль и кнопку входа."
+    }
+    var currentComplete: Bool { twoStep ? (passwordStep ? !selectors.password.isEmpty && !selectors.submit.isEmpty && firstVerified : !selectors.username.isEmpty && !(selectors.next ?? "").isEmpty) : selectors.validation == nil }
+    var canApply: Bool { verified && (!twoStep || passwordStep) }
     func start() {
         guard polling == nil, !closed else { return }
         polling = Task { [weak self] in
@@ -107,17 +128,20 @@ enum WebLoginPickerScript {
         guard let selected = state["selectors"] as? [String: String], let number = state["revision"] as? Int else { verified = false; return }
         if revision != number {
             revision = number; verified = false
-            selectors = WebLoginSelectors(username: selected["username"] ?? "", password: selected["password"] ?? "", submit: selected["submit"] ?? "")
-            status = selectors.validation == nil ? "Все элементы выбраны. Нажми «Проверить настройку»." : "Выбери оставшиеся элементы."
+            if twoStep {
+                if passwordStep { selectors.password = selected["password"] ?? ""; selectors.submit = selected["submit"] ?? "" }
+                else { selectors.username = selected["username"] ?? ""; selectors.next = selected["next"] ?? ""; firstVerified = false }
+            } else { selectors = WebLoginSelectors(username: selected["username"] ?? "", password: selected["password"] ?? "", submit: selected["submit"] ?? "") }
+            status = twoStep && passwordStep && !selecting ? "Введи логин на странице и нажми «Далее», затем включи выбор пароля и кнопки входа." : currentComplete ? "Все элементы выбраны. Нажми «Проверить настройку»." : "Выбери оставшиеся элементы."
         }
         if state["valid"] as? Bool != true { verified = false }
         if let error = state["error"] as? String, !error.isEmpty { status = error == "origin" ? "Открой форму на исходном адресе записи." : "Выбери подходящее поле или кнопку входа." }
     }
     private func poll() async {
         guard !checking, !web.view.isLoading else { verified = false; return }
-        guard WebLoginOrigin(web.view.url) == WebLoginOrigin(origin) else { verified = false; status = "Дождись загрузки формы на исходном сайте. После перехода на другой сайт нажми «Загрузить заново»."; return }
+        guard WebLoginOrigin(web.view.url) == WebLoginOrigin(origin) else { verified = false; firstVerified = false; status = "Дождись загрузки формы на исходном сайте. После перехода на другой сайт нажми «Загрузить заново»."; return }
         let token = generation
-        if let state = try? await WebLoginPickerScript.run(in: web.view, origin: origin, operation: selecting ? "resume" : "pause", role: role), token == generation, !closed { update(state) }
+        if let state = try? await WebLoginPickerScript.run(in: web.view, origin: origin, operation: selecting ? "resume" : "pause", role: role, twoStep: twoStep), token == generation, !closed { update(state) }
     }
     func selectRole(_ value: String) {
         role = value; selecting = true
@@ -129,16 +153,17 @@ enum WebLoginPickerScript {
         defer { checking = false }
         let token = generation
         do {
-            let state = try await WebLoginPickerScript.run(in: web.view, origin: origin, role: role)
+            let state = try await WebLoginPickerScript.run(in: web.view, origin: origin, role: role, twoStep: twoStep)
             guard token == generation, !closed else { return nil }; update(state)
             let choice = selectors, number = revision
-            guard choice.validation == nil, state["valid"] as? Bool == true else { status = "Выбери все три видимых элемента заново."; return nil }
-            let result = try await WebLoginForm.run(in: web.view, origin: origin, probe: true, selectors: choice)
-            let after = try await WebLoginPickerScript.run(in: web.view, origin: origin, role: role)
+            guard currentComplete, state["valid"] as? Bool == true else { status = "Выбери все видимые элементы этого шага заново."; return nil }
+            let result = try await WebLoginForm.run(in: web.view, origin: origin, probe: true, selectors: choice, stage: twoStep ? (passwordStep ? "password" : "username") : "combined")
+            let after = try await WebLoginPickerScript.run(in: web.view, origin: origin, role: role, twoStep: twoStep)
             guard !closed, token == generation, !web.view.isLoading, WebLoginOrigin(web.view.url) == WebLoginOrigin(origin), after["revision"] as? Int == number, after["valid"] as? Bool == true, result == "ready" else {
                 status = "Проверка не пройдена: форма изменилась или требует ручного входа. Проверь поля, метод отправки и адрес формы."; return nil
             }
-            verified = true; status = "Настройка проверена. Поля и кнопка относятся к одной форме этого сайта. Пароль не вводился, вход не выполнялся."
+            if twoStep && !passwordStep { firstVerified = true }
+            verified = true; status = "Шаг проверен. Поля и кнопка относятся к одной форме этого сайта. Пароль не вводился, вход не выполнялся."
             return choice
         } catch { status = "Не удалось проверить страницу. Дождись загрузки и выбери поля заново."; return nil }
     }

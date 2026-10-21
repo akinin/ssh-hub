@@ -261,7 +261,7 @@ struct ConnectionTreeView: NSViewRepresentable {
             menu.removeAllItems()
             if let outline { contextItem = outline.item(atRow: outline.clickedRow) as? TreeItem }
             func add(_ title: String, _ action: String) {
-                let symbols = ["connect": "play.circle", "sftp": "folder", "loginNotify": "bell.badge", "external": "arrow.up.forward.square", "website": "macwindow", "browser": "arrow.up.forward.square", "dashboard": "rectangle.grid.2x2", "documentation": "doc.richtext", "attachments": "paperclip", "edit": "pencil", "appearance": "photo", "group": "folder.badge.gearshape", "favorite": "star", "template": "square.stack", "duplicate": "plus.square.on.square", "copy": "doc.on.doc", "export": "square.and.arrow.up", "delete": "trash", "record": "plus", "folder": "folder.badge.plus", "folderLogo": "photo", "subfolder": "folder.badge.plus"]
+                let symbols = ["connect": "play.circle", "sftp": "folder", "loginNotify": "bell.badge", "external": "arrow.up.forward.square", "website": "macwindow", "browser": "arrow.up.forward.square", "dashboard": "rectangle.grid.2x2", "documentation": "doc.richtext", "attachments": "paperclip", "edit": "pencil", "appearance": "photo", "group": "folder.badge.gearshape", "favorite": "star", "template": "square.stack", "duplicate": "plus.square.on.square", "copy": "doc.on.doc", "copyUsername": "person.crop.rectangle", "copyPassword": "key", "export": "square.and.arrow.up", "delete": "trash", "record": "plus", "folder": "folder.badge.plus", "folderLogo": "photo", "subfolder": "folder.badge.plus"]
                 let item = NSMenuItem(title: title, action: #selector(menuAction(_:)), keyEquivalent: "")
                 item.image = NSImage(systemSymbolName: symbols[action] ?? "circle", accessibilityDescription: nil)
                 // Public macOS 27 API: .visible == 1. Keep the stable macOS 26 SDK build compatible with older systems.
@@ -279,6 +279,7 @@ struct ConnectionTreeView: NSViewRepresentable {
                     else if entry.canConnect { add("Подключиться", "connect") }
                     if entry.canSSH { add("Открыть SFTP", "sftp"); add("Во внешнем терминале", "external"); add("Уведомления о входе…", "loginNotify") }
                     add("Панель управления", "dashboard")
+                    menu.addItem(.separator()); add("Копировать логин", "copyUsername"); add("Копировать пароль", "copyPassword")
                     menu.addItem(.separator()); add("Документация", "documentation"); add("Вложения", "attachments"); add("Редактировать…", "edit"); add("Название и логотип…", "appearance"); add("Переместить в папку…", "group")
                     add(store.isFavorite(entry) ? "Убрать из избранного" : "В избранное", "favorite")
                     if entry.canSSH { add("Сохранить как шаблон", "template") }
@@ -314,6 +315,8 @@ struct ConnectionTreeView: NSViewRepresentable {
                 case "template": store.saveTemplate(from: entry)
                 case "duplicate": store.duplicate(entry)
                 case "copy": store.copy(entry.command)
+                case "copyUsername": store.copyCredential(entry, password: false)
+                case "copyPassword": store.copyCredential(entry, password: true)
                 case "export": store.export(entries: [entry])
                 case "keePass": store.keePassTransfer = entry
                 case "delete": store.prepareDelete(entry)

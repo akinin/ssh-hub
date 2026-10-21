@@ -463,6 +463,24 @@ import ConsoleSupport
         NSPasteboard.general.setString(text, forType: .string)
         notice = "Команда скопирована"
     }
+    func copyCredential(_ entry: SSHAlias, password: Bool) {
+        guard !AppAccess.shared.locked, !endingWorkspace else { return }
+        do {
+            let prepared = try SSHPasswordStore.preparedEntry(for: entry, config: config.url)
+            let value = password ? try SSHPasswordStore.password(for: prepared, config: prepared.credentialConfig(fallback: config.url)) : prepared.user
+            guard !AppAccess.shared.locked, !endingWorkspace else { return }
+            guard let value, !value.isEmpty else { notice = password ? "Сохранённого пароля нет" : "Логин не указан"; return }
+            let board = NSPasteboard.general
+            board.clearContents()
+            if password { board.setString("", forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")) }
+            board.setString(value, forType: .string)
+            notice = password ? "Пароль скопирован" : "Логин скопирован"
+            if password {
+                let stamp = board.changeCount
+                DispatchQueue.main.asyncAfter(deadline: .now() + 30) { if board.changeCount == stamp { board.clearContents() } }
+            }
+        } catch { self.error = error.localizedDescription }
+    }
     func connect(_ entry: SSHAlias, newSession: Bool = false) {
         if let kind = entry.recordKind, kind.isSession && kind != .ssh && kind != .serial {
             selected = entry.id
@@ -1070,7 +1088,7 @@ struct AliasDetail: View {
     private var visibleActions: [RecordActionStyle] { RecordAction.layout(store.appearance(entry).actionTiles, global: RecordActionDefaults.decode(globalTiles), entry: entry).filter { !$0.hidden } }
     private var visibleTiles: [RecordActionStyle] { visibleActions.filter { $0.effectivePlacement == .tiles } }
     private var headerActions: [RecordActionStyle] { visibleActions.filter { !$0.isDivider && $0.effectivePlacement == .header && $0.id != RecordAction.keePass.id } }
-    private var keePassBadgeStyle: RecordActionStyle? { visibleActions.first { $0.id == RecordAction.keePass.id && $0.effectivePlacement == .header } }
+    private var badgeActions: [RecordActionStyle] { visibleActions.filter { $0.effectivePlacement == .badges } }
     private var sections: [RecordAction.Section] { RecordAction.sections(visibleTiles) }
     private var primaryAction: String? {
         let preferred: [RecordAction] = entry.recordKind == .website ? [.browser, .inside] : entry.recordKind == .web ? [.inside, .browser] : [.connect]
@@ -1135,6 +1153,7 @@ struct AliasDetail: View {
         case .duplicate: store.duplicate(entry)
         case .export: store.export(entries: [entry])
         case .keePass: store.keePassTransfer = entry
+        case .vpn: store.selectingWireGuard = entry
         case .delete: store.prepareDelete(entry)
         case .inside: store.openWebsite(entry)
         case .browser: store.openWebsiteInBrowser(entry)
@@ -1164,8 +1183,10 @@ struct AliasDetail: View {
             Text((entry.recordKind ?? .ssh).title + (entry.canSSH ? " · \(entry.user) · порт \(entry.port)" : "")).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             HStack(spacing: 6) {
                 RecordFeatureBadges(tags: store.featureTags[entry.favoriteID, default: []])
-                if WireGuardSupport.supports(entry) { RecordWireGuardBadge(entry: entry, workspace: store.wireGuardWorkspace()) { store.selectingWireGuard = entry } }
-                if let style = keePassBadgeStyle { keePassAction(style, header: true) }
+                ForEach(badgeActions) { style in
+                    if style.id == RecordAction.vpn.id { RecordWireGuardBadge(entry: entry, workspace: store.wireGuardWorkspace()) { store.selectingWireGuard = entry } }
+                    else if style.id == RecordAction.keePass.id { keePassAction(style, header: true) }
+                }
             }
         }
     }

@@ -356,6 +356,39 @@ func (r *router) relay(local net.Conn, remote net.Conn, source io.Reader) {
 	local.Close()
 	<-done
 }
+
+// Explicit diagnostic: both DNS and TCP stay inside this router's netstack.
+func (r *router) probe(host string, port int, dnsHost string) map[string]any {
+	if !validHost(host) || port < 1 || port > 65535 || (dnsHost != "" && !validHost(dnsHost)) {
+		return map[string]any{"ok": false, "error": "invalid_target"}
+	}
+	begin := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	dns := "not_requested"
+	query := dnsHost
+	if query == "" {
+		if _, err := netip.ParseAddr(host); err != nil {
+			query = host
+		}
+	}
+	if query != "" {
+		dnsCtx, stop := context.WithTimeout(ctx, 2*time.Second)
+		ips, err := r.network.LookupContextHost(dnsCtx, query)
+		stop()
+		dns = "failed"
+		if err == nil && len(ips) > 0 {
+			dns = "resolved"
+		}
+	}
+	remote, err := r.dial(ctx, host, port)
+	if err == nil {
+		r.forget(remote)
+	}
+	stats, _ := r.stats()
+	return map[string]any{"ok": true, "dns": dns, "tcp": err == nil, "handshake": stats["handshake"], "duration_ms": time.Since(begin).Milliseconds()}
+}
+
 func (r *router) forward(host string, port int) (int, error) {
 	if !validHost(host) || port < 1 || port > 65535 {
 		return 0, errors.New("invalid_target")
@@ -442,11 +475,12 @@ func (r *router) socks(c net.Conn) {
 }
 
 type request struct {
-	Op     string `json:"op"`
-	Config string `json:"config"`
-	Socket string `json:"socket"`
-	Host   string `json:"host"`
-	Port   int    `json:"port"`
+	DNSHost string `json:"dns_host"`
+	Op      string `json:"op"`
+	Config  string `json:"config"`
+	Socket  string `json:"socket"`
+	Host    string `json:"host"`
+	Port    int    `json:"port"`
 }
 
 func reply(v any) { json.NewEncoder(os.Stdout).Encode(v) }
@@ -515,6 +549,10 @@ func run() error {
 		var q request
 		if json.Unmarshal(scanner.Bytes(), &q) != nil {
 			return errors.New("invalid_request")
+		}
+		if q.Op == "probe" {
+			reply(r.probe(q.Host, q.Port, q.DNSHost))
+			continue
 		}
 		if q.Op == "stats" {
 			stats, err := r.stats()
