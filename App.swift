@@ -1040,7 +1040,7 @@ struct MainView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification)) { updateToolbarMode($0) }
         .onReceive(NotificationCenter.default.publisher(for: NSSplitView.didResizeSubviewsNotification)) { _ in updateToolbarMode() }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { updateToolbarMode($0) }
-        .background(WindowTitleBehavior().frame(width: 0, height: 0))
+        .background(WindowTitleBehavior(sidebar: sidebarController, visibility: $columnVisibility).frame(width: 0, height: 0))
         .background(SidebarProbe(controller: sidebarController).frame(width: 0, height: 0))
         .toolbar {
             sidebarToolbar

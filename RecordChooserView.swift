@@ -74,7 +74,9 @@ struct RecordChooserView: View {
                                         }.padding(14).frame(maxWidth: .infinity, minHeight: 85, alignment: .leading)
                                             .background(selection == choice.id ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 9))
                                             .overlay { RoundedRectangle(cornerRadius: 9).stroke(selection == choice.id ? Color.accentColor : Color.clear, lineWidth: 2) }
-                                    }.buttonStyle(.plain).accessibilityLabel(choice.title)
+                                    }.buttonStyle(.plain)
+                                        .simultaneousGesture(TapGesture(count: 2).onEnded { choose(choice.id) })
+                                        .accessibilityLabel(choice.title)
                                 }
                             }
                             if choices.isEmpty { Text("Ничего не найдено").foregroundStyle(.secondary).padding(30) }
@@ -91,8 +93,9 @@ struct RecordChooserView: View {
                 .onChange(of: query) { _, _ in if !choices.contains(where: { $0.id == selection }) { selection = choices.first?.id ?? "" } }
         }
     }
-    private func choose() {
-        guard let choice = choices.first(where: { $0.id == selection }) else { return }
+    private func choose(_ selectedID: String? = nil) {
+        guard let choice = choices.first(where: { $0.id == (selectedID ?? selection) }) else { return }
+        selection = choice.id
         if let kind = choice.kind { self.kind = kind }
         else {
             dismiss()

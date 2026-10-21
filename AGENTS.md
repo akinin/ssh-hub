@@ -4,6 +4,11 @@
 
 Нативное приложение для macOS 14+ на Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
 
+## Изменения 3.12.2 (сборка 62)
+
+- RecordChooserView double-click activates the exact clicked choice through the existing choose route; single-click, Continue and Enter remain. No connection starts from the chooser. Folder/tunnel use their existing routes.
+- WindowTitleBehavior removes only fullSizeContentView in native fullscreen to place both columns below the window-wide toolbar, restoring the original bit/frame on exit. No appearance/material/background/delegate changes. Window-scoped observers and generation guards preserve visible/hidden sidebar state; SidebarController temporarily disables only canCollapseFromWindowResize and restores it after transition/cleanup, including late binding/replaced items. Native fixture and owned QA app cover visible/hidden exits and manual toggle.
+
 ## Изменения 3.12.1 (сборка 61)
 
 - Explicit manual web selectors can target a default-GET JS submit form: probe remains secret-free; fill dispatches a cancelable SubmitEvent to the selected same-origin form only, never native GET or fallback. Handled event returns submitted, unhandled returns filled. Final DOM/type/association/origin/method and enabled checks remain. Disabled submit controls can be selected by pointerdown and validated before fill; reactive enablement rechecked after input/change. Owned WebKit loopback fixture covers selection, no setup credentials, JS POST once, no GET query leakage, unhandled GET and prior auth guards.
