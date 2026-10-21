@@ -20,6 +20,7 @@ import AppKit
     private var generation = UUID()
     private var scope = ""
     private var history: NucleiHistory?
+    private var commonHistory: SecurityCheckHistory?
     private var historyError: String?
     var busy: Bool { running || updating || pending }
     var pending: Bool { runner?.pending == true || operation != nil }
@@ -35,14 +36,14 @@ import AppKit
     func bind(config: URL, profile: UUID, selected: String) {
         let key = config.standardizedFileURL.path + "\0" + profile.uuidString
         if scope != key {
-            cancel(clear: true); scope = key; history = NucleiHistory(config: config, profile: profile)
+            cancel(clear: true); scope = key; history = NucleiHistory(config: config, profile: profile); commonHistory = SecurityCheckHistory(config: config, profile: profile)
             do { reports = try history!.load().reversed(); historyError = nil } catch { historyError = error.localizedDescription; self.error = historyError }
             entryID = selected
         } else if entryID.isEmpty { entryID = selected }
     }
     func cancel(clear: Bool = false) {
         runner?.cancel(); operation?.cancel()
-        if clear { generation = UUID(); timer?.invalidate(); timer = nil; reports = []; findings = []; reportID = nil; history = nil; historyError = nil; scope = ""; entryID = ""; running = false; updating = false; status = "Выбери запись и запусти проверку вручную." }
+        if clear { generation = UUID(); timer?.invalidate(); timer = nil; reports = []; findings = []; reportID = nil; history = nil; commonHistory = nil; historyError = nil; scope = ""; entryID = ""; running = false; updating = false; status = "Выбери запись и запусти проверку вручную." }
     }
     func chooseExecutable() {
         let panel = NSOpenPanel(); panel.title = "Выбрать Nuclei"; panel.canChooseDirectories = false
@@ -88,7 +89,7 @@ import AppKit
         guard historyError == nil else { error = historyError; return }
         do {
             let config = try prepare(), job = NucleiRunner(), token = UUID(), directory = directory, settings = settings
-            let repository = history
+            let repository = history, common = commonHistory
             generation = token; runner = job; running = true; reportID = nil; findings = []; seconds = 0; error = nil; status = "Проверка выполняется…"
             watch(job, token: token, authorized: authorized)
             let args = settings.arguments(target: target.address, web: target.web, templates: templates, config: config)
@@ -113,7 +114,7 @@ import AppKit
                 let report = NucleiReport(target: target, settings: settings, status: result.0, seconds: seconds, findings: findings, message: result.1)
                 status = report.status.title; reports.insert(report, at: 0); reports = Array(reports.prefix(50)); reportID = report.id
                 if result.0 == .failed { error = result.1 }
-                do { try repository?.append(report) } catch { self.error = "Результат доступен для экспорта, но история не сохранена: " + error.localizedDescription }
+                do { try repository?.append(report); try common?.append(.nuclei(report)) } catch { self.error = "Результат доступен для экспорта, но история не сохранена: " + error.localizedDescription }
             }
         } catch { self.error = error.localizedDescription }
     }
@@ -199,6 +200,7 @@ struct NucleiView: View {
                     Text(model.status).font(.caption).lineLimit(2)
                 }
                 Spacer()
+                Button("Общая история", systemImage: "clock") { store.openScanner(entry, tool: .checks) }.labelStyle(.iconOnly).help("Общая история проверок записи").disabled(entry == nil)
                 Menu("Экспорт") { ForEach(["json", "csv", "txt"], id: \.self) { format in Button(format.uppercased() + "…") { model.export(format) } } }.disabled(model.report == nil || model.busy)
             }
             if !model.templatesReady && model.executable != nil { Text("Перед первой проверкой нажми «Обновить шаблоны».").font(.caption).foregroundStyle(.secondary) }

@@ -7,8 +7,22 @@ enum NmapProfile: String, Codable, CaseIterable, Identifiable {
 }
 enum NmapScript: String, Codable, CaseIterable, Identifiable {
     case ssh = "ssh-hostkey", http = "http-title", certificate = "ssl-cert", rdp = "rdp-ntlm-info", smb = "smb-protocols"
+    case sshAlgorithms = "ssh2-enum-algos", sshMethods = "ssh-auth-methods", headers = "http-security-headers", methods = "http-methods", server = "http-server-header", robots = "http-robots.txt"
+    case ciphers = "ssl-enum-ciphers", tlsTime = "ssl-date", smbSigning = "smb2-security-mode", smbCapabilities = "smb2-capabilities", smbTime = "smb2-time", smbOS = "smb-os-discovery"
+    case ftp = "ftp-syst", anonymousFTP = "ftp-anon", smtp = "smtp-commands", mysql = "mysql-info", redis = "redis-info", mongodb = "mongodb-info", dns = "dns-recursion", rdpEncryption = "rdp-enum-encryption", vnc = "vnc-info", banner = "banner"
     var id: String { rawValue }
-    var title: String { switch self { case .ssh: return "Ключи SSH"; case .http: return "Заголовок HTTP"; case .certificate: return "Сертификат TLS"; case .rdp: return "Сведения RDP"; case .smb: return "Версии SMB" } }
+    var title: String {
+        switch self {
+        case .ssh: return "Ключи SSH"; case .http: return "Заголовок HTTP"; case .certificate: return "Сертификат TLS"; case .rdp: return "Сведения RDP"; case .smb: return "Версии SMB"
+        case .sshAlgorithms: return "Алгоритмы SSH"; case .sshMethods: return "Методы входа SSH"; case .headers: return "Защитные заголовки"; case .methods: return "Методы HTTP"; case .server: return "HTTP Server"; case .robots: return "robots.txt"
+        case .ciphers: return "Шифры TLS"; case .tlsTime: return "Время TLS"; case .smbSigning: return "Подпись SMB"; case .smbCapabilities: return "Возможности SMB"; case .smbTime: return "Время SMB"; case .smbOS: return "ОС SMB"
+        case .ftp: return "Сведения FTP"; case .anonymousFTP: return "Анонимный FTP"; case .smtp: return "Команды SMTP"; case .mysql: return "Сведения MySQL"; case .redis: return "Сведения Redis"; case .mongodb: return "Сведения MongoDB"; case .dns: return "Рекурсия DNS"; case .rdpEncryption: return "Шифрование RDP"; case .vnc: return "Сведения VNC"; case .banner: return "Баннер сервиса"
+        }
+    }
+    var group: String { switch self { case .ssh, .sshAlgorithms, .sshMethods: return "SSH"; case .http, .headers, .methods, .server, .robots: return "Веб"; case .certificate, .ciphers, .tlsTime: return "TLS"; case .smb, .smbSigning, .smbCapabilities, .smbTime, .smbOS: return "SMB"; default: return "Сервисы" } }
+    var active: Bool { [.ciphers, .sshMethods, .anonymousFTP].contains(self) }
+    var detail: String { switch self { case .ciphers: return "Много TLS-соединений; intrusive по классификации Nmap."; case .sshMethods: return "Начинает попытку аутентификации; может попасть в журнал SSH."; case .anonymousFTP: return "Пробует анонимный вход и чтение списка файлов."; case .methods: return "Проверяет методы без test-all и retest; не включает опасные аргументы."; case .headers: return "Проверяет наличие защитных HTTP-заголовков."; default: return "Сведения выбранного сервиса. Без подбора паролей и эксплуатации." } }
+    static func profile(_ group: String) -> Set<Self> { switch group { case "SSH": return [.ssh, .sshAlgorithms]; case "Веб": return [.http, .headers, .methods, .server]; case "TLS": return [.certificate, .tlsTime]; case "SMB": return [.smb, .smbSigning, .smbCapabilities, .smbTime]; default: return [] } }
 }
 struct NmapSettings: Codable, Equatable {
     var profile: NmapProfile = .quick
@@ -108,23 +122,29 @@ struct NmapHost: Identifiable, Equatable, Codable {
     var address = "", name = "", state = "", reason = "", details = ""
     var id: String { address }
 }
+struct NmapScriptOutput: Codable {
+    var address: String; var port: String; var script: String; var output: String
+}
 struct NmapResult: Codable {
     let ports: [NmapPort]
     let summary: String
     var hosts: [NmapHost] = []
     var xml = ""
-    enum CodingKeys: String, CodingKey { case ports, summary, hosts }
+    var scripts: [NmapScriptOutput]? = nil
+    enum CodingKeys: String, CodingKey { case ports, summary, hosts, scripts }
 }
 final class NmapXML: NSObject, XMLParserDelegate {
     private var host = NmapHost(), port: NmapPort?, inHost = false
     private var hostPorts: [NmapPort] = [], values: [NmapPort] = [], hosts: [NmapHost] = []
+    private var scripts: [NmapScriptOutput] = []
     private var summary = "", finished = false, successful = false, cpe = "", inCPE = false
-    static func parse(_ data: Data) throws -> NmapResult {
+    static func parse(_ data: Data, allowPartial: Bool = false) throws -> NmapResult {
         guard data.count <= 8_000_000, !String(decoding: data, as: UTF8.self).contains("<!ENTITY") else { throw ConfigError.message("Результат Nmap больше 8 МБ или содержит внешние сущности.") }
         let reader = NmapXML(), parser = XMLParser(data: data)
         parser.shouldResolveExternalEntities = false; parser.delegate = reader
-        guard parser.parse(), reader.finished, reader.successful else { throw ConfigError.message("Nmap не вернул полный результат сканирования.") }
-        return NmapResult(ports: reader.values, summary: reader.summary, hosts: reader.hosts, xml: String(decoding: data, as: UTF8.self))
+        let parsed = parser.parse()
+        guard allowPartial || (parsed && reader.finished && reader.successful) else { throw ConfigError.message("Nmap не вернул полный результат сканирования.") }
+        return NmapResult(ports: reader.values, summary: reader.summary, hosts: reader.hosts, xml: String(decoding: data, as: UTF8.self), scripts: reader.scripts)
     }
     func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes a: [String: String]) {
         switch name {
@@ -140,7 +160,9 @@ final class NmapXML: NSObject, XMLParserDelegate {
             let old = port!; port = NmapPort(address: "", port: old.port, proto: old.proto, state: old.state, service: [a["name"], a["product"], a["version"], a["extrainfo"]].compactMap { $0 }.joined(separator: " "), reason: old.reason, details: "Tunnel: " + (a["tunnel"] ?? "—"))
         case "extraports" where inHost: host.details += "\nОстальные порты: \(a["count"] ?? "?") · \(a["state"] ?? "")"
         case "times" where inHost: if let srtt = a["srtt"], let value = Double(srtt), value >= 0 { host.details += String(format: "\nЗадержка: %.2f мс", value / 1000) }
-        case "script": let output = "\n\(a["id"] ?? "NSE"):\n\(a["output"] ?? "")"; if port != nil { port?.details += output } else { host.details += output }
+        case "script":
+            if scripts.count < 1000 { scripts.append(.init(address: host.address, port: port?.port ?? "", script: a["id"] ?? "NSE", output: a["output"] ?? "")) }
+            let output = "\n\(a["id"] ?? "NSE"):\n\(a["output"] ?? "")"; if port != nil { port?.details += output } else { host.details += output }
         case "cpe": inCPE = true; cpe = ""
         case "finished": finished = true; successful = a["exit"] == "success"; summary = a["summary"] ?? "Сканирование завершено"
         default: break
@@ -235,6 +257,11 @@ final class NmapRunner: @unchecked Sendable {
     private let lock = NSLock()
     private var process: Process?
     private var cancelled = false
+    private var expired = false
+    private var lastOutput = Data()
+    var partial: NmapResult? { lock.lock(); let data = lastOutput; lock.unlock(); return data.isEmpty ? nil : try? NmapXML.parse(data, allowPartial: true) }
+    var stopped: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+    var timedOut: Bool { lock.lock(); defer { lock.unlock() }; return expired }
     func cancel() {
         lock.lock(); cancelled = true; let process = process; lock.unlock()
         if let process, process.isRunning { process.terminate() }
@@ -263,7 +290,7 @@ final class NmapRunner: @unchecked Sendable {
         var stopTime: Date?, timedOut = false
         while child.isRunning {
             lock.lock(); let stop = cancelled; lock.unlock()
-            if Date() >= deadline && !timedOut { timedOut = true; cancel() }
+            if Date() >= deadline && !timedOut { timedOut = true; lock.lock(); expired = true; lock.unlock(); cancel() }
             if stop || timedOut {
                 if stopTime == nil { stopTime = Date(); child.terminate() }
                 if Date().timeIntervalSince(stopTime!) > 1, child.isRunning { _ = Darwin.kill(child.processIdentifier, SIGKILL) }
@@ -273,6 +300,7 @@ final class NmapRunner: @unchecked Sendable {
         child.waitUntilExit(); group.wait()
         lock.lock(); process = nil; let stopped = cancelled; lock.unlock()
         let snapshot = buffer.snapshot(), log = String(decoding: snapshot.1, as: UTF8.self)
+        lock.lock(); lastOutput = snapshot.0; lock.unlock()
         if snapshot.2 { throw ConfigError.message("Вывод Nmap превысил 8 МБ. Сузь область сканирования.") }
         if timedOut { throw ConfigError.message("Истёк общий лимит времени сканирования.") }
         if stopped { throw ConfigError.message("Сканирование остановлено.") }

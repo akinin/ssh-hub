@@ -703,10 +703,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         TopologyModel.stopAll()
         KDBXClient.stopAll()
         let tunnels = TunnelManager.shared
-        guard tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || AppDelegate.storeForTermination?.tools.nuclei.pending == true else { return .terminateNow }
+        guard tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || AppDelegate.storeForTermination?.tools.nuclei.pending == true || AppDelegate.storeForTermination?.tools.audits.pending == true || AppDelegate.scannerForTermination?.pending == true else { return .terminateNow }
         tunnels.stopAll()
         UpdateTermination.finishAfterCleanup(sender) {
-            tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || AppDelegate.storeForTermination?.tools.nuclei.pending == true
+            tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || AppDelegate.storeForTermination?.tools.nuclei.pending == true || AppDelegate.storeForTermination?.tools.audits.pending == true || AppDelegate.scannerForTermination?.pending == true
         }
         return .terminateLater
     }
@@ -893,6 +893,9 @@ struct MainView: View {
         case "trash": store.showingTrash = true
         case "network": store.openScanner()
         case "nuclei": store.openScanner(store.current, tool: .nuclei)
+        case "lynis": store.openScanner(store.current, tool: .lynis)
+        case "trivy": store.openScanner(store.current, tool: .trivy)
+        case "checks": store.openScanner(store.current, tool: .checks)
         case "integrations": store.operationsPanel = .integrations
         case "monitoring": store.operationsPanel = .monitoring
         case "maintenance": store.operationsPanel = .maintenance

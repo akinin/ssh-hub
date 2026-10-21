@@ -108,7 +108,7 @@ extension AliasStore {
         }
     }
     func stopOperations(clear: Bool = false) {
-        tools.nuclei.cancel(clear: true)
+        scanner.cancel(clear: true); tools.audits.stop(clear: true); tools.nuclei.cancel(clear: true)
         wireGuard?.suspend()
         keePassTransfer = nil
         AssistantAPI.stopAll(); assistant?.stop(); assistantCommandTask?.cancel(); assistantCommandTask = nil; assistantCommandRunID = nil

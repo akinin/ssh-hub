@@ -29,7 +29,7 @@ struct ActionPalette: View {
             PaletteAction(id: "columns", title: "Две панели рядом", detail: "Рабочая область", icon: "rectangle.split.2x1", run: { store.arrangeWorkspace(.columns) }),
             PaletteAction(id: "rows", title: "Две панели одна под другой", detail: "Рабочая область", icon: "rectangle.split.1x2", run: { store.arrangeWorkspace(.rows) }),
             PaletteAction(id: "single", title: "Одна панель", detail: "Рабочая область", icon: "rectangle", run: { store.arrangeWorkspace(.none) }),
-            PaletteAction(id: "scanner", title: "Инструменты", detail: "Nmap, Nuclei, DNS, TCP, TLS, IP, Ping, HTTP, Wake-on-LAN, iperf3, RDAP, Bonjour, SSH, преобразования", icon: "wrench.and.screwdriver", run: { store.openScanner() })
+            PaletteAction(id: "scanner", title: "Инструменты", detail: "Nmap / NSE, Nuclei, Lynis, Trivy, история проверок, DNS, TCP, TLS, IP, Ping, HTTP, Wake-on-LAN, iperf3, RDAP, Bonjour, SSH, преобразования", icon: "wrench.and.screwdriver", run: { store.openScanner() })
         ]
         for panel in OperationsPanel.allCases { values.append(PaletteAction(id: "operations:" + panel.rawValue, title: panel.title, detail: "Работа · " + store.profileName, icon: panel.icon, run: { store.operationsPanel = panel })) }
         values.append(PaletteAction(id: "assistant", title: "ИИ-помощник", detail: "Анализ выбранного текста по подтверждению", icon: "sparkles", run: { store.presentAssistant() }))

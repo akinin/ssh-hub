@@ -58,10 +58,10 @@ extension AliasStore {
     func keepPage(_ page: EntryPage) { for session in Array(ConsoleStore.shared.sessions) { closeConsole(session) }; pages.filter { $0.id != page.id }.forEach { closePage($0) }; arrangeWorkspace(.none); selectPage(page) }
     func keepConsole(_ session: ConsoleSession) { pages.forEach { closePage($0) }; for other in Array(ConsoleStore.shared.sessions) where other.id != session.id { closeConsole(other) }; arrangeWorkspace(.none); selectConsole(session) }
     func openScanner(_ entry: SSHAlias? = nil, tool: NetworkTool? = nil) {
-        guard tool == .nuclei || entry?.transport?.wireGuardID == nil else { error = "Nmap и локальные сетевые инструменты не поддерживают VPN записи. Для проверки сервера через WireGuard используй «Проверить» или диагностику по SSH."; return }
-        if let entry, !scanner.running, !tools.runner.busy, !tools.nuclei.busy {
-            tools.nuclei.entryID = entry.favoriteID
-            if tool != .nuclei { tools.setEntry(entry); scanner.target = tools.host }
+        guard [.nuclei, .lynis, .trivy, .checks].contains(tool) || entry?.transport?.wireGuardID == nil else { error = "Nmap и локальные сетевые инструменты не поддерживают VPN записи. Для проверки сервера через WireGuard используй «Проверить» или диагностику по SSH."; return }
+        if let entry, !scanner.running, !tools.runner.busy, !tools.nuclei.busy, !tools.audits.pending {
+            tools.nuclei.entryID = entry.favoriteID; tools.audits.entryID = entry.favoriteID
+            if ![.nuclei, .lynis, .trivy, .checks].contains(tool) { tools.setEntry(entry); scanner.target = tools.host; scanner.entryID = entry.favoriteID }
         }
         if let tool { tools.section = tool }
         openPage(nil, section: .scanner)
