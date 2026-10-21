@@ -352,6 +352,11 @@ final class WireGuardRuntime: @unchecked Sendable {
     }
     deinit { for observer in observers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }; runtime.stop(deactivate: true) }
     func suspend() { generation = UUID(); operations = [:]; working = []; runtime.stop(deactivate: true); statistics = [:]; journal = runtime.journal() }
+    func reloadAfterImport() throws {
+        guard authorized(), !busy, working.isEmpty else { throw ConfigError.message("Дождись завершения операции VPN и открой настройки снова.") }
+        let value = try file.load(WireGuardDocument.self, fallback: WireGuardDocument()); try value.validate()
+        document = value; readOnly = false; error = nil; runtime.update(value)
+    }
     func refreshStatistics() async {
         guard !refreshing else { return }; refreshing = true; defer { refreshing = false }
         let before = generation, runtime = runtime

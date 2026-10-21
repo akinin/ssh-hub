@@ -38,32 +38,42 @@ import SwiftTerm
 struct ConsolePreferencesView: View {
     @ObservedObject private var preferences = ConsolePreferences.shared
     var body: some View {
-        VStack(spacing: 14) {
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 12) {
-                GridRow {
-                    Text("Шрифт").frame(width: 90, alignment: .leading)
-                    Picker("Шрифт", selection: $preferences.fontName) {
-                        ForEach(Array(Set(["Menlo", "Monaco", "SFMono-Regular", preferences.fontName])).sorted(), id: \.self) { Text($0).tag($0) }
-                    }.labelsHidden().frame(width: 210)
-                }
-                GridRow {
-                    Text("Размер \(Int(preferences.fontSize))").monospacedDigit()
-                    Slider(value: $preferences.fontSize, in: 8...32, step: 1).frame(width: 210).accessibilityLabel("Размер шрифта")
-                }
-                GridRow {
-                    Text("Текст")
-                    ColorPicker("Цвет текста", selection: Binding(get: { Color(nsColor: ConsolePreferences.color(preferences.foreground)) }, set: { preferences.foreground = ConsolePreferences.hex($0) }), supportsOpacity: false).labelsHidden()
-                }
-                GridRow {
-                    Text("Фон")
-                    ColorPicker("Цвет фона", selection: Binding(get: { Color(nsColor: ConsolePreferences.color(preferences.background)) }, set: { preferences.background = ConsolePreferences.hex($0) }), supportsOpacity: false).labelsHidden()
+        Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 14) {
+            GridRow {
+                Text("Шрифт")
+                Picker("Шрифт", selection: $preferences.fontName) {
+                    ForEach(Array(Set(["Menlo", "Monaco", "SFMono-Regular", preferences.fontName])).sorted(), id: \.self) { Text($0).tag($0) }
+                }.labelsHidden().frame(width: 210, alignment: .leading)
+            }
+            GridRow {
+                Text("Размер \(Int(preferences.fontSize))").monospacedDigit()
+                Slider(value: $preferences.fontSize, in: 8...32, step: 1)
+                    .labelsHidden().frame(width: 210).accessibilityLabel("Размер шрифта")
+            }
+            GridRow {
+                Text("Текст")
+                ColorPicker("Цвет текста", selection: Binding(get: { Color(nsColor: ConsolePreferences.color(preferences.foreground)) }, set: { preferences.foreground = ConsolePreferences.hex($0) }), supportsOpacity: false)
+                    .labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
+            }
+            GridRow {
+                Text("Фон")
+                ColorPicker("Цвет фона", selection: Binding(get: { Color(nsColor: ConsolePreferences.color(preferences.background)) }, set: { preferences.background = ConsolePreferences.hex($0) }), supportsOpacity: false)
+                    .labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
+            }
+            GridRow {
+                Text("Схема")
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) { schemes }
+                    VStack(alignment: .leading, spacing: 8) { schemes }
                 }
             }
-            HStack {
-                Button("Тёмная") { preferences.foreground = "E0E6ED"; preferences.background = "0E1115" }
-                Button("Светлая") { preferences.foreground = "20252A"; preferences.background = "FAFAFA" }
-                Button("Зелёная") { preferences.foreground = "83E48C"; preferences.background = "08120D" }
-            }
-        }.fixedSize().padding(18)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 8)
+    }
+    @ViewBuilder private var schemes: some View {
+        Button("Тёмная") { preferences.foreground = "E0E6ED"; preferences.background = "0E1115" }
+        Button("Светлая") { preferences.foreground = "20252A"; preferences.background = "FAFAFA" }
+        Button("Зелёная") { preferences.foreground = "83E48C"; preferences.background = "08120D" }
     }
 }

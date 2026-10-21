@@ -76,9 +76,7 @@ struct TopologyTrafficPoint { let date: Date; let rx: Double; let tx: Double }
     var vendorChoices: [String] { Array(Set(document.nodes.map { $0.clientInfo.vendor }).subtracting([""])).sorted() }
     init(profileID: UUID, config: URL, repository: TopologyRepository? = nil, mapID: UUID? = nil) {
         self.profileID = profileID; self.mapID = mapID ?? profileID; self.config = config; self.repository = repository ?? TopologyRepository(config:config)
-        let identity = config.standardizedFileURL.path + "\n" + profileID.uuidString + (self.mapID == profileID ? "" : "\nmap:" + self.mapID.uuidString)
-        let digest = Array(SHA256.hash(data: Data(identity.utf8)).prefix(16))
-        credentialProfileID = UUID(uuid:(digest[0],digest[1],digest[2],digest[3],digest[4],digest[5],digest[6],digest[7],digest[8],digest[9],digest[10],digest[11],digest[12],digest[13],digest[14],digest[15]))
+        credentialProfileID = TopologyCredentialScope.id(config: config, profile: profileID, map: self.mapID)
         document = TopologyDocument(profileID: profileID, id: self.mapID); reload(); Self.models.add(self)
     }
     func reload() {

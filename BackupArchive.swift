@@ -42,6 +42,8 @@ struct HubBackup: Codable {
     var operations: [BackupOperations]? = nil
     var privateKeys: [BackupPrivateKey]? = nil
     var credentialSecrets: [BackupCredentialSecret]? = nil
+    var wireGuard: [BackupWireGuard]? = nil
+    var apiSecrets: [BackupAPISecret]? = nil
     static let maximumBytes = 350_000_000
     func validate() throws {
         try BackupOperations.validate(operations ?? [], recordIDs: Set(records.map(\.id)), profileIDs: Set((profiles ?? []).map(\.id)))
@@ -70,10 +72,19 @@ struct HubBackup: Codable {
             let valid = Set(profiles.map(\.id))
             guard records.allSatisfy({ Set($0.profileIDs ?? []).isSubset(of: valid) }) else { throw ConfigError.message("Неизвестный профиль записи в архиве.") }
         }
-        guard (1...2).contains(version), records.count <= 1000, Set(records.map(\.id)).count == records.count,
+        guard (1...3).contains(version), records.count <= 1000, Set(records.map(\.id)).count == records.count,
               folders.count <= 1000, folders.allSatisfy(ConnectionTree.validPath),
               folderAppearances.count <= 1000, folderAppearances.allSatisfy({ ConnectionTree.validPath($0.key) && $0.value.validation == nil }),
               templates.count <= 100, Set(templates.map(\.id)).count == templates.count, templates.allSatisfy({ $0.validation == nil }) else { throw ConfigError.message("Архив имеет неподдерживаемую версию или некорректный список записей.") }
+        let vpn = wireGuard ?? [], api = apiSecrets ?? []
+        guard vpn.count <= 32, Set(vpn.map { $0.profile.id }).count == vpn.count, vpn.allSatisfy(\.valid) else { throw ConfigError.message("Некорректные конфигурации WireGuard в архиве.") }
+        try WireGuardDocument(profiles: vpn.map(\.profile)).validate()
+        guard api.count <= 60_000, Set(api.map(\.reference)).count == api.count else { throw ConfigError.message("Некорректный список API-ключей архива.") }
+        for secret in api {
+            guard !secret.value.isEmpty, secret.value.utf8.count <= 16384 else { throw ConfigError.message("Некорректный размер API-ключа архива.") }
+            try secret.reference.binding(operations: operations ?? [], maps: topologies ?? []).validate(secret.value)
+        }
+        if version < 3, !vpn.isEmpty || !api.isEmpty { throw ConfigError.message("VPN и API-ключи требуют архив версии 3.") }
         let keys = privateKeys ?? [], secrets = credentialSecrets ?? []
         guard keys.count <= 1000, Set(keys.map(\.id)).count == keys.count, Set(keys.map(\.path)).count == keys.count, keys.allSatisfy(\.valid), keys.reduce(0, { $0 + $1.data.count }) <= 32_000_000 else { throw ConfigError.message("Некорректные SSH-ключи в архиве (до 32 МБ).") }
         guard secrets.count <= 10_000, Set(secrets.map { $0.profileID.uuidString + $0.presetID.uuidString }).count == secrets.count,

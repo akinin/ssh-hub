@@ -860,32 +860,21 @@ struct MainView: View {
         }.buttonStyle(.plain).help(help).accessibilityLabel(title)
     }
     private var toolsMenuActions: [ToolbarMenuAction] {
-        var items: [ToolbarMenuAction] = [
-            .init(title: "Профили…", symbol: "person.crop.rectangle.stack", action: { store.showingProfiles = true }),
+        [
             .init(title: "Библиотека команд…", symbol: "books.vertical", action: { store.showingCommandLibrary = true }),
             .init(title: "Корзина записей…", symbol: "trash", action: { store.showingTrash = true }),
-            .init(title: "Резервное копирование…", symbol: "externaldrive", action: { store.showingBackup = true }),
-            .init(title: "Шаблоны записей…", symbol: "square.stack", action: { store.showingTemplates = true }),
-            .init(title: "Статус доступности…", symbol: "waveform.path.ecg", action: { store.showingAvailability = true }),
             .divider,
             .init(title: "Сетевые инструменты…", symbol: "wrench.and.screwdriver", action: { store.openScanner() }),
             .init(title: "Сетевые карты…", symbol: "point.3.connected.trianglepath.dotted", action: { store.openTopology() }),
-            .init(title: "Уведомления о входе…", symbol: "bell.badge", enabled: store.current?.canSSH == true, action: { store.showLoginNotifications() })
-        ]
-        items.append(.divider)
-        items += OperationsPanel.allCases.filter { $0 != .search }.map { panel in ToolbarMenuAction(title: panel.title + "…", symbol: panel.icon, action: { store.operationsPanel = panel }) }
-        items.append(.init(title: "ИИ-помощник…", symbol: "sparkles", action: { store.presentAssistant() }))
-        items += [
+            .init(title: "Сценарии обслуживания…", symbol: "list.bullet.clipboard", action: { store.operationsPanel = .maintenance }),
             .divider,
             .init(title: "Создать SSH-ключ…", symbol: "key.fill", action: { store.generatingKey = true }),
             .init(title: "SSH-ключи…", symbol: "key.horizontal", action: { store.showingKeys = true }),
             .init(title: "История подключений…", symbol: "clock.arrow.circlepath", action: { store.showingHistory = true }),
             .init(title: "SSH-туннели…", symbol: "arrow.left.arrow.right", action: { store.showingTunnels = true }),
             .divider,
-            .init(title: "Импорт записей…", symbol: "square.and.arrow.down", action: { store.chooseImport() }),
-            .init(title: "Экспорт записей…", symbol: "square.and.arrow.up", enabled: !store.aliases.isEmpty, action: { store.export(entries: store.ordered) })
+            .init(title: "Настройки…", symbol: "gearshape", action: { store.showingSettings = true })
         ]
-        return items
     }
     private var filterTitle: String {
         switch store.groupFilter {
@@ -1197,7 +1186,6 @@ struct AliasDetail: View {
                 }
             }
             HStack(spacing: 6) {
-                RecordFeatureBadges(tags: store.featureTags[entry.favoriteID, default: []])
                 ForEach(badgeActions) { style in
                     if style.id == RecordAction.vpn.id { RecordWireGuardBadge(entry: entry, workspace: store.wireGuardWorkspace()) { store.selectingWireGuard = entry } }
                     else if style.id == RecordAction.keePass.id { keePassAction(style, header: true) }

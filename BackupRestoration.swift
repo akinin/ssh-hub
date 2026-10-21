@@ -82,9 +82,28 @@ enum BackupRestoration {
                         inventory: InventoryRepository? = nil, winbox: WinboxRepository? = nil,
                         licenses: RecordLicenseRepository? = nil, topology: TopologyRepository? = nil, topologyProfileMap: [UUID: UUID] = [:],
                         installPassword: ((String, SSHAlias) throws -> (() throws -> Void))? = nil,
-                        installSharedPassword: ((String, UUID, UUID) throws -> (() throws -> Void))? = nil) throws -> [(BackupRecord, SSHAlias)] {
+                        installSharedPassword: ((String, UUID, UUID) throws -> (() throws -> Void))? = nil,
+                        wireGuardFile: HubFeatureFile? = nil,
+                        validateWireGuard: ((BackupWireGuard) throws -> Void)? = nil,
+                        installWireGuard: ((BackupWireGuard, WireGuardProfile) throws -> (() throws -> Void))? = nil,
+                        installAPISecret: ((String, BackupAPIBinding) throws -> (() throws -> Void))? = nil) throws -> [(BackupRecord, SSHAlias)] {
         try backup.validate()
         var backup = backup
+        let materialRoot = documents.root.deletingLastPathComponent()
+        let vpnFile = wireGuardFile ?? HubFeatureFile(feature: "WireGuard", config: localRepository.config, profile: UUID(uuidString: "00000000-0000-0000-0000-000000000000")!, root: materialRoot)
+        let vpnValues = backup.wireGuard ?? []
+        let vpnBefore = try vpnValues.isEmpty ? WireGuardDocument() : vpnFile.load(WireGuardDocument.self, fallback: WireGuardDocument())
+        let vpnPlan = try BackupWireGuardPlan(vpnValues, existing: vpnBefore)
+        let vpnExisted = FileManager.default.fileExists(atPath: vpnFile.url.path)
+        guard vpnValues.isEmpty || (validateWireGuard != nil && installWireGuard != nil), (backup.apiSecrets ?? []).isEmpty || installAPISecret != nil else { throw ConfigError.message("Недоступно защищённое хранилище VPN или API-ключей.") }
+        for source in vpnValues { try validateWireGuard?(source) }
+        var vpnIDs = vpnPlan.mapping
+        if backup.version >= 3 {
+            for id in backup.records.compactMap({ $0.record.transport?.wireGuardID }) where vpnIDs[id] == nil { vpnIDs[id] = UUID() }
+            for index in backup.records.indices { if let id = backup.records[index].record.transport?.wireGuardID { backup.records[index].record.transport?.wireGuardID = vpnIDs[id] } }
+        }
+        var vpnPublished = false, vpnMayUndo = true
+        var restoredMaps: [UUID: TopologyDocument] = [:]
         let keyRoot = documents.root.deletingLastPathComponent().appendingPathComponent("SSHKeys")
         let keyFolders = Dictionary(uniqueKeysWithValues: (backup.privateKeys ?? []).map { ($0.path, keyRoot.appendingPathComponent(UUID().uuidString)) })
         let keyPaths = keyFolders.mapValues { $0.appendingPathComponent("identity").path }
@@ -221,6 +240,7 @@ enum BackupRestoration {
                     if let id = copy.nodes[index].sourceID, id.hasPrefix("record:") || id.hasPrefix("ssh:") { copy.nodes[index].sourceID = nil }
                     copy.nodes[index].sourceAliases.removeAll { $0.hasPrefix("record:") || $0.hasPrefix("ssh:") }
                 }
+                restoredMaps[map.id] = copy
                 try topology.write(copy, overwrite: false)
                 installed.append(topology.url(for: copy.id))
             }
@@ -234,9 +254,34 @@ enum BackupRestoration {
                 guard let installSharedPassword, let profile = topologyProfileMap[value.profileID], let preset = credentialIDs[value.profileID]?[value.presetID] else { throw ConfigError.message("Некорректное назначение учётных данных при восстановлении.") }
                 secretRollback.append(try installSharedPassword(value.password, profile, preset))
             }
+            for (source, profile) in vpnPlan.installs {
+                guard let installWireGuard else { throw ConfigError.message("Недоступно хранилище WireGuard.") }
+                let undo = try installWireGuard(source, profile)
+                secretRollback.append { if vpnMayUndo { try undo() } }
+            }
+            var apiAccounts: [String: String] = [:]
+            for source in backup.apiSecrets ?? [] {
+                guard let binding = try source.reference.restoredBinding(backup: backup, profileMap: topologyProfileMap, maps: restoredMaps, files: operationFiles, config: localRepository.config, root: materialRoot) else { continue }
+                let identity = try BackupAPIKeychain.identity(binding, config: localRepository.config)
+                if let existing = apiAccounts[identity] {
+                    guard existing == source.value else { throw ConfigError.message("Конфликт API-ключей одного подключения в архиве.") }; continue
+                }
+                guard let installAPISecret else { throw ConfigError.message("Недоступно хранилище API-ключей.") }
+                secretRollback.append(try installAPISecret(source.value, binding)); apiAccounts[identity] = source.value
+            }
+            if !vpnValues.isEmpty {
+                guard try vpnFile.load(WireGuardDocument.self, fallback: WireGuardDocument()) == vpnPlan.before else { throw ConfigError.message("VPN-профили изменились во время восстановления.") }
+                try vpnFile.write(vpnPlan.after); vpnPublished = true
+            }
             try localRepository.write(after, expected: before)
         } catch {
             var rollbackFailed = false
+            if vpnPublished {
+                do {
+                    guard try vpnFile.load(WireGuardDocument.self, fallback: WireGuardDocument()) == vpnPlan.after else { vpnMayUndo = false; throw ConfigError.message("VPN-профили изменились после импорта.") }
+                    if vpnExisted { try vpnFile.write(vpnPlan.before) } else { try FileManager.default.removeItem(at: vpnFile.url) }
+                } catch { rollbackFailed = true; vpnMayUndo = false }
+            }
             for undo in secretRollback.reversed() { do { try undo() } catch { rollbackFailed = true } }
             for url in installed { try? FileManager.default.removeItem(at: url) }
             try? writeTemplates(oldTemplates)

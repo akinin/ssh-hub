@@ -59,14 +59,15 @@ struct BackupOperations: Codable {
                 if let exported = backupKey(key, exportIDs: exportIDs) { monitoring.sshRecordKey = exported }
                 else { monitoring.endpoint = ""; monitoring.sshRecordKey = nil; monitoring.remotePort = nil; monitoring.instanceID = nil }
             }
-            var assistant = try HubFeatureFile(feature: "Assistant", config: config, profile: profile, root: base).load(AssistantSettings.self, fallback: .init()); try assistant.validate(); assistant.enabled = false
+            let assistantFile = HubFeatureFile(feature: "Assistant", config: config, profile: profile, root: base)
+            var assistant = try assistantFile.load(AssistantSettings.self, fallback: .init()); try assistant.validate(); assistant.enabled = false
             var chats = try HubFeatureFile(feature: "AssistantChats", config: config, profile: profile, root: base).load([AssistantChatDocument].self, fallback: [])
             try AssistantChatDocument.validate(chats)
             for index in chats.indices { chats[index].recordKey = chats[index].recordKey.flatMap { backupKey($0, exportIDs: exportIDs) } }
             let value = Self(profileID: profile, search: search.tags.isEmpty && search.folders.isEmpty ? nil : search, workflows: workflows.isEmpty ? nil : workflows,
                 credentials: credentials.presets.isEmpty && credentials.recordKeys.isEmpty && (credentials.kdbxDatabases ?? []).isEmpty && credentials.requiresAuthentication ? nil : credentials,
                 integrations: integrations.isEmpty ? nil : integrations, monitoring: monitoring.endpoint.isEmpty ? nil : monitoring,
-                assistant: assistant.model.isEmpty && !(assistant.modelProfiles?.contains { !$0.model.isEmpty } ?? false) ? nil : assistant, chats: chats.isEmpty ? nil : chats)
+                assistant: try exists(assistantFile.url) ? assistant : nil, chats: chats.isEmpty ? nil : chats)
             if value.hasContent { values.append(value) }
         }
         try validate(values, recordIDs: Set(exportIDs.values), profileIDs: Set(profileIDs))

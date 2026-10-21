@@ -167,7 +167,7 @@ enum MonitoringKeyStore {
         let digest = instanceID.map { "installation:" + $0.uuidString.lowercased() } ?? SHA256.hash(data: Data(endpoint.url.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined()
         return scope + ":" + digest
     }
-    private static func query(scope: String, endpoint: MonitoringEndpoint, instanceID: UUID? = nil) -> [String: Any] {
+    static func query(scope: String, endpoint: MonitoringEndpoint, instanceID: UUID? = nil) -> [String: Any] {
         let context = LAContext(); context.interactionNotAllowed = true
         return [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account(scope: scope, endpoint: endpoint, instanceID: instanceID), kSecUseAuthenticationContext as String: context]
     }

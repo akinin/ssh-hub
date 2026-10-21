@@ -160,7 +160,7 @@ enum RecordActionDefaults {
 enum RecordPinnedField: String, CaseIterable, Identifiable {
     case address, kind, username, port, alias, group, jump, keyFile
     var id: String { rawValue }
-    static let defaults: [Self] = [.address, .kind, .username, .port]
+    static let defaults: [Self] = [.address, .port]
     var title: String { switch self {
         case .address: return "Адрес"; case .kind: return "Протокол"; case .username: return "Пользователь"; case .port: return "Порт"
         case .alias: return "Имя записи / SSH-алиас"; case .group: return "Папка"; case .jump: return "SSH-шлюз"; case .keyFile: return "Файл SSH-ключа"

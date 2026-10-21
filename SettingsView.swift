@@ -3,10 +3,10 @@ import AppKit
 import ServiceManagement
 
 private enum AppSettingsSection: String, CaseIterable, Identifiable {
-    case connections, appearance, wireGuard, keePass, workspace, startup, updates, transfer, security
+    case connections, appearance, wireGuard, keePass, workspace, services, startup, updates, transfer, security
     var id: String { rawValue }
-    var title: String { switch self { case .appearance: return "Внешний вид"; case .wireGuard: return "WireGuard"; case .keePass: return "KeePass"; case .security: return "Авторизация"; case .connections: return "Подключения"; case .workspace: return "Рабочая область"; case .startup: return "Запуск"; case .updates: return "Обновления"; case .transfer: return "Перенос данных" } }
-    var icon: String { switch self { case .appearance: return "paintbrush"; case .wireGuard: return "network.badge.shield.half.filled"; case .keePass: return "lock.rectangle.stack"; case .security: return "lock.shield"; case .connections: return "network"; case .workspace: return "rectangle.split.2x1"; case .startup: return "power"; case .updates: return "arrow.triangle.2.circlepath"; case .transfer: return "externaldrive" } }
+    var title: String { switch self { case .services: return "Сервисы"; case .appearance: return "Внешний вид"; case .wireGuard: return "WireGuard"; case .keePass: return "KeePass"; case .security: return "Авторизация"; case .connections: return "Подключения"; case .workspace: return "Рабочая область"; case .startup: return "Запуск"; case .updates: return "Обновления"; case .transfer: return "Перенос данных" } }
+    var icon: String { switch self { case .services: return "square.stack.3d.up"; case .appearance: return "paintbrush"; case .wireGuard: return "network.badge.shield.half.filled"; case .keePass: return "lock.rectangle.stack"; case .security: return "lock.shield"; case .connections: return "network"; case .workspace: return "rectangle.split.2x1"; case .startup: return "power"; case .updates: return "arrow.triangle.2.circlepath"; case .transfer: return "externaldrive" } }
 }
 
 struct AppSettingsView: View {
@@ -30,12 +30,12 @@ struct AppSettingsView: View {
             HubSheetHeader(title: "Настройки", subtitle: "Подключения, рабочая область и авторизация", icon: "gearshape").padding(20)
             Divider()
             HStack(spacing: 0) {
-                VStack(spacing: 5) {
+                ScrollView { VStack(spacing: 5) {
                     ForEach(AppSettingsSection.allCases) { section in
                         HubSidebarItem(title: section.title, icon: section.icon, selected: selectedSection == section) { selectedSection = section; error = nil }
                     }
                     Spacer(minLength: 0)
-                }.padding(10).frame(width: 200).background(.bar)
+                }.padding(10) }.frame(width: 200).background(.bar)
                 Divider()
                 VStack(alignment: .leading, spacing: 0) {
                     Text(selectedSection.title).font(.headline).padding(.horizontal, 22).padding(.top, 20)
@@ -59,6 +59,11 @@ struct AppSettingsView: View {
                                 }
                                 Text("iTerm2 появится в списке, если он установлен.").font(.caption).foregroundStyle(.secondary)
                             }
+                            Section("Учётные данные и проверка") {
+                                Button("Общие учётные данные…", systemImage: "person.badge.key.fill") { open { store.operationsPanel = .credentials } }
+                                Button("Статус доступности…", systemImage: "waveform.path.ecg") { open { store.showingAvailability = true } }
+                                Text("Общие логины и способы авторизации относятся к текущему профилю. Доступность настраивается отдельно для выбранных записей.").font(.caption).foregroundStyle(.secondary)
+                            }
                         case .appearance:
                             Section {
                                 Picker("Цвет выделения записей", selection: $selectionColor) { ForEach(RecordSelectionDefaults.colors, id: \.self) { Text($0 == "system" ? "Системный" : RecordActionStyle.colorTitle($0)).tag($0) } }
@@ -74,8 +79,21 @@ struct AppSettingsView: View {
                                 Text("Шрифт, размер, цвета и цветовые схемы применяются ко всем встроенным консолям. Быстрый доступ из сеанса использует те же настройки.").font(.caption).foregroundStyle(.secondary)
                             }
                             GlobalReminderAppearanceSettings()
+                        case .services:
+                            Section("Текущий профиль: " + store.profileName) {
+                                Button("Интеграции…", systemImage: "square.stack.3d.up") { open { store.operationsPanel = .integrations } }
+                                Button("Мониторинг сервера…", systemImage: "chart.xyaxis.line") { open { store.operationsPanel = .monitoring } }
+                                Button("ИИ-помощник…", systemImage: "sparkles") { open { store.presentAssistant() } }
+                                Text("Подключения к API, параметры коллектора и модели ИИ. Сохранённые настройки относятся к текущему профилю.").font(.caption).foregroundStyle(.secondary)
+                            }
+                            Section("Уведомления о входе") {
+                                Button("Настроить для выбранной записи…", systemImage: "bell.badge") { open { store.showLoginNotifications() } }.disabled(store.current?.canSSH != true)
+                                Text("Выбери SSH-запись в боковой панели. Уведомления устанавливаются отдельно на её сервере.").font(.caption).foregroundStyle(.secondary)
+                            }
                         case .workspace:
                             Section {
+                                Button("Профили…", systemImage: "person.crop.rectangle.stack") { open { store.showingProfiles = true } }
+                                Button("Шаблоны записей…", systemImage: "square.stack") { open { store.showingTemplates = true } }
                                 Toggle("Восстанавливать вкладки, панели и окна", isOn: $restoreWorkspace)
                                 Text("Сохранённые SSH, Serial и SFTP-вкладки подключаются по кнопке.").font(.caption).foregroundStyle(.secondary)
                             }
@@ -128,6 +146,10 @@ struct AppSettingsView: View {
         let vault = store.credentialVault()
         return KDBXVaultsView(vault: vault, workspace: store.kdbx!, embedded: true, profileName: store.profileName)
             .id(vault.repository.scope)
+    }
+    private func open(_ action: @escaping () -> Void) {
+        dismiss()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: action)
     }
     private func refreshLoginStatus() {
         let status = SMAppService.mainApp.status

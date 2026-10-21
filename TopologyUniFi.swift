@@ -70,7 +70,7 @@ struct TopologyUniFiEndpoint {
 // Separate per-profile/controller Keychain namespace; no secret in Codable, logs or backups.
 enum TopologyUniFiKeyStore {
     private static let service = "com.olshaniki.ssh-aliases.networkmap.unifi.v1"
-    private static func query(profileID: UUID, settings: TopologyUniFiSettings) throws -> [String: Any] {
+    static func query(profileID: UUID, settings: TopologyUniFiSettings) throws -> [String: Any] {
         let endpoint = try TopologyUniFiEndpoint(settings: settings)
         let digest = SHA256.hash(data: Data(endpoint.identity.utf8)).map { String(format: "%02x", $0) }.joined()
         let context = LAContext(); context.interactionNotAllowed = true

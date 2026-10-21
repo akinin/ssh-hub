@@ -37,10 +37,10 @@ extension AliasStore {
         let backupFolderAppearances = profiles.profiles.reduce(into: [String: ConnectionAppearance]()) { result, profile in
             for (path, value) in profile.folderAppearances ?? [:] where result[path] == nil { result[path] = value }
         }
-        let backup = HubBackup(version: 2, records: records, folders: backupFolders, folderAppearances: backupFolderAppearances, templates: TemplateLibrary.shared.custom, commandLibrary: CommandLibrary.shared.custom, profiles: profiles.profiles, nmapTemplates: scanner.customTemplates, topologies: maps, operations: try BackupOperations.capture(config: config.url, profileIDs: profiles.profiles.map(\.id), exportIDs: exportIDs))
+        let backup = HubBackup(version: 3, records: records, folders: backupFolders, folderAppearances: backupFolderAppearances, templates: TemplateLibrary.shared.custom, commandLibrary: CommandLibrary.shared.custom, profiles: profiles.profiles, nmapTemplates: scanner.customTemplates, topologies: maps, operations: try BackupOperations.capture(config: config.url, profileIDs: profiles.profiles.map(\.id), exportIDs: exportIDs))
         try backup.validate(); return backup
     }
-    func capturePortableBackup(passwords: Bool, keys: Bool, current: () -> Bool = { true }) async throws -> HubBackup {
+    func capturePortableBackup(passwords: Bool, keys: Bool, vpn: Bool = true, api: Bool = true, current: () -> Bool = { true }) async throws -> HubBackup {
         let revision = AppAccess.shared.authorizationRevision, expectedProfiles = profiles, expectedAppearances = appearances, expectedGroups = groups
         let expected = ordered.map { $0.favoriteID + "|" + $0.options.map { $0.key + "=" + $0.value }.joined(separator: "\n") }
         func check() throws {
@@ -120,6 +120,32 @@ extension AliasStore {
             }
             backup.privateKeys = materials.isEmpty ? nil : materials.values.sorted { $0.path < $1.path }
         }
+        if vpn {
+            let file = HubFeatureFile(feature: "WireGuard", config: config.url, profile: UUID(uuidString: "00000000-0000-0000-0000-000000000000")!)
+            let metadata = try file.load(WireGuardDocument.self, fallback: WireGuardDocument()); try metadata.validate()
+            let storage = WireGuardKeychain(scope: SharedCredentialRepository.digest((Bundle.main.bundleIdentifier ?? "SSHHub") + ":" + config.url.standardizedFileURL.path))
+            var values: [BackupWireGuard] = []
+            for profile in metadata.profiles {
+                try check()
+                let value = BackupWireGuard(profile: profile, configuration: try storage.read(profile.keyID))
+                try value.validateConfiguration(helper: Bundle.main.url(forAuxiliaryExecutable: "SSHWG")); try check(); values.append(value)
+            }
+            guard try file.load(WireGuardDocument.self, fallback: WireGuardDocument()) == metadata else { throw ConfigError.message("VPN-профили изменились. Повтори экспорт.") }
+            backup.wireGuard = values
+        }
+        if api {
+            var values: [BackupAPISecret] = [], cache: [String: String] = [:], absent = Set<String>()
+            for reference in BackupAPIReference.targets(operations: backup.operations ?? [], maps: backup.topologies ?? []) {
+                try check()
+                let binding = try reference.binding(operations: backup.operations ?? [], maps: backup.topologies ?? [])
+                let identity = try BackupAPIKeychain.identity(binding, config: config.url)
+                if absent.contains(identity) { continue }
+                let value = try cache[identity] ?? BackupAPIKeychain.read(binding, config: config.url)
+                try check()
+                if let value { cache[identity] = value; values.append(BackupAPISecret(reference: reference, value: value)) } else { absent.insert(identity) }
+            }
+            backup.apiSecrets = values
+        }
         try check(); try backup.validate(); return backup
     }
     func restoreBackup(_ backup: HubBackup, selected: Set<UUID>) throws {
@@ -143,7 +169,12 @@ extension AliasStore {
                 let scope = SharedCredentialRepository(config: self.config.url, profileID: profile).scope
                 try SharedCredentialKeychain().importPassword(password, scope: scope, id: id)
                 return { try SharedCredentialKeychain().write(nil, scope: scope, id: id, protected: true, context: nil) }
-            })
+            }, validateWireGuard: { try $0.validateConfiguration(helper: Bundle.main.url(forAuxiliaryExecutable: "SSHWG")) },
+            installWireGuard: { source, profile in
+                let storage = WireGuardKeychain(scope: SharedCredentialRepository.digest((Bundle.main.bundleIdentifier ?? "SSHHub") + ":" + self.config.url.standardizedFileURL.path))
+                try storage.write(source.configuration, id: profile.keyID); return { try storage.remove(profile.keyID) }
+            }, installAPISecret: { value, binding in try BackupAPIKeychain.install(value, binding: binding, config: self.config.url) })
+        do { try wireGuard?.reloadAfterImport() } catch { self.error = "Архив восстановлен. Открой настройки WireGuard заново: " + error.localizedDescription }
         reload(); scanner.reloadTemplates()
         for (value, entry) in metadata {
             let assigned = Set((value.profileIDs ?? []).compactMap { profileMap[$0] })
@@ -166,6 +197,8 @@ struct BackupView: View {
     @State private var busy = false
     @State private var includePasswords = true
     @State private var includeKeys = true
+    @State private var includeVPN = true
+    @State private var includeAPI = true
     @State private var operation = UUID()
     @State private var error: String?
     @State private var backup: HubBackup?
@@ -175,11 +208,13 @@ struct BackupView: View {
         VStack(alignment: .leading, spacing: 16) {
             Label("Резервное копирование", systemImage: "externaldrive.badge.timemachine").font(.title2).bold()
             Text("Единый архив записей, логотипов, команд, папок, шаблонов, документации, вложений, сетевых карт, тегов, сценариев и настроек интеграций профилей. AES-256-GCM; ключ из пароля — PBKDF2-SHA256, 600 000 итераций. Пароль архива нигде не сохраняется.").font(.callout).foregroundStyle(.secondary)
-            Text("Пароли сохранятся в Связку ключей нового Mac, SSH-ключи — в приватную папку приложения. Используемые данные KeePass переносятся копиями. API-ключи интеграций, конфигурации VPN и аппаратные ключи переносятся отдельно. Материалы — до 256 МБ.").font(.caption).foregroundStyle(.secondary)
+            Text("Пароли сохранятся в Связку ключей нового Mac, SSH-ключи — в приватную папку приложения. Используемые данные KeePass переносятся копиями. Конфигурации WireGuard и API-ключи переносятся вместе с привязками. После восстановления подключения запускаются вручную. Аппаратные и агентские SSH-ключи переносятся отдельно. Материалы — до 256 МБ.").font(.caption).foregroundStyle(.secondary)
             PasswordEntryView(prompt: "Пароль архива (не менее 8 символов)", text: $password, onGenerated: { confirmation = $0 }).textFieldStyle(.roundedBorder)
             if backup == nil {
                 Toggle("Включить пароли записей и общие учётные данные", isOn: $includePasswords).disabled(busy)
                 Toggle("Включить файлы приватных SSH-ключей", isOn: $includeKeys).disabled(busy)
+                Toggle("Включить конфигурации WireGuard", isOn: $includeVPN).disabled(busy)
+                Toggle("Включить API-ключи и токены сервисов", isOn: $includeAPI).disabled(busy)
                 PasswordEntryView(prompt: "Повтори пароль для создания архива", text: $confirmation, showsGenerator: false).textFieldStyle(.roundedBorder)
                 HStack {
                     Button("Создать архив…") { export() }.disabled(busy || password.count < 8 || password != confirmation)
@@ -206,9 +241,9 @@ struct BackupView: View {
             if busy { ProgressView("Обработка зашифрованного архива…") }
             if let error { Text(error).foregroundStyle(.red).font(.caption).textSelection(.enabled) }
             if let success { Label(success, systemImage: "checkmark.circle").foregroundStyle(.green) }
-            if let backup { Text("SSH-ключей: \((backup.privateKeys ?? []).count) · общих паролей: \((backup.credentialSecrets ?? []).count)").font(.caption).foregroundStyle(.secondary) }
+            if let backup { Text("SSH-ключей: \((backup.privateKeys ?? []).count) · общих паролей: \((backup.credentialSecrets ?? []).count) · VPN: \((backup.wireGuard ?? []).count) · API: \((backup.apiSecrets ?? []).count)").font(.caption).foregroundStyle(.secondary) }
             HStack { Spacer(); Button("Готово") { password = ""; confirmation = ""; dismiss() }.keyboardShortcut(.cancelAction).disabled(busy) }
-        }.padding(24).frame(width: 700, height: 690).interactiveDismissDisabled(busy).dismissOnOutsideClick(enabled: !busy)
+        }.padding(24).frame(width: 700, height: 720).interactiveDismissDisabled(busy).dismissOnOutsideClick(enabled: !busy)
             .onReceive(AppAccess.shared.$locked) { locked in if locked { operation = UUID(); backup = nil; password = ""; confirmation = ""; busy = false } }
             .onDisappear { operation = UUID(); backup = nil; password = ""; confirmation = "" }
     }
@@ -220,7 +255,7 @@ struct BackupView: View {
         let secret = password, revision = AppAccess.shared.authorizationRevision
         Task {
             do {
-                let value = try await store.capturePortableBackup(passwords: includePasswords, keys: includeKeys, current: { stamp == operation })
+                let value = try await store.capturePortableBackup(passwords: includePasswords, keys: includeKeys, vpn: includeVPN, api: includeAPI, current: { stamp == operation })
                 guard stamp == operation, !AppAccess.shared.locked, revision == AppAccess.shared.authorizationRevision else { return }
                 let encrypted = try await Task.detached(priority: .userInitiated) { try BackupEncryption.seal(value, password: secret) }.value
                 guard stamp == operation, !AppAccess.shared.locked, revision == AppAccess.shared.authorizationRevision else { return }

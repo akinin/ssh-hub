@@ -180,7 +180,7 @@ enum AssistantRedaction {
     }
 }
 enum AssistantKeychain {
-    private static func query(_ account: String) -> [String: Any] { [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.olshaniki.sshhub.assistant.v1", kSecAttrAccount as String: account] }
+    static func query(_ account: String) -> [String: Any] { [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.olshaniki.sshhub.assistant.v1", kSecAttrAccount as String: account] }
     static func read(_ account: String) throws -> String? {
         var q = query(account); q[kSecReturnData as String] = true; var result: CFTypeRef?
         let status = SecItemCopyMatching(q as CFDictionary, &result)

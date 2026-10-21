@@ -67,7 +67,7 @@ struct TopologyRouterEndpoint {
 
 enum TopologyRouterKeyStore {
     private static let service = "com.olshaniki.ssh-aliases.networkmap.router.v1"
-    private static func query(profileID: UUID, settings: TopologyRouterSettings) throws -> [String: Any] {
+    static func query(profileID: UUID, settings: TopologyRouterSettings) throws -> [String: Any] {
         let endpoint = try TopologyRouterEndpoint(settings: settings)
         let digest = SHA256.hash(data: Data((endpoint.identity + ":" + Data(settings.username.utf8).base64EncodedString()).utf8)).map { String(format: "%02x", $0) }.joined()
         let context = LAContext(); context.interactionNotAllowed = true

@@ -204,7 +204,7 @@ enum InfrastructureKeyStore {
         if connection.provider == .mikrotik { return legacy + "\n" + (connection.username ?? "") }
         return legacy
     }
-    private static func query(configURL: URL, profileID: UUID, connection: InfrastructureConnection) throws -> [String: Any] {
+    static func query(configURL: URL, profileID: UUID, connection: InfrastructureConnection) throws -> [String: Any] {
         let identity = configURL.standardizedFileURL.path + "\n" + profileID.uuidString + "\n" + (try binding(connection))
         let digest = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
         let context = LAContext(); context.interactionNotAllowed = true
