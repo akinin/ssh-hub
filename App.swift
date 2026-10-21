@@ -1248,6 +1248,7 @@ struct CreateAliasView: View {
     let duplicating: AliasEditSnapshot?
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) var dismiss
+    @StateObject private var licenseFiles = LicenseFileDrafts()
     @State private var credentialEdit = RecordCredentialEdit()
     @State private var draft = AliasDraft()
     @State private var aliasEnabled = true
@@ -1288,7 +1289,7 @@ struct CreateAliasView: View {
     private var validation: String? { credentialEdit.validation(vault: store.credentialVault()) ?? (password.contains(where: { $0.isNewline || $0 == "\0" }) ? "Пароль должен занимать одну строку." : nil) ?? (!AliasTransfer.validGroup(group) ? "Проверь путь папки." : nil) ?? appearance.validation ?? validatedDraft.validation(existing: aliasEnabled ? store.aliasNameReservations().filter { $0.id != editing?.entry.id } : []) }
     private var preview: String { if !aliasEnabled { return "SSH-алиас будет удалён из общего конфига. Запись останется в SSH Hub и будет использовать отдельный конфиг подключения." }; return (editing ?? duplicating).flatMap { try? SSHConfig.editedPreview($0, draft: draft) } ?? draft.block }
     var body: some View {
-        RecordEditorShell(title: duplicating != nil ? "Дублирование записи" : editing == nil ? "Новая запись · SSH" : "Редактирование записи", subtitle: "SSH · остальные параметры и комментарии сохраняются", icon: editing == nil ? "plus.square" : "pencil", sections: [.general, .connection, .key, .availability, .commands, .renewals, .preview], selection: $editorSection) {
+        RecordEditorShell(title: duplicating != nil ? "Дублирование записи" : editing == nil ? "Новая запись · SSH" : "Редактирование записи", subtitle: "SSH · остальные параметры и комментарии сохраняются", icon: editing == nil ? "plus.square" : "pencil", sections: [.general, .connection, .key, .availability, .commands, .licenses, .payments, .preview], selection: $editorSection) {
             switch editorSection {
             case .general:
                 ConnectionAppearanceFields(appearance: $appearance, fallback: draft.name)
@@ -1305,7 +1306,8 @@ struct CreateAliasView: View {
             case .commands:
                 if let entry = editing?.entry { ConsoleCommandsSettingsLink(entry: entry) }
                 else { Text("Сначала сохрани запись, затем назначь команды из общей библиотеки.").foregroundStyle(.secondary) }
-            case .renewals: RecordReminderDraftFields(appearance: $appearance)
+            case .licenses: RecordReminderDraftFields(kind: .license, appearance: $appearance).environmentObject(licenseFiles)
+            case .payments: RecordReminderDraftFields(kind: .payment, appearance: $appearance).environmentObject(licenseFiles)
             case .preview: Text(preview).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
             }
         } actions: {
@@ -1365,6 +1367,7 @@ struct CreateAliasView: View {
         var previousPassword: String?
         var bindingChange: CredentialBindingChange?
         do {
+            try licenseFiles.prepare(appearance.reminders)
             bindingChange = try store.applyCredentialEdit(credentialEdit, target: target.favoriteID)
             var replacement: String?
             var changePassword = !credentialEdit.choice.isExternal && (removePassword || (!keepPassword && canReuseSavedPassword))
@@ -1393,14 +1396,14 @@ struct CreateAliasView: View {
                 if let saved = store.aliases.first(where: { $0.localID == record.id }) { store.availability.apply(entry: saved, enabled: monitorEnabled, interval: monitorInterval, available: store.aliases) }
                 store.notice = nil
                 store.undoCredentialChange = bindingChange
-                dismiss(); return
+                licenseFiles.finish(); dismiss(); return
             }
             if let editing {
                 let change = try store.config.update(editing, draft: draft)
                 store.savedEdit(change, old: editing.entry, name: draft.trimmedName, appearance: appearance, group: group)
                 applyPreferences()
                 store.undoCredentialChange = bindingChange
-                dismiss(); return
+                licenseFiles.finish(); dismiss(); return
             }
             if let duplicating {
                 let change = try store.config.duplicate(duplicating, draft: draft)
@@ -1408,7 +1411,7 @@ struct CreateAliasView: View {
                 if let entry = store.current { store.setAppearance(appearance, for: entry) }
                 applyPreferences()
                 store.undoCredentialChange = bindingChange
-                dismiss(); return
+                licenseFiles.finish(); dismiss(); return
             }
             let backup = try store.config.create(draft, expectedData: expectedData)
             store.clearUndo()
@@ -1417,7 +1420,7 @@ struct CreateAliasView: View {
             if let entry = store.current { store.setAppearance(appearance, for: entry) }
             applyPreferences()
             store.notice = backup == nil ? "Алиас создан. SSH-конфиг сохранён." : "Алиас создан. Резервная копия: \(backup!.lastPathComponent)"
-            dismiss()
+            licenseFiles.finish(); dismiss()
         } catch {
             if credentialChanged { try? SSHPasswordStore.set(previousPassword, for: target, config: store.config.url) }
             var message = error.localizedDescription

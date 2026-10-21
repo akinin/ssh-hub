@@ -24,6 +24,8 @@ import Network
         print("Profile folder archive checks passed: mapped profiles, merging, existing appearance, validation and legacy restore")
     }
     static func main() async throws {
+        try portableArchive()
+        if CommandLine.arguments.contains("--portable-only") { return }
         try profileFolderArchive()
         var profiles = HubProfiles(); profiles.discover(["existing"])
         check(profiles.contains("existing") && !profiles.contains("existing", in: HubProfiles.workID), "existing records migrate to Home only")
@@ -483,5 +485,99 @@ import Network
         let repeatMapping = try BackupRestoration.profileMapping(decoded, profiles: &repeatProfiles, topology: topology, operationsConfig: config, operationsRoot: base)
         check(repeatMapping[profile.id] != target && repeatMapping[profile.id] != HubProfiles.homeID, "repeated archive restore obtains another metadata profile")
         print("Operation archive checks passed: old archives, encrypted metadata, profile conflicts, full record remap and failure after all seven feature files install")
+    }
+}
+
+extension AdvancedTests {
+    static func portableArchive() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("portable-archive-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let keyURL = root.appendingPathComponent("source key")
+        let keygen = Process(); keygen.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen"); keygen.arguments = ["-q", "-t", "ed25519", "-N", "", "-f", keyURL.path]; keygen.standardOutput = FileHandle.nullDevice; keygen.standardError = FileHandle.nullDevice
+        try keygen.run(); keygen.waitUntilExit(); check(keygen.terminationStatus == 0, "owned portable key fixture generated")
+        let key = BackupPrivateKey(path: keyURL.path, data: try PrivateMaterialFile.read(keyURL, limit: 1_048_576))
+        check(key.valid, "OpenSSH private key accepted")
+        let payload = Data("fixture license\nsecond line".utf8)
+        let license = RecordLicenseFile(name: "fixture.license", size: payload.count, digest: PrivateMaterialFile.digest(payload))
+        var reminder = RecordReminder(); reminder.note = "License note\nsecond line"; reminder.licenseFile = license
+        check(reminder.valid, "license note and file metadata accepted")
+        var payment = reminder; payment.id = UUID(); payment.kind = .payment
+        check(!payment.valid, "payment cannot carry a license file")
+        payment.licenseFile = nil; check(payment.valid, "payment note accepted")
+        var record = LocalConnectionRecord(); record.title = "Portable fixture"; record.host = "fixture.example"; record.user = "tester"; record.identity = key.path
+        record.extraOptions = [SSHOption(key: "IdentityFile", value: key.path)]
+        record.rawSSHOptions = ["    IdentityFile " + SSHConfig.configQuote(key.path)]
+        let profile = HubProfile(name: "Portable"), targetProfile = UUID()
+        let preset = SharedCredentialPreset(title: "Portable web", username: "tester@example.invalid", authentication: .password, inheritsRecordAuthentication: true)
+        let credentials = SharedCredentialDocument(presets: [preset], bindings: ["backup:" + record.id.uuidString: preset.id])
+        let value = BackupRecord(record: record, appearance: ConnectionAppearance(reminders: [reminder, payment]), group: "", favorite: false, commands: .init(), document: .init(), attachments: [], profileIDs: [profile.id], licenseFiles: [BackupLicenseFile(metadata: license, data: payload)], password: "owned-record-secret")
+        let backup = HubBackup(version: 2, records: [value], folders: [], folderAppearances: [:], templates: [], profiles: [profile], operations: [BackupOperations(profileID: profile.id, credentials: credentials)], privateKeys: [key], credentialSecrets: [BackupCredentialSecret(profileID: profile.id, presetID: preset.id, password: "owned-shared-secret")])
+        let reference = KDBXReference(databaseID: UUID(), entryID: UUID())
+        var originalKeePass = SharedCredentialDocument(presets: [SharedCredentialPreset(title: "KeePass preset", kdbx: reference)], recordKeePass: ["backup:" + record.id.uuidString: reference])
+        originalKeePass.kdbxDatabases = [KDBXDatabaseLink(id: reference.databaseID, title: "Owned database", bookmark: nil)]
+        var reads = 0
+        let snapshot = try BackupCredentialSnapshot.materialize(originalKeePass, profile: profile.id, records: [value]) { _ in reads += 1; return ("fixture@example.invalid", "owned-kdbx-secret") }
+        check(reads == 1 && snapshot.0.recordKeePass == nil && snapshot.0.kdbxDatabases == nil && snapshot.0.presets.allSatisfy({ $0.kdbx == nil }), "KeePass source read once, replaced by local snapshot without database dependency")
+        check(originalKeePass.recordKeePass != nil && originalKeePass.presets[0].kdbx == reference && snapshot.1.count == 2, "KeePass snapshot leaves source metadata unchanged and preserves named plus direct credentials")
+        rejects("locked KeePass cannot produce incomplete backup") { _ = try BackupCredentialSnapshot.materialize(originalKeePass, profile: profile.id, records: [value]) { _ in throw ConfigError.message("owned locked fixture") } }
+        let encrypted = try BackupEncryption.seal(backup, password: "owned-archive-password")
+        check(encrypted.range(of: Data("owned-record-secret".utf8)) == nil && encrypted.range(of: key.data) == nil && encrypted.range(of: payload) == nil, "encrypted archive never contains cleartext secrets or materials")
+        let restored = try BackupEncryption.open(encrypted, password: "owned-archive-password")
+        check(restored.records[0].password == value.password && restored.privateKeys?.first?.data == key.data && restored.records[0].appearance.reminders?.first?.note == reminder.note, "portable encrypted archive preserves password, SSH key, file and notes")
+        let config = root.appendingPathComponent("config"), destination = root.appendingPathComponent("destination")
+        let repository = LocalConnectionRepository(config: config, root: destination)
+        let docs = DocumentationRepository(root: destination.appendingPathComponent("Documents")), commands = SavedCommandsRepository(root: destination.appendingPathComponent("Commands")), attachments = AttachmentsRepository(root: destination.appendingPathComponent("Attachments"))
+        var secrets: [String: String] = [:], sharedSecrets: [UUID: String] = [:]
+        let result = try BackupRestoration.install(restored, selected: [record.id], localRepository: repository, documents: docs, commands: commands, attachments: attachments, templates: [], writeTemplates: { _ in }, topologyProfileMap: [profile.id: targetProfile], installPassword: { password, entry in
+            secrets[entry.favoriteID] = password; return { secrets.removeValue(forKey: entry.favoriteID) }
+        }, installSharedPassword: { password, target, id in
+            check(target == targetProfile && id != preset.id, "shared secret uses remapped profile and fresh preset ID")
+            sharedSecrets[id] = password; return { sharedSecrets.removeValue(forKey: id) }
+        })
+        let entry = result[0].1, loaded = try repository.load()[0]
+        check(entry.localID != record.id && secrets[entry.favoriteID] == value.password, "password imports into fresh local account without replacing source")
+        check(BackupKeyPaths.values(loaded).allSatisfy { $0 != key.path && $0.hasPrefix(destination.path) }, "all primary, repeated and raw identity paths remapped")
+        let restoredKeyData = try PrivateMaterialFile.read(URL(fileURLWithPath: loaded.identity), limit: 1_048_576)
+        check(restoredKeyData == key.data, "restored SSH private key bytes unchanged")
+        let mode = try FileManager.default.attributesOfItem(atPath: loaded.identity)[.posixPermissions] as? Int
+        check(mode == 0o600, "restored SSH key mode 0600")
+        let newFile = result[0].0.appearance.reminders![0].licenseFile!
+        check(newFile.id != license.id, "restored license file has independent immutable identity")
+        let licenses = RecordLicenseRepository(root: destination.appendingPathComponent("LicenseFiles"))
+        let restoredLicenseData = try licenses.load(newFile)
+        check(restoredLicenseData == payload, "license file restored byte exact")
+        let importedCredentials = try SharedCredentialRepository(config: config, profileID: targetProfile, root: destination.appendingPathComponent("SharedCredentials")).load()
+        let importedID = importedCredentials.bindings[entry.favoriteID]!
+        check(importedCredentials.presets.first?.username == preset.username && importedCredentials.presets.first?.inheritsRecordAuthentication == true && sharedSecrets[importedID] == "owned-shared-secret", "shared credentials and selected record binding restored together")
+        let ordinary = try AliasTransfer(aliases: [TransferAlias(entry, group: "", favorite: false, appearance: value.appearance)]).encode()
+        check(ordinary.range(of: Data("License note".utf8)) == nil && ordinary.range(of: Data(license.digest.utf8)) == nil && ordinary.range(of: Data("owned-record-secret".utf8)) == nil, "ordinary JSON excludes private notes, license files and secrets")
+        var damaged = restored; damaged.privateKeys![0].data = Data("invalid".utf8)
+        rejects("invalid private key") { try damaged.validate() }
+        damaged = restored; damaged.records[0].licenseFiles![0].data.append(0)
+        rejects("license digest mismatch") { try damaged.validate() }
+        damaged = restored; damaged.credentialSecrets![0].presetID = UUID()
+        rejects("unbound credential secret") { try damaged.validate() }
+        damaged = restored; damaged.version = 1
+        rejects("old client cannot silently discard secret archive") { try damaged.validate() }
+        let link = root.appendingPathComponent("linked-key"); try FileManager.default.createSymbolicLink(at: link, withDestinationURL: keyURL)
+        rejects("symlink key") { _ = try PrivateMaterialFile.read(link, limit: 1_048_576) }
+        let rollbackRoot = root.appendingPathComponent("rollback")
+        let rollbackRepository = LocalConnectionRepository(config: config, root: rollbackRoot)
+        var rolledBack = 0
+        rejects("metadata conflict rolls back files and secrets") {
+            _ = try BackupRestoration.install(restored, selected: [record.id], localRepository: rollbackRepository, documents: DocumentationRepository(root: rollbackRoot.appendingPathComponent("Documents")), commands: SavedCommandsRepository(root: rollbackRoot.appendingPathComponent("Commands")), attachments: AttachmentsRepository(root: rollbackRoot.appendingPathComponent("Attachments")), templates: [], writeTemplates: { _ in }, topologyProfileMap: [profile.id: UUID()], installPassword: { _, _ in
+                return { rolledBack += 1 }
+            }, installSharedPassword: { _, _, _ in
+                var unrelated = LocalConnectionRecord(); unrelated.title = "Concurrent fixture"; unrelated.host = "other.example"
+                try rollbackRepository.write([unrelated], expected: [])
+                return { rolledBack += 1 }
+            })
+        }
+        check(rolledBack == 2, "both imported password stores rolled back on final CAS failure")
+        let keyRemainder = try FileManager.default.contentsOfDirectory(atPath: rollbackRoot.appendingPathComponent("SSHKeys").path)
+        let licenseRemainder = try FileManager.default.contentsOfDirectory(atPath: rollbackRoot.appendingPathComponent("LicenseFiles").path)
+        check(keyRemainder.isEmpty && licenseRemainder.isEmpty, "failed import removes only newly staged key and license directories")
+        print("Portable archive checks passed: encryption, secrets injection, profile/preset/key remap, private permissions, license files/notes, ordinary export exclusion, symlink and corruption rejection, transaction rollback")
     }
 }

@@ -7,6 +7,10 @@ struct BackupAttachment: Codable {
     var metadata: ConnectionAttachment
     var data: Data
 }
+struct BackupLicenseFile: Codable {
+    var metadata: RecordLicenseFile
+    var data: Data
+}
 struct BackupRecord: Codable, Identifiable {
     var id: UUID { record.id }
     var record: LocalConnectionRecord
@@ -21,6 +25,8 @@ struct BackupRecord: Codable, Identifiable {
     var inventory: RecordInventory? = nil
     var winbox: WinboxSettings? = nil
     var winboxGatewayID: UUID? = nil
+    var licenseFiles: [BackupLicenseFile]? = nil
+    var password: String? = nil
 }
 struct HubBackup: Codable {
     var version = 1
@@ -34,6 +40,8 @@ struct HubBackup: Codable {
     var nmapTemplates: [NmapTemplate]? = nil
     var topologies: [TopologyDocument]? = nil
     var operations: [BackupOperations]? = nil
+    var privateKeys: [BackupPrivateKey]? = nil
+    var credentialSecrets: [BackupCredentialSecret]? = nil
     static let maximumBytes = 350_000_000
     func validate() throws {
         try BackupOperations.validate(operations ?? [], recordIDs: Set(records.map(\.id)), profileIDs: Set((profiles ?? []).map(\.id)))
@@ -62,10 +70,15 @@ struct HubBackup: Codable {
             let valid = Set(profiles.map(\.id))
             guard records.allSatisfy({ Set($0.profileIDs ?? []).isSubset(of: valid) }) else { throw ConfigError.message("Неизвестный профиль записи в архиве.") }
         }
-        guard version == 1, records.count <= 1000, Set(records.map(\.id)).count == records.count,
+        guard (1...2).contains(version), records.count <= 1000, Set(records.map(\.id)).count == records.count,
               folders.count <= 1000, folders.allSatisfy(ConnectionTree.validPath),
               folderAppearances.count <= 1000, folderAppearances.allSatisfy({ ConnectionTree.validPath($0.key) && $0.value.validation == nil }),
               templates.count <= 100, Set(templates.map(\.id)).count == templates.count, templates.allSatisfy({ $0.validation == nil }) else { throw ConfigError.message("Архив имеет неподдерживаемую версию или некорректный список записей.") }
+        let keys = privateKeys ?? [], secrets = credentialSecrets ?? []
+        guard keys.count <= 1000, Set(keys.map(\.id)).count == keys.count, Set(keys.map(\.path)).count == keys.count, keys.allSatisfy(\.valid), keys.reduce(0, { $0 + $1.data.count }) <= 32_000_000 else { throw ConfigError.message("Некорректные SSH-ключи в архиве (до 32 МБ).") }
+        guard secrets.count <= 10_000, Set(secrets.map { $0.profileID.uuidString + $0.presetID.uuidString }).count == secrets.count,
+              secrets.allSatisfy({ secret in BackupCredentialSecret.validPassword(secret.password) && (operations ?? []).contains(where: { $0.profileID == secret.profileID && $0.credentials?.presets.contains(where: { $0.id == secret.presetID && $0.kdbx == nil }) == true }) }) else { throw ConfigError.message("Некорректные учётные данные архива.") }
+        if version == 1, !keys.isEmpty || !secrets.isEmpty || records.contains(where: { $0.password != nil || !($0.licenseFiles ?? []).isEmpty }) { throw ConfigError.message("Секреты и файлы лицензий требуют архив версии 2.") }
         var total = 0
         for value in records {
             if let inventory = value.inventory { try InventoryRepository.validate(inventory) }
@@ -73,6 +86,16 @@ struct HubBackup: Codable {
             guard value.record.aliasName == nil, value.record.aliasSource == nil, value.record.originIdentity == nil,
                   value.record.validation == nil, value.appearance.validation == nil,
                   AliasTransfer.validGroup(value.group), value.commands.validation == nil else { throw ConfigError.message("В архиве некорректные параметры записи.") }
+            if let password = value.password, !BackupCredentialSecret.validPassword(password) { throw ConfigError.message("Некорректный пароль записи в архиве.") }
+            let licenseFiles = value.licenseFiles ?? []
+            let references = Set((value.appearance.reminders ?? []).compactMap { $0.licenseFile?.id })
+            guard licenseFiles.count <= 20, Set(licenseFiles.map { $0.metadata.id }).count == licenseFiles.count, references == Set(licenseFiles.map { $0.metadata.id }) else { throw ConfigError.message("Не хватает файлов лицензий в архиве.") }
+            for file in licenseFiles {
+                guard file.metadata.valid, file.data.count == file.metadata.size, PrivateMaterialFile.digest(file.data) == file.metadata.digest,
+                      (value.appearance.reminders ?? []).compactMap(\.licenseFile).filter({ $0.id == file.metadata.id }).allSatisfy({ $0 == file.metadata }) else { throw ConfigError.message("Повреждён файл лицензии в архиве.") }
+                total += file.data.count
+                guard total <= 256_000_000 else { throw ConfigError.message("Материалы архива превышают 256 МБ.") }
+            }
             let doc = value.document
             guard doc.markdown.utf8.count <= DocumentationRepository.maximumBytes, doc.text.utf8.count <= DocumentationRepository.maximumBytes,
                   doc.revisions.count <= 50, Set(doc.revisions.map(\.id)).count == doc.revisions.count,

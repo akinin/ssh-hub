@@ -30,11 +30,11 @@ struct SharedCredentialPreset: Codable, Identifiable, Equatable {
     var identityFile = ""
     var authentication: SSHAuthentication = .password
     var kdbx: KDBXReference? = nil
+    var inheritsRecordAuthentication: Bool? = nil
     var validation: String? {
         guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, title.utf8.count <= 160,
-              username.utf8.count <= 256, identityFile.utf8.count <= 4096,
+              username.utf8.count <= 512, identityFile.utf8.count <= 4096,
               [title, username, identityFile].allSatisfy({ !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }),
-              username.isEmpty || SSHConfig.matches(username, "^[A-Za-z0-9_.-]+$"),
               identityFile.isEmpty || identityFile.hasPrefix("/") || identityFile.hasPrefix("~/") else { return "Укажи название, пользователя одной строкой и абсолютный путь SSH-ключа." }
         if authentication == .key || authentication == .keyAndPassword, identityFile.isEmpty { return "Выбери приватный SSH-ключ." }
         return nil
@@ -163,6 +163,14 @@ final class SharedCredentialKeychain: SharedCredentialSecretStorage {
               let seconds = Double(text.dropFirst("ssh-hub-password-date:".count)), seconds.isFinite else { return nil }
         return Date(timeIntervalSince1970: seconds)
     }
+    func importPassword(_ password: String, scope: String, id: UUID) throws {
+        guard !password.isEmpty, password.utf8.count <= 16384, !password.contains(where: { $0.isNewline || $0 == "\0" }) else { throw SharedCredentialError.keychain }
+        var item = query(scope: scope, id: id, context: nil); item.removeValue(forKey: kSecUseAuthenticationContext as String)
+        item[kSecValueData as String] = Data(password.utf8); item[kSecAttrLabel as String] = "SSH Hub · Общие учётные данные"
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        item[kSecAttrGeneric as String] = Data("ssh-hub-password-date:\(Date().timeIntervalSince1970)".utf8)
+        guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else { throw SharedCredentialError.keychain }
+    }
     func write(_ password: String?, scope: String, id: UUID, protected: Bool, context: LAContext?) throws {
         let query = query(scope: scope, id: id, context: context)
         guard let password, !password.isEmpty else {
@@ -250,10 +258,11 @@ final class SharedCredentialRuntime: @unchecked Sendable {
             username = try kdbx.username(reference)
             guard username.utf8.count <= 512, !username.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains), !entry.canSSH || username.isEmpty || SSHConfig.matches(username, "^[A-Za-z0-9_.-]+$") else { throw SharedCredentialError.invalid("Пользователь KeePass не подходит для этой записи.") }
         }
+        guard !entry.canSSH || username.isEmpty || SSHConfig.matches(username, "^[A-Za-z0-9_.-]+$") else { throw SharedCredentialError.invalid("Пользователь общих учётных данных не подходит для SSH.") }
         var result = originalEntry
         result.credentialRuntimeScope = repository.scope; result.sharedCredentialScope = repository.scope; result.preparedSSHTarget = originalEntry.sshTarget
         result.preparedConfigSource = originalEntry.connectionConfig(fallback: config)
-        let direct = document.recordKeePass?[key] != nil
+        let direct = document.recordKeePass?[key] != nil || preset.inheritsRecordAuthentication == true
         let auth: SSHAuthentication = direct ? originalEntry.authentication : preset.authentication == .automatic ? (preset.identityFile.isEmpty ? .password : .keyAndPassword) : preset.authentication
         var overrides = direct ? [] : auth.options.map { SSHOption(key: $0.0, value: $0.1) }
         if !username.isEmpty { overrides.insert(SSHOption(key: "User", value: username), at: 0) }

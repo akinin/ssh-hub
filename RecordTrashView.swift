@@ -2,8 +2,10 @@ import SwiftUI
 
 extension AliasStore {
     var trashRepository: RecordTrashRepository { RecordTrashRepository(config: config.url) }
-    func trashMaterials(_ key: String) -> [String: URL] {
-        ["document": DocumentationRepository().url(for: key), "commands": savedCommands.repository.file(key), "inventory": InventoryRepository().url(for: key), "winbox": WinboxRepository().file(key), "attachments": attachmentsRepository.folder(key)]
+    func trashMaterials(_ key: String, appearance: ConnectionAppearance) -> [String: URL] {
+        var result: [String: URL] = ["document": DocumentationRepository().url(for: key), "commands": savedCommands.repository.file(key), "inventory": InventoryRepository().url(for: key), "winbox": WinboxRepository().file(key), "attachments": attachmentsRepository.folder(key)]
+        for metadata in (appearance.reminders ?? []).compactMap(\.licenseFile) { result["license_" + metadata.id.uuidString] = RecordLicenseRepository().folder(metadata.id) }
+        return result
     }
     func captureTrash(_ entry: SSHAlias) throws -> RecordTrashEntry {
         var record: LocalConnectionRecord
@@ -15,14 +17,15 @@ extension AliasStore {
         }
         record.aliasName = nil; record.aliasSource = nil; record.inheritedSSHValues = nil
         let value = RecordTrashEntry(key: entry.favoriteID, record: record, appearance: appearance(entry), group: group(entry), favorite: isFavorite(entry), profiles: Array(profiles.membership[entry.favoriteID] ?? [profiles.active]))
-        return try trashRepository.capture(value, sources: trashMaterials(entry.favoriteID))
+        for metadata in (value.appearance.reminders ?? []).compactMap(\.licenseFile) { _ = try RecordLicenseRepository().load(metadata) }
+        return try trashRepository.capture(value, sources: trashMaterials(entry.favoriteID, appearance: value.appearance))
     }
     func restoreTrash(_ value: RecordTrashEntry) throws {
         guard !AppAccess.shared.locked, !endingWorkspace else { throw ConfigError.message("Приложение заблокировано.") }
         reload()
         let saved = try trashRepository.load(value.id), before = try localRepository.load()
         guard !aliases.contains(where: { $0.favoriteID == saved.key || $0.localID == saved.record.id }), !before.contains(where: { $0.id == saved.record.id || $0.entry(config: config.url, privateConfig: config.url).favoriteID == saved.key }) else { throw ConfigError.message("Запись с таким идентификатором уже существует. Восстановление не заменяет её.") }
-        try trashRepository.restoreMaterials(saved, destinations: trashMaterials(saved.key)) { try localRepository.write(before + [saved.record], expected: before) }
+        try trashRepository.restoreMaterials(saved, destinations: trashMaterials(saved.key, appearance: saved.appearance)) { try localRepository.write(before + [saved.record], expected: before) }
         clearUndo(); reload()
         if let entry = aliases.first(where: { $0.localID == saved.record.id }) {
             setAppearance(saved.appearance, for: entry); setGroup(saved.group, for: entry)

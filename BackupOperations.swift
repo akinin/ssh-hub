@@ -110,7 +110,7 @@ struct BackupOperations: Codable {
     }
     private static func bounded<T: Encodable>(_ value: T, limit: Int) throws { guard try JSONEncoder().encode(value).count <= limit else { throw ConfigError.message("Настройки операций в архиве превышают допустимый размер.") } }
 
-    static func restored(_ values: [Self], config: URL, profileMap: [UUID: UUID], recordKeys: [String: String], root: URL? = nil) throws -> [BackupOperationFile] {
+    static func restored(_ values: [Self], config: URL, profileMap: [UUID: UUID], recordKeys: [String: String], root: URL? = nil, credentialIDs: [UUID: [UUID: UUID]] = [:]) throws -> [BackupOperationFile] {
         let base = base(root)
         var files: [BackupOperationFile] = [], destinations = Set<UUID>()
         for value in values {
@@ -129,7 +129,7 @@ struct BackupOperations: Codable {
             }
             if var credentials = value.credentials {
                 let oldIDs = Set(credentials.presets.map(\.id)).union(credentials.bindings.values)
-                let mapping = Dictionary(uniqueKeysWithValues: oldIDs.map { ($0, UUID()) })
+                let mapping = Dictionary(uniqueKeysWithValues: oldIDs.map { ($0, credentialIDs[value.profileID]?[$0] ?? UUID()) })
                 for index in credentials.presets.indices { credentials.presets[index].id = mapping[credentials.presets[index].id]! }
                 credentials.recordKeePass = credentials.recordKeePass.map { values in Dictionary(uniqueKeysWithValues: values.compactMap { key, reference in recordKeys[key].map { ($0, reference) } }) }
                 credentials.bindings = Dictionary(uniqueKeysWithValues: credentials.bindings.compactMap { key, preset in recordKeys[key].map { ($0, mapping[preset]!) } })

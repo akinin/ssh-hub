@@ -65,7 +65,9 @@ struct RecordTrashRepository {
     }
     private func safePath(_ path: String) -> Bool {
         let parts = path.split(separator: "/", omittingEmptySubsequences: false)
-        return (1...4).contains(parts.count) && ["document", "commands", "inventory", "winbox", "attachments"].contains(String(parts[0])) && parts.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." && $0.utf8.count <= 255 && !$0.contains("\\") && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }
+        let category = String(parts.first ?? "")
+        let license = category.hasPrefix("license_") && UUID(uuidString: String(category.dropFirst(8))) != nil
+        return (1...4).contains(parts.count) && (["document", "commands", "inventory", "winbox", "attachments"].contains(category) || license) && parts.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." && $0.utf8.count <= 255 && !$0.contains("\\") && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }
     }
     private func dataFile(_ url: URL, copyTo destination: URL? = nil) throws -> (Int64, String) {
         guard let before = try fileInfo(url) else { throw ConfigError.message("Файл материалов отсутствует.") }

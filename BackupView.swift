@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import LocalAuthentication
 
 extension AliasStore {
     func captureBackup() throws -> HubBackup {
@@ -24,9 +25,10 @@ extension AliasStore {
                 guard info.isRegularFile == true, info.isSymbolicLink != true, info.fileSize == Int(item.size), bytes <= 256_000_000 else { throw ConfigError.message("Вложения повреждены или превышают 256 МБ для одного архива.") }
                 return BackupAttachment(metadata: item, data: try Data(contentsOf: url))
             }
+            let licenseFiles = try Dictionary((appearance(entry).reminders ?? []).compactMap(\.licenseFile).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values.map { BackupLicenseFile(metadata: $0, data: try RecordLicenseRepository().load($0)) }
             let inventory = try InventoryRepository().load(entry.favoriteID)
             let winbox = try WinboxRepository().load(entry.favoriteID)
-            records.append(BackupRecord(record: record, appearance: appearance(entry), group: group(entry), favorite: isFavorite(entry), commands: try savedCommands.repository.load(entry.favoriteID), document: try DocumentationRepository().load(entry.favoriteID), attachments: attachments, profileIDs: Array(profiles.membership[entry.favoriteID] ?? [profiles.active]), tunnelGatewayID: record.transport?.tunnel.flatMap { exportIDs[$0.sshID] }, inventory: inventory, winbox: winbox, winboxGatewayID: winbox.tunnel.flatMap { exportIDs[$0.sshID] }))
+            records.append(BackupRecord(record: record, appearance: appearance(entry), group: group(entry), favorite: isFavorite(entry), commands: try savedCommands.repository.load(entry.favoriteID), document: try DocumentationRepository().load(entry.favoriteID), attachments: attachments, profileIDs: Array(profiles.membership[entry.favoriteID] ?? [profiles.active]), tunnelGatewayID: record.transport?.tunnel.flatMap { exportIDs[$0.sshID] }, inventory: inventory, winbox: winbox, winboxGatewayID: winbox.tunnel.flatMap { exportIDs[$0.sshID] }, licenseFiles: licenseFiles.isEmpty ? nil : licenseFiles))
         }
         if let error = CommandLibrary.shared.error { throw ConfigError.message(error) }
         if let error = scanner.templateError { throw ConfigError.message(error) }
@@ -35,10 +37,93 @@ extension AliasStore {
         let backupFolderAppearances = profiles.profiles.reduce(into: [String: ConnectionAppearance]()) { result, profile in
             for (path, value) in profile.folderAppearances ?? [:] where result[path] == nil { result[path] = value }
         }
-        let backup = HubBackup(records: records, folders: backupFolders, folderAppearances: backupFolderAppearances, templates: TemplateLibrary.shared.custom, commandLibrary: CommandLibrary.shared.custom, profiles: profiles.profiles, nmapTemplates: scanner.customTemplates, topologies: maps, operations: try BackupOperations.capture(config: config.url, profileIDs: profiles.profiles.map(\.id), exportIDs: exportIDs))
+        let backup = HubBackup(version: 2, records: records, folders: backupFolders, folderAppearances: backupFolderAppearances, templates: TemplateLibrary.shared.custom, commandLibrary: CommandLibrary.shared.custom, profiles: profiles.profiles, nmapTemplates: scanner.customTemplates, topologies: maps, operations: try BackupOperations.capture(config: config.url, profileIDs: profiles.profiles.map(\.id), exportIDs: exportIDs))
         try backup.validate(); return backup
     }
+    func capturePortableBackup(passwords: Bool, keys: Bool, current: () -> Bool = { true }) async throws -> HubBackup {
+        let revision = AppAccess.shared.authorizationRevision, expectedProfiles = profiles, expectedAppearances = appearances, expectedGroups = groups
+        let expected = ordered.map { $0.favoriteID + "|" + $0.options.map { $0.key + "=" + $0.value }.joined(separator: "\n") }
+        func check() throws {
+            guard current(), !AppAccess.shared.locked, !endingWorkspace, revision == AppAccess.shared.authorizationRevision, profiles == expectedProfiles, appearances == expectedAppearances, groups == expectedGroups,
+                  ordered.map({ $0.favoriteID + "|" + $0.options.map { $0.key + "=" + $0.value }.joined(separator: "\n") }) == expected else { throw ConfigError.message("Рабочая область изменилась или заблокирована. Повтори экспорт.") }
+        }
+        try check()
+        var backup = try captureBackup()
+        let sources = ordered
+        let originals = try Dictionary(uniqueKeysWithValues: profiles.profiles.map { ($0.id, try SharedCredentialRepository(config: config.url, profileID: $0.id).load()) })
+        let context = LAContext(); defer { context.invalidate() }
+        if passwords, originals.values.contains(where: { $0.requiresAuthentication && $0.presets.contains(where: { $0.kdbx == nil }) }) {
+            guard try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Включить общие пароли в зашифрованный архив SSH Hub") else { throw SharedCredentialError.authentication }
+            try check()
+        }
+        var secretValues: [BackupCredentialSecret] = []
+        if passwords {
+            for index in backup.records.indices {
+                try check()
+                if let password = try SSHPasswordStore.storedPassword(for: sources[index], config: config.url), !password.isEmpty { backup.records[index].password = password }
+            }
+            for index in (backup.operations ?? []).indices {
+                try check()
+                guard let original = originals[backup.operations![index].profileID], var metadata = backup.operations![index].credentials else { continue }
+                let profile = backup.operations![index].profileID
+                let scope = SharedCredentialRepository(config: config.url, profileID: profile).scope
+                let hasKeePass = original.presets.contains { $0.kdbx != nil } || !(original.recordKeePass ?? [:]).isEmpty
+                var temporary: KDBXWorkspace?
+                let source: KDBXRuntime?
+                if hasKeePass {
+                    if profile == profiles.active, let active = kdbx { source = active.runtime }
+                    else {
+                        let workspace = KDBXWorkspace(unlockStorage: KDBXUnlockKeychain(scope: scope), authorized: { AppAccess.shared.enabled && !AppAccess.shared.locked && AppAccess.shared.authorizationRevision == revision })
+                        temporary = workspace; await workspace.restoreRemembered(original.kdbxDatabases ?? []); try check(); source = workspace.runtime
+                    }
+                } else { source = nil }
+                defer { temporary?.cancel() }
+                func keePass(_ reference: KDBXReference) throws -> (String, String) {
+                    guard let source else { throw ConfigError.message("Для переноса учётных данных разблокируй базы KeePass.") }
+                    do { let username = try source.username(reference); return (username, try source.password(reference, expectedUsername: username)) }
+                    catch { throw ConfigError.message("Не удалось прочитать используемую запись KeePass. Разблокируй базу; для других профилей включи её разблокировку вместе с приложением.") }
+                }
+                for preset in metadata.presets where preset.kdbx == nil {
+                    if let password = try SharedCredentialKeychain().read(scope: scope, id: preset.id, context: context), !password.isEmpty { secretValues.append(BackupCredentialSecret(profileID: profile, presetID: preset.id, password: password)) }
+                }
+                let snapshot = try BackupCredentialSnapshot.materialize(metadata, profile: profile, records: backup.records, read: keePass)
+                metadata = snapshot.0; secretValues += snapshot.1
+                backup.operations![index].credentials = metadata
+                guard try SharedCredentialRepository(config: config.url, profileID: profile).load() == original else { throw SharedCredentialError.changed }
+            }
+        }
+        backup.credentialSecrets = secretValues.isEmpty ? nil : secretValues
+        if keys {
+            var materials: [String: BackupPrivateKey] = [:]
+            func capture(_ path: String, entry: SSHAlias? = nil) throws -> String {
+                let path = try BackupKeyPaths.expanded(path, entry: entry)
+                if path.lowercased() == "none" { return path }
+                if materials[path] == nil {
+                    let item = BackupPrivateKey(path: path, data: try PrivateMaterialFile.read(URL(fileURLWithPath: path), limit: 1_048_576))
+                    guard item.valid else { throw ConfigError.message("Выбранный IdentityFile не является переносимым приватным SSH-ключом.") }
+                    materials[path] = item
+                    guard materials.count <= 1000, materials.values.reduce(0, { $0 + $1.data.count }) <= 32_000_000 else { throw ConfigError.message("SSH-ключи превышают 32 МБ.") }
+                }
+                return path
+            }
+            for index in backup.records.indices where sources[index].canSSH {
+                if BackupKeyPaths.values(backup.records[index].record).allSatisfy({ $0.isEmpty }) {
+                    let defaults = ["id_ed25519", "id_ecdsa", "id_rsa", "id_dsa"].map { NSHomeDirectory() + "/.ssh/" + $0 }.filter { FileManager.default.fileExists(atPath: $0) }
+                    if let first = defaults.first { backup.records[index].record.identity = first; backup.records[index].record.extraOptions += defaults.dropFirst().map { SSHOption(key: "IdentityFile", value: $0) } }
+                }
+                backup.records[index].record = try BackupKeyPaths.rewriting(backup.records[index].record) { try capture($0, entry: sources[index]) }
+            }
+            for index in (backup.operations ?? []).indices {
+                for preset in (backup.operations![index].credentials?.presets ?? []).indices {
+                    if let path = backup.operations![index].credentials?.presets[preset].identityFile, !path.isEmpty { backup.operations![index].credentials?.presets[preset].identityFile = try capture(path) }
+                }
+            }
+            backup.privateKeys = materials.isEmpty ? nil : materials.values.sorted { $0.path < $1.path }
+        }
+        try check(); try backup.validate(); return backup
+    }
     func restoreBackup(_ backup: HubBackup, selected: Set<UUID>) throws {
+        guard !AppAccess.shared.locked, !endingWorkspace else { throw ConfigError.message("Приложение заблокировано.") }
         try backup.validate()
         var restoredProfiles = profiles
         let activeConnection = connectionSessions.values.contains { session in
@@ -50,7 +135,15 @@ extension AliasStore {
         let metadata = try BackupRestoration.install(backup, selected: selected, localRepository: localRepository,
             documents: DocumentationRepository(), commands: savedCommands.repository, attachments: attachmentsRepository,
             templates: TemplateLibrary.shared.custom, writeTemplates: TemplateLibrary.shared.replace,
-            library: CommandLibrary.shared.custom, writeLibrary: CommandLibrary.shared.replace, nmapTemplates: scanner.customTemplates, writeNmapTemplates: scanner.repository.write, inventory: InventoryRepository(), winbox: WinboxRepository(), topology: topology, topologyProfileMap: profileMap)
+            library: CommandLibrary.shared.custom, writeLibrary: CommandLibrary.shared.replace, nmapTemplates: scanner.customTemplates, writeNmapTemplates: scanner.repository.write, inventory: InventoryRepository(), winbox: WinboxRepository(), topology: topology, topologyProfileMap: profileMap,
+            installPassword: { password, entry in
+                try SSHPasswordStore.importPassword(password, for: entry, config: self.config.url)
+                return { try SSHPasswordStore.set(nil, for: entry, config: self.config.url) }
+            }, installSharedPassword: { password, profile, id in
+                let scope = SharedCredentialRepository(config: self.config.url, profileID: profile).scope
+                try SharedCredentialKeychain().importPassword(password, scope: scope, id: id)
+                return { try SharedCredentialKeychain().write(nil, scope: scope, id: id, protected: true, context: nil) }
+            })
         reload(); scanner.reloadTemplates()
         for (value, entry) in metadata {
             let assigned = Set((value.profileIDs ?? []).compactMap { profileMap[$0] })
@@ -71,6 +164,9 @@ struct BackupView: View {
     @State private var password = ""
     @State private var confirmation = ""
     @State private var busy = false
+    @State private var includePasswords = true
+    @State private var includeKeys = true
+    @State private var operation = UUID()
     @State private var error: String?
     @State private var backup: HubBackup?
     @State private var selection = Set<UUID>()
@@ -79,9 +175,11 @@ struct BackupView: View {
         VStack(alignment: .leading, spacing: 16) {
             Label("Резервное копирование", systemImage: "externaldrive.badge.timemachine").font(.title2).bold()
             Text("Единый архив записей, логотипов, команд, папок, шаблонов, документации, вложений, сетевых карт, тегов, сценариев и настроек интеграций профилей. AES-256-GCM; ключ из пароля — PBKDF2-SHA256, 600 000 итераций. Пароль архива нигде не сохраняется.").font(.callout).foregroundStyle(.secondary)
-            Text("Пароли и API-ключи из Связки ключей, включая общие учётные данные, не включаются. Файлы SSH-ключей также не включаются. SSH-алиасы восстанавливаются как отдельные записи SSH Hub. Пути к ключам могут потребовать изменения на другом Mac. Вложения — до 256 МБ на архив.").font(.caption).foregroundStyle(.secondary)
+            Text("Пароли сохранятся в Связку ключей нового Mac, SSH-ключи — в приватную папку приложения. Используемые данные KeePass переносятся копиями. API-ключи интеграций, конфигурации VPN и аппаратные ключи переносятся отдельно. Материалы — до 256 МБ.").font(.caption).foregroundStyle(.secondary)
             PasswordEntryView(prompt: "Пароль архива (не менее 8 символов)", text: $password, onGenerated: { confirmation = $0 }).textFieldStyle(.roundedBorder)
             if backup == nil {
+                Toggle("Включить пароли записей и общие учётные данные", isOn: $includePasswords).disabled(busy)
+                Toggle("Включить файлы приватных SSH-ключей", isOn: $includeKeys).disabled(busy)
                 PasswordEntryView(prompt: "Повтори пароль для создания архива", text: $confirmation, showsGenerator: false).textFieldStyle(.roundedBorder)
                 HStack {
                     Button("Создать архив…") { export() }.disabled(busy || password.count < 8 || password != confirmation)
@@ -108,32 +206,34 @@ struct BackupView: View {
             if busy { ProgressView("Обработка зашифрованного архива…") }
             if let error { Text(error).foregroundStyle(.red).font(.caption).textSelection(.enabled) }
             if let success { Label(success, systemImage: "checkmark.circle").foregroundStyle(.green) }
+            if let backup { Text("SSH-ключей: \((backup.privateKeys ?? []).count) · общих паролей: \((backup.credentialSecrets ?? []).count)").font(.caption).foregroundStyle(.secondary) }
             HStack { Spacer(); Button("Готово") { password = ""; confirmation = ""; dismiss() }.keyboardShortcut(.cancelAction).disabled(busy) }
-        }.padding(24).frame(width: 700, height: 570).interactiveDismissDisabled(busy).dismissOnOutsideClick(enabled: !busy)
+        }.padding(24).frame(width: 700, height: 690).interactiveDismissDisabled(busy).dismissOnOutsideClick(enabled: !busy)
+            .onReceive(AppAccess.shared.$locked) { locked in if locked { operation = UUID(); backup = nil; password = ""; confirmation = ""; busy = false } }
+            .onDisappear { operation = UUID(); backup = nil; password = ""; confirmation = "" }
     }
     private func export() {
         let panel = NSSavePanel(); panel.nameFieldStringValue = "SSH-Hub-Backup.sshhub"; panel.allowedContentTypes = [.data]; panel.canSelectHiddenExtension = true
         guard panel.runModal() == .OK, let url = panel.url else { return }
         busy = true; error = nil; success = nil
-        // Snapshot the app-owned files before encryption; edits remain disabled by the sheet.
-        do {
-            let value = try store.captureBackup(), secret = password
-            Task {
-                do {
-                    try await Task.detached(priority: .userInitiated) {
-                        let data = try BackupEncryption.seal(value, password: secret)
-                        try data.write(to: url, options: .atomic); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-                    }.value
-                    success = "Зашифрованный архив сохранён"; password = ""; confirmation = ""
-                } catch { self.error = error.localizedDescription }
-                busy = false
-            }
-        } catch { self.error = error.localizedDescription; busy = false }
+        let stamp = UUID(); operation = stamp
+        let secret = password, revision = AppAccess.shared.authorizationRevision
+        Task {
+            do {
+                let value = try await store.capturePortableBackup(passwords: includePasswords, keys: includeKeys, current: { stamp == operation })
+                guard stamp == operation, !AppAccess.shared.locked, revision == AppAccess.shared.authorizationRevision else { return }
+                let encrypted = try await Task.detached(priority: .userInitiated) { try BackupEncryption.seal(value, password: secret) }.value
+                guard stamp == operation, !AppAccess.shared.locked, revision == AppAccess.shared.authorizationRevision else { return }
+                try encrypted.write(to: url, options: .atomic); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+                success = "Зашифрованный архив сохранён"; password = ""; confirmation = ""
+            } catch { if stamp == operation { self.error = error.localizedDescription } }
+            if stamp == operation { busy = false }
+        }
     }
     private func chooseRestore() {
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        busy = true; error = nil; success = nil; let secret = password
+        busy = true; error = nil; success = nil; let secret = password, stamp = UUID(), revision = AppAccess.shared.authorizationRevision; operation = stamp
         Task {
             do {
                 let value = try await Task.detached(priority: .userInitiated) {
@@ -141,9 +241,10 @@ struct BackupView: View {
                     guard size <= HubBackup.maximumBytes + 52 else { throw ConfigError.message("Архив больше 350 МБ.") }
                     return try BackupEncryption.open(Data(contentsOf: url), password: secret)
                 }.value
+                guard stamp == operation, !AppAccess.shared.locked, revision == AppAccess.shared.authorizationRevision else { return }
                 backup = value; selection = Set(value.records.map(\.id)); password = ""; confirmation = ""
-            } catch { self.error = error.localizedDescription }
-            busy = false
+            } catch { if stamp == operation { self.error = error.localizedDescription } }
+            if stamp == operation { busy = false }
         }
     }
 }

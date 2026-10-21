@@ -13,6 +13,16 @@ extension AliasStore {
     }
     private var sidebarOrderKey: String { "sidebarOrder.v1." + profilesKey + "." + profiles.active.uuidString }
     var sidebarOrder: [String: [String]] { UserDefaults.standard.dictionary(forKey: sidebarOrderKey) as? [String: [String]] ?? [:] }
+    func applyFolderRename(_ plan: FolderRenamePlan) {
+        let remapID: (String) -> String = { $0.hasPrefix("folder:") ? "folder:" + plan.path(String($0.dropFirst(7))) : $0 }
+        let collapsed = collapsedFolderIDs.map(remapID)
+        let order = Dictionary(sidebarOrder.map { (plan.path($0.key), $0.value.map(remapID)) }, uniquingKeysWith: { first, _ in first })
+        profiles = plan.profiles; groups = plan.groups
+        persistProfiles(); UserDefaults.standard.set(groups, forKey: "aliasGroups.v1")
+        collapsedFolderIDs = collapsed; UserDefaults.standard.set(order, forKey: sidebarOrderKey)
+        if groupFilter != "all" { groupFilter = plan.path(groupFilter) }
+        sidebarRevision += 1
+    }
     func moveSidebarEntry(_ entry: SSHAlias, to folder: String, before anchor: String?) {
         let destination = ConnectionTree.normalized(folder), source = ConnectionTree.normalized(group(entry))
         guard profileEntries.contains(where: { $0.favoriteID == entry.favoriteID }), destination.isEmpty || ConnectionTree.validPath(destination), anchor != entry.favoriteID else { return }
@@ -252,8 +262,9 @@ struct ConnectionTreeView: NSViewRepresentable {
             for badge in collapsible { stack.setVisibilityPriority(.detachOnlyIfNecessary, for: badge) }
             stack.translatesAutoresizingMaskIntoConstraints = false; icon.translatesAutoresizingMaskIntoConstraints = false
             cell.addSubview(stack); cell.imageView = icon; cell.textField = text
-            NSLayoutConstraint.activate([icon.widthAnchor.constraint(equalToConstant: 16), icon.heightAnchor.constraint(equalToConstant: 16),
-                stack.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2), stack.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4), stack.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
+            let preferredTrailing = stack.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4); preferredTrailing.priority = .defaultHigh
+            NSLayoutConstraint.activate([preferredTrailing, stack.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -4), stack.widthAnchor.constraint(lessThanOrEqualToConstant: max(60, 300 - CGFloat(outlineView.level(forItem: item)) * 14)), icon.widthAnchor.constraint(equalToConstant: 16), icon.heightAnchor.constraint(equalToConstant: 16),
+                stack.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2), stack.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
             return cell
         }
         func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
@@ -293,7 +304,7 @@ struct ConnectionTreeView: NSViewRepresentable {
             menu.removeAllItems()
             if let outline { contextItem = outline.item(atRow: outline.clickedRow) as? TreeItem }
             func add(_ title: String, _ action: String) {
-                let symbols = ["connect": "play.circle", "sftp": "folder", "loginNotify": "bell.badge", "external": "arrow.up.forward.square", "website": "macwindow", "browser": "arrow.up.forward.square", "dashboard": "rectangle.grid.2x2", "documentation": "doc.richtext", "attachments": "paperclip", "edit": "pencil", "appearance": "photo", "group": "folder.badge.gearshape", "favorite": "star", "template": "square.stack", "duplicate": "plus.square.on.square", "copy": "doc.on.doc", "copyUsername": "person.crop.rectangle", "copyPassword": "key", "export": "square.and.arrow.up", "delete": "trash", "record": "plus", "folder": "folder.badge.plus", "renewals": "calendar.badge.clock", "folderLogo": "photo", "subfolder": "folder.badge.plus"]
+                let symbols = ["connect": "play.circle", "sftp": "folder", "loginNotify": "bell.badge", "external": "arrow.up.forward.square", "website": "macwindow", "browser": "arrow.up.forward.square", "dashboard": "rectangle.grid.2x2", "documentation": "doc.richtext", "attachments": "paperclip", "edit": "pencil", "appearance": "photo", "group": "folder.badge.gearshape", "favorite": "star", "template": "square.stack", "duplicate": "plus.square.on.square", "copy": "doc.on.doc", "copyUsername": "person.crop.rectangle", "copyPassword": "key", "export": "square.and.arrow.up", "delete": "trash", "record": "plus", "folder": "folder.badge.plus", "renewals": "calendar.badge.clock", "folderLogo": "pencil", "subfolder": "folder.badge.plus"]
                 let item = NSMenuItem(title: title, action: #selector(menuAction(_:)), keyEquivalent: "")
                 item.image = NSImage(systemSymbolName: symbols[action] ?? "circle", accessibilityDescription: nil)
                 // Public macOS 27 API: .visible == 1. Keep the stable macOS 26 SDK build compatible with older systems.
@@ -317,7 +328,7 @@ struct ConnectionTreeView: NSViewRepresentable {
                     if entry.canSSH { add("Сохранить как шаблон", "template") }
                     add("Дублировать…", "duplicate"); if entry.canSSH { add("Копировать команду", "copy") }; add("Экспорт…", "export"); add("Передать в KeePass…", "keePass")
                     menu.addItem(.separator()); add("Удалить…", "delete")
-                } else { add("Новая запись…", "record"); menu.addItem(.separator()); add("Логотип папки…", "folderLogo"); add("Вложенная папка…", "subfolder") }
+                } else { add("Новая запись…", "record"); menu.addItem(.separator()); add("Редактировать…", "folderLogo"); add("Вложенная папка…", "subfolder") }
             }
             if contextItem?.node.isFolder != true { if menu.items.count > 0 { menu.addItem(.separator()) }; add("Новая запись…", "record") }
             add("Новая папка…", "folder")

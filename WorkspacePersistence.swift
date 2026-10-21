@@ -100,7 +100,7 @@ extension AliasStore {
     }
     func detach(_ tab: WorkspaceTab, frame: String = "") {
         if focusDetached(tab) { return }
-        workspace.remove(tab); detachedTabs.insert(tab)
+        workspace.remove(tab, preservingNavigation: true); detachedTabs.insert(tab)
         let controller = DetachedWorkspaceWindow(tab: tab, store: self)
         detachedWindows[tab] = controller
         controller.showWindow(nil)

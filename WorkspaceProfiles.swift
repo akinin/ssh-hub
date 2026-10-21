@@ -82,3 +82,37 @@ struct WorkspaceTabStyle: Codable, Equatable {
     var isPinned: Bool { pinned == true }
     var valid: Bool { (name == nil || (HubProfiles.validName(name!) && name!.count <= 40)) && (color == nil || ["blue", "green", "orange", "red", "purple", "gray"].contains(color!)) }
 }
+
+struct FolderRenamePlan {
+    var profiles: HubProfiles
+    var groups: [String: String]
+    let old: String
+    let new: String
+    func path(_ value: String) -> String { value == old || value.hasPrefix(old + "/") ? new + value.dropFirst(old.count) : value }
+    init(profiles source: HubProfiles, groups sourceGroups: [String: String], keys: Set<String>, old: String, name: String, appearance: ConnectionAppearance) throws {
+        self.profiles = source; self.groups = sourceGroups; self.old = ConnectionTree.normalized(old)
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !name.contains("/"), !name.contains("\\"), name != ".", name != ".." else { throw ConfigError.message("Укажи название папки без разделителей пути.") }
+        new = (ConnectionTree.components(old).dropLast() + [name]).joined(separator: "/")
+        guard ConnectionTree.validPath(new), appearance.validation == nil, let index = source.profiles.firstIndex(where: { $0.id == source.active }) else { throw ConfigError.message("Некорректное название папки.") }
+        let paths = (source.profiles[index].folderPaths ?? []) + keys.compactMap { sourceGroups[$0] }
+        guard paths.contains(where: { $0 == self.old || $0.hasPrefix(self.old + "/") }) else { throw ConfigError.message("Папка уже изменена или удалена.") }
+        if new != self.old, paths.contains(where: { $0 == new || $0.hasPrefix(new + "/") }) { throw ConfigError.message("Папка с таким названием уже существует.") }
+        let changed = keys.filter { key in sourceGroups[key].map { $0 == self.old || $0.hasPrefix(self.old + "/") } == true }
+        for key in changed { groups[key] = path(sourceGroups[key]!) }
+        profiles.profiles[index].folderPaths = Array(Set((source.profiles[index].folderPaths ?? []).map(path) + [new])).sorted()
+        profiles.profiles[index].folderAppearances = Dictionary((source.profiles[index].folderAppearances ?? [:]).map { (path($0.key), $0.value) }, uniquingKeysWith: { first, _ in first })
+        profiles.profiles[index].folderAppearances = ConnectionAppearance.setting(ConnectionAppearance(logo: appearance.logo), for: new, in: profiles.profiles[index].folderAppearances ?? [:])
+        // Shared records change their common group. Keep independently created
+        // folders in other profiles and copy their style to the new path.
+        for other in profiles.profiles.indices where other != index {
+            if changed.contains(where: { source.contains($0, in: profiles.profiles[other].id) }) {
+                for (key, value) in source.profiles[other].folderAppearances ?? [:] where path(key) != key {
+                    let target = path(key)
+                    if profiles.profiles[other].folderAppearances?[target] == nil { profiles.profiles[other].folderAppearances?[target] = value }
+                }
+            }
+        }
+        guard profiles.valid, groups.values.allSatisfy(AliasTransfer.validGroup) else { throw ConfigError.message("Название папки или вложенный путь превышает допустимый размер.") }
+    }
+}

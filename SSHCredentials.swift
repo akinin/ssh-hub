@@ -95,6 +95,16 @@ enum SSHPasswordStore {
         }
         return secret
     }
+    // Import only into a fresh record account. Never update an existing item.
+    static func importPassword(_ password: String, for entry: SSHAlias, config: URL) throws {
+        guard !password.isEmpty, password.utf8.count <= 16384, !password.contains(where: { $0.isNewline || $0 == "\0" }) else { throw ConfigError.message("Некорректный пароль в архиве.") }
+        var item = query(account(for: entry, config: config))
+        item[kSecValueData as String] = Data(password.utf8)
+        item[kSecAttrLabel as String] = "SSH Hub · " + entry.name
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        item[kSecAttrGeneric as String] = Data("ssh-hub-password-date:\(Date().timeIntervalSince1970)".utf8)
+        guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else { throw ConfigError.message("Не удалось добавить пароль архива в новую запись Связки ключей.") }
+    }
     static func set(_ password: String?, for entry: SSHAlias, config: URL) throws {
         let query = query(account(for: entry, config: config))
         guard let password, !password.isEmpty else {

@@ -80,8 +80,27 @@ enum BackupRestoration {
                         library: [SavedConsoleCommand] = [], writeLibrary: ([SavedConsoleCommand]) throws -> Void = { _ in },
                         nmapTemplates: [NmapTemplate] = [], writeNmapTemplates: ([NmapTemplate]) throws -> Void = { _ in },
                         inventory: InventoryRepository? = nil, winbox: WinboxRepository? = nil,
-                        topology: TopologyRepository? = nil, topologyProfileMap: [UUID: UUID] = [:]) throws -> [(BackupRecord, SSHAlias)] {
+                        licenses: RecordLicenseRepository? = nil, topology: TopologyRepository? = nil, topologyProfileMap: [UUID: UUID] = [:],
+                        installPassword: ((String, SSHAlias) throws -> (() throws -> Void))? = nil,
+                        installSharedPassword: ((String, UUID, UUID) throws -> (() throws -> Void))? = nil) throws -> [(BackupRecord, SSHAlias)] {
         try backup.validate()
+        var backup = backup
+        let keyRoot = documents.root.deletingLastPathComponent().appendingPathComponent("SSHKeys")
+        let keyFolders = Dictionary(uniqueKeysWithValues: (backup.privateKeys ?? []).map { ($0.path, keyRoot.appendingPathComponent(UUID().uuidString)) })
+        let keyPaths = keyFolders.mapValues { $0.appendingPathComponent("identity").path }
+        for index in backup.records.indices { backup.records[index].record = BackupKeyPaths.rewriting(backup.records[index].record) { keyPaths[$0] ?? $0 } }
+        var credentialIDs: [UUID: [UUID: UUID]] = [:]
+        for index in (backup.operations ?? []).indices {
+            let profile = backup.operations![index].profileID
+            credentialIDs[profile] = Dictionary(uniqueKeysWithValues: (backup.operations![index].credentials?.presets ?? []).map { ($0.id, UUID()) })
+            for preset in (backup.operations![index].credentials?.presets ?? []).indices {
+                if let path = backup.operations![index].credentials?.presets[preset].identityFile { backup.operations![index].credentials?.presets[preset].identityFile = keyPaths[path] ?? path }
+            }
+        }
+        guard !backup.records.contains(where: { selected.contains($0.id) && $0.password != nil }) || installPassword != nil,
+              (backup.credentialSecrets ?? []).isEmpty || (installSharedPassword != nil && (backup.credentialSecrets ?? []).allSatisfy { topologyProfileMap[$0.profileID] != nil }) else { throw ConfigError.message("Недоступно защищённое хранилище для восстановления паролей.") }
+        var secretRollback: [() throws -> Void] = []
+        let licenses = licenses ?? RecordLicenseRepository(root: documents.root.deletingLastPathComponent().appendingPathComponent("LicenseFiles"))
         let inventory = inventory ?? InventoryRepository(root: documents.root.deletingLastPathComponent().appendingPathComponent("Inventory"))
         let winbox = winbox ?? WinboxRepository(root: documents.root.deletingLastPathComponent().appendingPathComponent("Winbox"))
         let topology = topology ?? TopologyRepository(root: documents.root.deletingLastPathComponent().appendingPathComponent("Topology"))
@@ -108,7 +127,7 @@ enum BackupRestoration {
         var metadata: [(BackupRecord, SSHAlias)] = []
         // New local records: existing SSH config and existing material files are never replaced.
         for value in backup.records where selected.contains(value.id) {
-            var record = value.record; record.originIdentity = nil; record.aliasName = nil; record.aliasSource = nil; record.inheritedSSHValues = nil
+            var record = value.record; if value.password != nil { record.id = UUID() }; record.originIdentity = nil; record.aliasName = nil; record.aliasSource = nil; record.inheritedSSHValues = nil
             while true {
                 let entry = record.entry(config: localRepository.config, privateConfig: localRepository.privateConfig(record.id))
                 if !after.contains(where: { $0.id == record.id }) && !FileManager.default.fileExists(atPath: documents.url(for: entry.favoriteID).path) && !FileManager.default.fileExists(atPath: commands.file(entry.favoriteID).path) && !FileManager.default.fileExists(atPath: attachments.folder(entry.favoriteID).path) && !FileManager.default.fileExists(atPath: inventory.url(for: entry.favoriteID).path) && !FileManager.default.fileExists(atPath: winbox.file(entry.favoriteID).path) { break }
@@ -149,6 +168,21 @@ enum BackupRestoration {
         }
         try NmapTemplates.validate(newNmapTemplates)
         do {
+            if !(backup.privateKeys ?? []).isEmpty {
+                try PrivateMaterialFile.directory(keyRoot.deletingLastPathComponent()); try PrivateMaterialFile.directory(keyRoot)
+                for key in backup.privateKeys ?? [] {
+                    let folder = keyFolders[key.path]!
+                    guard mkdir(folder.path, 0o700) == 0 else { throw ConfigError.message("Не удалось создать отдельный каталог SSH-ключа.") }
+                    installed.append(folder); try PrivateMaterialFile.write(key.data, to: folder.appendingPathComponent("identity"))
+                }
+            }
+            for index in metadata.indices {
+                for file in metadata[index].0.licenseFiles ?? [] {
+                    var new = file.metadata; new.id = UUID()
+                    try licenses.install(file.data, metadata: new); installed.append(licenses.folder(new.id))
+                    metadata[index].0.appearance.reminders = metadata[index].0.appearance.reminders?.map { reminder in var reminder = reminder; if reminder.licenseFile?.id == file.metadata.id { reminder.licenseFile = new }; return reminder }
+                }
+            }
             for (value, entry) in metadata {
                 installed.append(documents.url(for: entry.favoriteID)); try documents.write(value.document, for: entry.favoriteID)
                 installed.append(commands.file(entry.favoriteID)); try commands.write(value.commands, key: entry.favoriteID)
@@ -190,19 +224,27 @@ enum BackupRestoration {
                 try topology.write(copy, overwrite: false)
                 installed.append(topology.url(for: copy.id))
             }
-            let operationFiles = try BackupOperations.restored(backup.operations ?? [], config: localRepository.config, profileMap: topologyProfileMap, recordKeys: restoredRecordKeys, root: documents.root.deletingLastPathComponent())
+            let operationFiles = try BackupOperations.restored(backup.operations ?? [], config: localRepository.config, profileMap: topologyProfileMap, recordKeys: restoredRecordKeys, root: documents.root.deletingLastPathComponent(), credentialIDs: credentialIDs)
             installed += try BackupOperationFile.installAll(operationFiles)
             try writeTemplates(newTemplates)
             try writeLibrary(newLibrary)
             try writeNmapTemplates(newNmapTemplates)
+            for (value, entry) in metadata { if let password = value.password, let installPassword { secretRollback.append(try installPassword(password, entry)) } }
+            for value in backup.credentialSecrets ?? [] {
+                guard let installSharedPassword, let profile = topologyProfileMap[value.profileID], let preset = credentialIDs[value.profileID]?[value.presetID] else { throw ConfigError.message("Некорректное назначение учётных данных при восстановлении.") }
+                secretRollback.append(try installSharedPassword(value.password, profile, preset))
+            }
             try localRepository.write(after, expected: before)
         } catch {
+            var rollbackFailed = false
+            for undo in secretRollback.reversed() { do { try undo() } catch { rollbackFailed = true } }
             for url in installed { try? FileManager.default.removeItem(at: url) }
             try? writeTemplates(oldTemplates)
             try? writeLibrary(library)
             try? writeNmapTemplates(nmapTemplates)
             // A failed records write can leave only app-private generated transport files.
             for record in after where !before.contains(where: { $0.id == record.id }) { try? FileManager.default.removeItem(at: localRepository.privateConfig(record.id)) }
+            if rollbackFailed { throw ConfigError.message(error.localizedDescription + "\nНе удалось удалить часть новых паролей после отката.") }
             throw error
         }
         return metadata

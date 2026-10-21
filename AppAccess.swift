@@ -76,6 +76,7 @@ struct AppAccessKeychain: AppAccessStorage {
     private let biometricAvailable: () -> Bool
     private let biometricEvaluate: (() async throws -> Bool)?
     private var generation = UUID()
+    var authorizationRevision: UUID { generation }
     private var failures = 0
     private var nextAttempt = Date.distantPast
     private var readingKeychain = false

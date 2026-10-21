@@ -5,6 +5,8 @@ import Foundation
         if !value() { throw ConfigError.message("FAIL: " + message) }
     }
     static func main() throws {
+        try folderRenaming()
+        try tabReturnNavigation()
         try profileFolders()
         try namedMapSnapshots()
         if CommandLine.arguments.contains("--maps-only") {
@@ -203,5 +205,48 @@ import Foundation
         let oldData = Data("{\"version\":1,\"layout\":{\"primary\":[],\"secondary\":[],\"focused\":0,\"split\":\"none\"},\"fraction\":0.5,\"pages\":[{\"id\":\"\(legacy.id)\",\"section\":\"topology\"}],\"consoles\":[],\"windows\":[],\"paths\":{}}".utf8)
         let old = try JSONDecoder().decode(WorkspaceSnapshot.self, from: oldData)
         try require(old.restorablePages(profileID: profile).first?.topologyMapID(profileID: profile) == profile && old.tabStyles == nil, "old map snapshot reads without migration or automatic operations")
+    }
+}
+
+extension WorkspaceTests {
+    static func tabReturnNavigation() throws {
+        let first = WorkspaceTab.page(UUID()), second = WorkspaceTab.page(UUID()), third = WorkspaceTab.page(UUID()), document = WorkspaceTab.page(UUID())
+        var layout = WorkspaceLayout()
+        layout.select(first); layout.select(second); layout.select(third); layout.select(first); layout.open(document)
+        layout = try JSONDecoder().decode(WorkspaceLayout.self, from: JSONEncoder().encode(layout))
+        layout.remove(document)
+        try require(layout.active == first, "closing documentation returns to opener rather than adjacent web tab, including after persistence")
+        layout.open(document); layout.select(third); layout.select(document); layout.remove(document)
+        try require(layout.active == first, "opener has priority over subsequent tab visits")
+        layout.open(document); layout.remove(first); layout.select(second); layout.select(document); layout.remove(document)
+        try require(layout.active == second, "closed opener falls back to most recently selected remaining tab")
+        layout.open(document); layout.remove(third)
+        try require(layout.active == document, "closing background tab never steals focus")
+        layout.move(second, to: .secondary); layout.select(document); layout.remove(document)
+        try require(layout.active == second && layout.focused == .secondary, "return follows opener moved to another pane")
+        let replacement = WorkspaceTab.console(UUID())
+        layout.open(document); layout.replace(second, with: replacement); layout.remove(document)
+        try require(layout.active == replacement, "reconnect migrates opener identity")
+        layout.open(document); layout.insert(document, in: .primary); layout.remove(document)
+        try require(layout.active == replacement, "drag reordering preserves opener")
+        let legacy = Data("{\"primary\":[],\"secondary\":[],\"focused\":0,\"split\":\"none\"}".utf8)
+        let old = try JSONDecoder().decode(WorkspaceLayout.self, from: legacy)
+        try require(old.active == nil, "legacy snapshot without history remains readable")
+        layout.open(document); layout.normalize(valid: [document]); layout.remove(document)
+        try require(layout.active == nil, "normalization prunes deleted opener and stale history")
+    }
+}
+
+extension WorkspaceTests {
+    static func folderRenaming() throws {
+        var profiles = HubProfiles(); profiles.discover(["first", "shared"]); profiles.assign("shared", to: HubProfiles.workID, enabled: true)
+        profiles.profiles[0].folderPaths = ["Parent/Child", "Occupied/Child"]
+        profiles.profiles[1].folderPaths = ["Parent/Independent"]
+        let groups = ["first": "Parent/Child", "shared": "Parent/Child", "other": "Parent/Independent"]
+        let plan = try FolderRenamePlan(profiles: profiles, groups: groups, keys: ["first", "shared"], old: "Parent", name: "Renamed", appearance: .init())
+        try require(plan.groups["first"] == "Renamed/Child" && plan.groups["shared"] == "Renamed/Child" && plan.groups["other"] == groups["other"], "folder rename keeps stable record keys and moves active subtree")
+        try require(plan.profiles.profiles[1].folderPaths == profiles.profiles[1].folderPaths && plan.profiles.profiles[0].folderPaths?.contains("Renamed/Child") == true, "independent profile folders are not renamed")
+        do { _ = try FolderRenamePlan(profiles: profiles, groups: groups, keys: ["first"], old: "Parent", name: "Occupied", appearance: .init()); throw ConfigError.message("FAIL: collision accepted") } catch ConfigError.message(let text) { try require(!text.hasPrefix("FAIL:"), "folder collision rejected") }
+        do { _ = try FolderRenamePlan(profiles: profiles, groups: groups, keys: ["first"], old: "Parent", name: "../Bad", appearance: .init()); throw ConfigError.message("FAIL: invalid name accepted") } catch ConfigError.message(let text) { try require(!text.hasPrefix("FAIL:"), "folder invalid path rejected") }
     }
 }

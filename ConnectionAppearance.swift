@@ -185,6 +185,13 @@ enum RecordReminderKind: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String { self == .license ? "Лицензия" : "Оплата" }
 }
+struct RecordLicenseFile: Codable, Equatable, Identifiable {
+    var id = UUID()
+    var name: String
+    var size: Int
+    var digest: String
+    var valid: Bool { !name.isEmpty && name != "." && name != ".." && name.utf8.count <= 255 && !name.contains(where: { $0 == "/" || $0 == "\\" }) && !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) && (0...10_485_760).contains(size) && digest.count == 64 && digest.allSatisfy { "0123456789abcdef".contains($0) } }
+}
 struct RecordReminder: Codable, Equatable, Identifiable {
     var id = UUID()
     var kind: RecordReminderKind = .license
@@ -192,6 +199,8 @@ struct RecordReminder: Codable, Equatable, Identifiable {
     // A civil date, independent of the time zone in which the record was edited.
     var deadline = Self.dayString(Date())
     var noticeDays = 30
+    var note: String? = nil
+    var licenseFile: RecordLicenseFile? = nil
     static func calendar(_ timeZone: TimeZone = .current) -> Calendar { var result = Calendar(identifier: .gregorian); result.timeZone = timeZone; return result }
     static func dayString(_ date: Date, calendar: Calendar = Self.calendar()) -> String {
         let c = calendar.dateComponents([.year, .month, .day], from: date)
@@ -204,7 +213,7 @@ struct RecordReminder: Codable, Equatable, Identifiable {
               let date = calendar.date(from: DateComponents(year: year, month: month, day: day)), Self.dayString(date, calendar: calendar) == deadline else { return nil }
         return date
     }
-    var valid: Bool { title.count <= 80 && !title.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) && (0...3650).contains(noticeDays) && date() != nil }
+    var valid: Bool { (note?.utf8.count ?? 0) <= 16384 && !(note ?? "").unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) && $0 != "\n" && $0 != "\t" && $0 != "\r" }) && (licenseFile == nil || (kind == .license && licenseFile!.valid)) && title.count <= 80 && !title.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) && (0...3650).contains(noticeDays) && date() != nil }
     func daysRemaining(now: Date = Date(), calendar: Calendar = Self.calendar()) -> Int? {
         guard let date = date(calendar: calendar) else { return nil }
         return calendar.dateComponents([.day], from: calendar.startOfDay(for: now), to: calendar.startOfDay(for: date)).day

@@ -19,15 +19,25 @@ struct FolderAppearanceView: View {
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) private var dismiss
     @State private var appearance = ConnectionAppearance()
+    @State private var name = ""
+    @State private var expectedProfiles: HubProfiles?
+    @State private var expectedGroups: [String: String] = [:]
+    @State private var error: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text("Логотип папки").font(.title2).bold()
+            Text("Редактирование папки").font(.title2).bold()
             Text(path).foregroundStyle(.secondary)
+            TextField("Название папки", text: $name).textFieldStyle(.roundedBorder)
             FolderAppearanceFields(appearance: $appearance)
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
             HStack { Spacer(); Button("Отмена", role: .cancel) { dismiss() }; Button("Сохранить") {
-                store.setFolderAppearance(appearance, path: path); dismiss()
+                do {
+                    guard !AppAccess.shared.locked, !store.endingWorkspace, expectedProfiles == store.profiles, expectedGroups == store.groups else { throw ConfigError.message("Папки изменились. Открой редактор заново.") }
+                    let plan = try FolderRenamePlan(profiles: store.profiles, groups: store.groups, keys: Set(store.profileEntries.map(\.favoriteID)), old: path, name: name, appearance: appearance)
+                    store.applyFolderRename(plan); dismiss()
+                } catch { self.error = error.localizedDescription }
             }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction) }
-        }.padding(24).frame(width: 460).dismissOnOutsideClick().onAppear { appearance = store.folderAppearance(path) }
+        }.padding(24).frame(width: 460).dismissOnOutsideClick().onAppear { appearance = store.folderAppearance(path); name = ConnectionTree.components(path).last ?? ""; expectedProfiles = store.profiles; expectedGroups = store.groups }
     }
 }
 

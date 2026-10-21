@@ -2,10 +2,10 @@ import SwiftUI
 import AppKit
 
 enum RecordEditorSection: String, Identifiable {
-    case general, connection, key, availability, commands, renewals, preview
+    case general, connection, key, availability, commands, licenses, payments, preview
     var id: String { rawValue }
-    var title: String { switch self { case .renewals: return "Лицензии и оплаты"; case .general: return "Общие"; case .connection: return "Подключение"; case .key: return "SSH-ключ"; case .availability: return "Доступность"; case .commands: return "Команды"; case .preview: return "SSH-конфиг" } }
-    var icon: String { switch self { case .renewals: return "calendar.badge.clock"; case .general: return "slider.horizontal.3"; case .connection: return "cable.connector"; case .key: return "key"; case .availability: return "waveform.path.ecg"; case .commands: return "terminal"; case .preview: return "doc.text" } }
+    var title: String { switch self { case .licenses: return "Лицензии"; case .payments: return "Оплаты"; case .general: return "Общие"; case .connection: return "Подключение"; case .key: return "SSH-ключ"; case .availability: return "Доступность"; case .commands: return "Команды"; case .preview: return "SSH-конфиг" } }
+    var icon: String { switch self { case .licenses: return "key.horizontal"; case .payments: return "creditcard"; case .general: return "slider.horizontal.3"; case .connection: return "cable.connector"; case .key: return "key"; case .availability: return "waveform.path.ecg"; case .commands: return "terminal"; case .preview: return "doc.text" } }
 }
 struct RecordSSHConnectionFields: View {
     @Binding var host: String
@@ -186,6 +186,7 @@ struct RecordEditorView: View {
     var beforeSave: (() throws -> Void)?
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var licenseFiles = LicenseFileDrafts()
     @State private var visualWebLogin = false
     @State private var advancedWebLogin = false
     @State private var credentialEdit = RecordCredentialEdit()
@@ -242,7 +243,7 @@ struct RecordEditorView: View {
         if kind == .ssh { sections.append(.key) }
         if [.ssh, .rdp, .vnc, .website, .web, .telnet, .ftp, .ftps, .webdav, .mosh, .adb].contains(kind) { sections.append(.availability) }
         if kind.isConsole { sections.append(.commands) }
-        sections.append(.renewals)
+        sections += [.licenses, .payments]
         return sections
     }
     var body: some View {
@@ -274,7 +275,8 @@ struct RecordEditorView: View {
             case .commands:
                 if let entry = savedEntry { ConsoleCommandsSettingsLink(entry: entry) }
                 else { Text("Сначала сохрани запись, затем назначь команды из общей библиотеки.").foregroundStyle(.secondary) }
-            case .renewals: RecordReminderDraftFields(appearance: $appearance)
+            case .licenses: RecordReminderDraftFields(kind: .license, appearance: $appearance).environmentObject(licenseFiles)
+            case .payments: RecordReminderDraftFields(kind: .payment, appearance: $appearance).environmentObject(licenseFiles)
             case .preview: EmptyView()
             }
         } actions: {
@@ -463,6 +465,7 @@ struct RecordEditorView: View {
         var ssh: ConfigChange?, credentialChanged = false, previousPassword: String?
         var bindingChange: CredentialBindingChange?
         do {
+            try licenseFiles.prepare(appearance.reminders)
             try beforeSave?()
             if kind == .ssh || kind.hasPassword || kind.isWeb { bindingChange = try store.applyCredentialEdit(credentialEdit, target: target.favoriteID) }
             let changePassword = !usesSharedCredential && ( removePassword || ((kind.isWeb || kind == .ssh || kind.hasPassword) && ((!keepPassword && reusePassword) || (keepPassword && !password.isEmpty))))
@@ -487,7 +490,7 @@ struct RecordEditorView: View {
             store.undoCredentialChange = bindingChange
             if let saved = store.aliases.first(where: { $0.localID == candidate.id }), saved.availabilityEndpoint != nil { store.availability.apply(entry: saved, enabled: monitorEnabled, interval: monitorInterval, available: store.aliases) }
             onSaved?(target)
-            dismiss()
+            licenseFiles.finish(); dismiss()
         } catch {
             var detail = error.localizedDescription
             if !recordCommitted { for url in stagedTemplateURLs { try? FileManager.default.removeItem(at: url) } }

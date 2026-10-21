@@ -112,6 +112,8 @@ private final class MemorySharedSecrets: SharedCredentialSecretStorage {
         try require(backend.values[backend.key(repository.scope, preset.id)] == nil, "secret rollback on stale metadata")
         var moved = newer; moved.bindings["old"] = preset.id; moved.moveBinding(from: "old", to: "new")
         try require(moved.bindings["old"] == nil && moved.bindings["new"] == preset.id, "binding rename")
+        let portableWeb = SharedCredentialPreset(title: "Portable web", username: "fixture@example.invalid", authentication: .password, inheritsRecordAuthentication: true)
+        try require(portableWeb.validation == nil, "portable web username can contain an email address")
         let invalid = SharedCredentialPreset(title: "bad", username: "bad\nuser", authentication: .password)
         try require(invalid.validation != nil, "control character validation")
         // Corrupt files block writes; they are never replaced with an empty document.

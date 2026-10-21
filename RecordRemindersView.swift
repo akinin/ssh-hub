@@ -25,7 +25,11 @@ final class RecordReminderRowView: NSTableRowView {
     } }
     override var interiorBackgroundStyle: NSView.BackgroundStyle { isSelected && selectedTint != nil ? .emphasized : super.interiorBackgroundStyle }
     var style = RecordReminderAppearance()
-    private var path: NSBezierPath { NSBezierPath(roundedRect: bounds.insetBy(dx: 12, dy: 1), xRadius: 6, yRadius: 6) }
+    private var path: NSBezierPath {
+        var rect = bounds.insetBy(dx: 12, dy: 1)
+        rect.size.width = max(0, min(rect.width, 320))
+        return NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
+    }
     override func drawBackground(in dirtyRect: NSRect) {
         super.drawBackground(in: dirtyRect)
         if isSelected, selectedTint != nil { drawSelection(in: dirtyRect); return }
@@ -35,7 +39,7 @@ final class RecordReminderRowView: NSTableRowView {
         }
     }
     override func drawSelection(in dirtyRect: NSRect) {
-        guard let selectedTint else { super.drawSelection(in: dirtyRect); return }
+        guard let selectedTint else { NSGraphicsContext.saveGraphicsState(); path.addClip(); super.drawSelection(in: dirtyRect); NSGraphicsContext.restoreGraphicsState(); return }
         selectedTint.withAlphaComponent((style.selectionOpacity ?? 0.80) * (isEmphasized ? 1 : 0.7)).setFill(); path.fill()
         if let tint, style.tintSelection != false { stroke(tint) }
     }
@@ -91,25 +95,87 @@ struct GlobalReminderAppearanceSettings: View {
     }
 }
 
+// Draft bytes stay in memory until the surrounding editor saves. Published
+// immutable files belong to this draft until its metadata commit succeeds.
+final class LicenseFileDrafts: ObservableObject {
+    let repository = RecordLicenseRepository()
+    private var pending: [UUID: Data] = [:]
+    private var installed: [UUID] = []
+    private var committed = false
+    private var active = Set<UUID>()
+    func add(_ url: URL) throws -> RecordLicenseFile {
+        let data = try PrivateMaterialFile.read(url, limit: RecordLicenseRepository.limit)
+        let metadata = RecordLicenseFile(name: url.lastPathComponent, size: data.count, digest: PrivateMaterialFile.digest(data))
+        guard metadata.valid else { throw ConfigError.message("Некорректное имя файла лицензии.") }
+        guard pending.count < 21, pending.values.reduce(0, { $0 + $1.count }) + data.count <= 220_200_960 else { throw ConfigError.message("Слишком много файлов в черновике лицензий.") }
+        pending[metadata.id] = data; return metadata
+    }
+    func data(_ metadata: RecordLicenseFile) throws -> Data { try pending[metadata.id] ?? repository.load(metadata) }
+    func retain(_ reminders: [RecordReminder]) { active = Set(reminders.compactMap { $0.licenseFile?.id }); pending = pending.filter { active.contains($0.key) } }
+    func prepare(_ reminders: [RecordReminder]?) throws {
+        retain(reminders ?? [])
+        for metadata in (reminders ?? []).compactMap(\.licenseFile) {
+            if let data = pending[metadata.id], !installed.contains(metadata.id) { try repository.install(data, metadata: metadata); installed.append(metadata.id) }
+            else { _ = try repository.load(metadata) }
+        }
+    }
+    func finish() { for id in installed where !active.contains(id) { try? FileManager.default.removeItem(at: repository.folder(id)) }; committed = true; pending.removeAll() }
+    deinit { if !committed { for id in installed { try? FileManager.default.removeItem(at: repository.folder(id)) } } }
+}
+struct LicenseFileFields: View {
+    @Binding var reminder: RecordReminder
+    @EnvironmentObject private var files: LicenseFileDrafts
+    @State private var error: String?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let metadata = reminder.licenseFile {
+                Label(metadata.name, systemImage: "doc.badge.key").lineLimit(1).help(metadata.name)
+                HStack { Button("Сохранить файл как…") { save(metadata) }; Button("Убрать файл") { reminder.licenseFile = nil } }
+            } else { Button("Прикрепить файл лицензии…", systemImage: "paperclip") { choose() } }
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
+        }
+    }
+    private func choose() {
+        guard !AppAccess.shared.locked else { return }
+        let revision = AppAccess.shared.authorizationRevision
+        let panel = NSOpenPanel(); panel.title = "Файл лицензии (до 10 МиБ)"; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard !AppAccess.shared.locked, revision == AppAccess.shared.authorizationRevision else { return }
+        do { reminder.licenseFile = try files.add(url); error = nil } catch { self.error = error.localizedDescription }
+    }
+    private func save(_ metadata: RecordLicenseFile) {
+        guard !AppAccess.shared.locked else { return }
+        let revision = AppAccess.shared.authorizationRevision
+        let panel = NSSavePanel(); panel.nameFieldStringValue = metadata.name
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard !AppAccess.shared.locked, revision == AppAccess.shared.authorizationRevision else { return }
+        do { try files.data(metadata).write(to: url, options: .atomic); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path); error = nil } catch { self.error = error.localizedDescription }
+    }
+}
 struct RecordReminderFields: View {
+    @EnvironmentObject private var files: LicenseFileDrafts
     @Binding var reminders: [RecordReminder]
+    var kind: RecordReminderKind
     @Binding var useGlobal: Bool
     @Binding var style: RecordReminderAppearance
     var body: some View {
                 VStack(alignment: .leading, spacing: 14) {
-                    if reminders.isEmpty { Text("Добавь лицензию или оплату, укажи дату и за сколько дней показать предупреждение рядом с записью.").foregroundStyle(.secondary) }
+                    if !reminders.contains(where: { $0.kind == kind }) { Text("Укажи дату и за сколько дней показать предупреждение рядом с записью.").foregroundStyle(.secondary) }
                     ForEach($reminders) { $reminder in
-                        GroupBox {
+                        if reminder.kind == kind { GroupBox {
                             VStack(alignment: .leading, spacing: 10) {
-                                HStack { Picker("Тип", selection: $reminder.kind) { ForEach(RecordReminderKind.allCases) { Text($0.title).tag($0) } }.frame(width: 200); Spacer(); Button { reminders.removeAll { $0.id == reminder.id } } label: { Image(systemName: "trash") }.help("Убрать этот срок из черновика") }
+                                HStack { Text(kind.title).font(.headline); Spacer(); Button { reminders.removeAll { $0.id == reminder.id } } label: { Image(systemName: "trash") }.help("Убрать этот срок из черновика") }
                                 TextField("Название (необязательно)", text: $reminder.title).textFieldStyle(.roundedBorder)
                                 DatePicker(reminder.kind == .license ? "Окончание" : "Следующая оплата", selection: Binding(get: { reminder.date() ?? Date() }, set: { reminder.deadline = RecordReminder.dayString($0) }), in: Self.dateRange, displayedComponents: .date)
                                 HStack { Text("Предупреждать за"); TextField("Дни", value: $reminder.noticeDays, format: .number.grouping(.never)).textFieldStyle(.roundedBorder).frame(width: 65); Text("дней (0–3650)").foregroundStyle(.secondary); Spacer() }
+                                Text("Примечание").font(.caption).foregroundStyle(.secondary)
+                                TextEditor(text: Binding(get: { reminder.note ?? "" }, set: { reminder.note = $0.isEmpty ? nil : $0 })).font(.body).frame(height: 65).border(.quaternary)
+                                if kind == .license { LicenseFileFields(reminder: $reminder) }
                                 if let notice = reminder.notice() { Text(notice.text).font(.caption).foregroundStyle(notice.level > 1 ? .red : .orange) }
                             }.padding(8)
-                        }
+                        } }
                     }
-                    HStack { Button("Добавить лицензию", systemImage: "key") { reminders.append(RecordReminder()) }; Button("Добавить оплату", systemImage: "creditcard") { var value = RecordReminder(); value.kind = .payment; reminders.append(value) } }.disabled(reminders.count >= 20)
+                    Button(kind == .license ? "Добавить лицензию" : "Добавить оплату", systemImage: kind == .license ? "key" : "creditcard") { var value = RecordReminder(); value.kind = kind; reminders.append(value) }.disabled(reminders.count >= 20)
                     DisclosureGroup("Оформление индикатора") {
                         VStack(alignment: .leading, spacing: 12) {
                             Toggle("Использовать общие настройки", isOn: $useGlobal)
@@ -117,15 +183,16 @@ struct RecordReminderFields: View {
                             else { ReminderAppearanceFields(value: $style) }
                         }.padding(.top, 10)
                     }.disclosureGroupStyle(FullRowDisclosureStyle())
-                }
+                }.onChange(of: reminders) { _, values in files.retain(values) }
     }
     private static var dateRange: ClosedRange<Date> { let calendar = RecordReminder.calendar(); return calendar.date(from: DateComponents(year: 1970, month: 1, day: 1))!...calendar.date(from: DateComponents(year: 2100, month: 12, day: 31))! }
 }
 struct RecordReminderDraftFields: View {
+    var kind: RecordReminderKind
     @Binding var appearance: ConnectionAppearance
     @AppStorage(RecordReminderDefaults.key) private var globalData = Data()
     var body: some View {
-        RecordReminderFields(reminders: Binding(get: { appearance.reminders ?? [] }, set: { appearance.reminders = $0.isEmpty ? nil : $0 }),
+        RecordReminderFields(reminders: Binding(get: { appearance.reminders ?? [] }, set: { appearance.reminders = $0.isEmpty ? nil : $0 }), kind: kind,
             useGlobal: Binding(get: { appearance.reminderAppearance == nil }, set: { appearance.reminderAppearance = $0 ? nil : RecordReminderDefaults.decode(globalData) }),
             style: Binding(get: { appearance.reminderAppearance ?? RecordReminderDefaults.decode(globalData) }, set: { appearance.reminderAppearance = $0 }))
     }
@@ -137,6 +204,8 @@ struct RecordRemindersView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage(RecordReminderDefaults.key) private var globalData = Data()
     @State private var reminders: [RecordReminder] = []
+    @State private var kind: RecordReminderKind = .license
+    @StateObject private var licenseFiles = LicenseFileDrafts()
     @State private var initialReminders: [RecordReminder] = []
     @State private var style = RecordReminderAppearance()
     @State private var initialStyle: RecordReminderAppearance?
@@ -146,8 +215,9 @@ struct RecordRemindersView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HubSheetHeader(title: "Лицензии и оплаты", subtitle: store.title(entry), icon: "calendar.badge.clock")
+            Picker("Раздел", selection: $kind) { Text("Лицензии").tag(RecordReminderKind.license); Text("Оплаты").tag(RecordReminderKind.payment) }.pickerStyle(.segmented)
             ScrollView {
-                RecordReminderFields(reminders: $reminders, useGlobal: $useGlobal, style: $style).padding(.trailing, 8)
+                RecordReminderFields(reminders: $reminders, kind: kind, useGlobal: $useGlobal, style: $style).environmentObject(licenseFiles).padding(.trailing, 8)
             }
             if !valid { Text("Проверь даты и дни предупреждения (0–3650). Название — до 80 символов без переводов строк.").font(.caption).foregroundStyle(.red) }
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
@@ -163,6 +233,7 @@ struct RecordRemindersView: View {
         appearance.reminders = reminders.isEmpty ? nil : reminders.map { var item = $0; item.title = item.title.trimmingCharacters(in: .whitespacesAndNewlines); return item }
         appearance.reminderAppearance = useGlobal ? nil : style
         guard appearance.validation == nil else { error = appearance.validation; return }
-        store.setAppearance(appearance, for: current); dismiss()
+        do { try licenseFiles.prepare(appearance.reminders); store.setAppearance(appearance, for: current); licenseFiles.finish(); dismiss() }
+        catch { self.error = error.localizedDescription }
     }
 }

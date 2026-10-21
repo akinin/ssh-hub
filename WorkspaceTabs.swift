@@ -22,7 +22,7 @@ extension AliasStore {
         } else if section == .connection {
             connectionSessions[page.id]?.start()
         }
-        selectPage(page)
+        if !focusDetached(.page(page.id)) { workspace.open(.page(page.id)); syncWorkspaceSelection() }
     }
     func selectPage(_ page: EntryPage) { if focusDetached(.page(page.id)) { return }; workspace.select(.page(page.id)); syncWorkspaceSelection() }
     func selectConsole(_ session: ConsoleSession) { if focusDetached(.console(session.id)) { return }; workspace.select(.console(session.id)); syncWorkspaceSelection() }
