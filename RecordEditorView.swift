@@ -2,10 +2,10 @@ import SwiftUI
 import AppKit
 
 enum RecordEditorSection: String, Identifiable {
-    case general, connection, key, availability, commands, preview
+    case general, connection, key, availability, commands, renewals, preview
     var id: String { rawValue }
-    var title: String { switch self { case .general: return "Общие"; case .connection: return "Подключение"; case .key: return "SSH-ключ"; case .availability: return "Доступность"; case .commands: return "Команды"; case .preview: return "SSH-конфиг" } }
-    var icon: String { switch self { case .general: return "slider.horizontal.3"; case .connection: return "cable.connector"; case .key: return "key"; case .availability: return "waveform.path.ecg"; case .commands: return "terminal"; case .preview: return "doc.text" } }
+    var title: String { switch self { case .renewals: return "Лицензии и оплаты"; case .general: return "Общие"; case .connection: return "Подключение"; case .key: return "SSH-ключ"; case .availability: return "Доступность"; case .commands: return "Команды"; case .preview: return "SSH-конфиг" } }
+    var icon: String { switch self { case .renewals: return "calendar.badge.clock"; case .general: return "slider.horizontal.3"; case .connection: return "cable.connector"; case .key: return "key"; case .availability: return "waveform.path.ecg"; case .commands: return "terminal"; case .preview: return "doc.text" } }
 }
 struct RecordSSHConnectionFields: View {
     @Binding var host: String
@@ -134,15 +134,19 @@ extension AliasStore {
         do {
             guard let id = entry.localID else { return }
             let before = try localRepository.load(), after = before.filter { $0.id != id }
+            guard before.first(where: { $0.id == id }) == localRecords.first(where: { $0.id == id }), before.contains(where: { $0.id == id }) else { throw ConfigError.message("Запись уже удалена. Обнови список.") }
+            let trashed = try captureTrash(entry)
             var ssh: ConfigChange?
+            do {
             if let name = entry.recordAlias, let alias = try config.load().aliases.first(where: { $0.name == name && $0.source == localRecords.first(where: { $0.id == id })?.aliasSource }) {
                 ssh = try config.delete(config.editSnapshot(alias))
             }
             do { try localRepository.write(after, expected: before) }
             catch { if let ssh { _ = try config.undo(ssh) }; throw error }
+            } catch { try? trashRepository.remove(trashed.id); throw error }
             clearUndo(); undoRecordChange = LocalRecordChange(before: before, after: after, ssh: ssh, appearances: appearances, groups: groups, favorites: favorites)
             ConsoleStore.shared.sessions.filter { $0.entry.localID == id }.forEach { ConsoleStore.shared.close($0) }
-            TunnelManager.shared.stop(alias: entry); reload(); notice = "Запись удалена. Можно отменить действие."
+            TunnelManager.shared.stop(alias: entry); reload(); notice = "Запись перемещена в корзину. Можно отменить действие."
         } catch { self.error = error.localizedDescription }
     }
     func undoRecord(_ change: LocalRecordChange) {
@@ -238,6 +242,7 @@ struct RecordEditorView: View {
         if kind == .ssh { sections.append(.key) }
         if [.ssh, .rdp, .vnc, .website, .web, .telnet, .ftp, .ftps, .webdav, .mosh, .adb].contains(kind) { sections.append(.availability) }
         if kind.isConsole { sections.append(.commands) }
+        sections.append(.renewals)
         return sections
     }
     var body: some View {
@@ -269,6 +274,7 @@ struct RecordEditorView: View {
             case .commands:
                 if let entry = savedEntry { ConsoleCommandsSettingsLink(entry: entry) }
                 else { Text("Сначала сохрани запись, затем назначь команды из общей библиотеки.").foregroundStyle(.secondary) }
+            case .renewals: RecordReminderDraftFields(appearance: $appearance)
             case .preview: EmptyView()
             }
         } actions: {

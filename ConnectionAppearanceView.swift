@@ -52,9 +52,10 @@ struct ConnectionAppearanceView: View {
     @State private var appearance = ConnectionAppearance()
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text("Название и логотип").font(.title2).bold()
+            Text("Оформление карточки").font(.title2).bold()
             Text(entry.secondaryTitle).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
             ConnectionAppearanceFields(appearance: $appearance, fallback: entry.name, website: entry.website ?? "")
+            RecordPinnedFieldsEditor(appearance: $appearance)
             if let validation = appearance.validation { Text(validation).font(.caption).foregroundStyle(.red) }
             HStack {
                 Spacer()
@@ -80,7 +81,7 @@ struct WebsiteIconView: View {
         VStack(alignment: .leading, spacing: 14) {
             Label("Иконка с сайта", systemImage: "globe").font(.title3).bold()
             TextField("https://example.com", text: $address).textFieldStyle(.roundedBorder).accessibilityIdentifier("websiteIconURL").disabled(task != nil)
-            Text("Загрузится иконка страницы или favicon. Пароли и cookies браузера не используются. Изменение логотипа записи применяется после сохранения.").font(.caption).foregroundStyle(.secondary)
+            Text("Загрузится иконка страницы или favicon. Пароли и cookies браузера не используются. Изменение логотипа применяется после сохранения.").font(.caption).foregroundStyle(.secondary)
             if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
             if certificateFailure != nil {
                 Button("Всё равно получить") { load(acceptCertificate: true) }.disabled(task != nil)
@@ -104,6 +105,24 @@ struct WebsiteIconView: View {
         task = Task { @MainActor in
             do { let data = try await WebsiteIcon.load(target, acceptingCertificatesFor: accepted); try Task.checkCancellation(); apply(data); task = nil; dismiss() }
             catch { if !Task.isCancelled { self.error = error.localizedDescription; certificateFailure = error as? WebsiteIconCertificateFailure }; task = nil }
+        }
+    }
+}
+
+struct RecordPinnedFieldsEditor: View {
+    @Binding var appearance: ConnectionAppearance
+    private var selected: [String] { appearance.pinnedFields ?? RecordPinnedField.defaults.map(\.rawValue) }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack { Text("Поля рядом с названием").font(.headline); Spacer(); Button("По умолчанию") { appearance.pinnedFields = nil }.controlSize(.small) }
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 8) {
+                ForEach(RecordPinnedField.allCases) { field in
+                    Toggle(field.title, isOn: Binding(get: { selected.contains(field.rawValue) }, set: { enabled in
+                        var fields = selected; fields.removeAll { $0 == field.rawValue }; if enabled { fields.append(field.rawValue) }; appearance.pinnedFields = fields
+                    })).toggleStyle(.checkbox)
+                }
+            }
+            Text("Настройка только этой записи. Пустые значения не показываются; пароли и содержимое ключей здесь не выводятся.").font(.caption).foregroundStyle(.secondary)
         }
     }
 }

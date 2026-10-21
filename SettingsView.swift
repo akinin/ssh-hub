@@ -3,15 +3,16 @@ import AppKit
 import ServiceManagement
 
 private enum AppSettingsSection: String, CaseIterable, Identifiable {
-    case connections, wireGuard, keePass, workspace, startup, updates, transfer, security
+    case connections, appearance, wireGuard, keePass, workspace, startup, updates, transfer, security
     var id: String { rawValue }
-    var title: String { switch self { case .wireGuard: return "WireGuard"; case .keePass: return "KeePass"; case .security: return "Авторизация"; case .connections: return "Подключения"; case .workspace: return "Рабочая область"; case .startup: return "Запуск"; case .updates: return "Обновления"; case .transfer: return "Перенос данных" } }
-    var icon: String { switch self { case .wireGuard: return "network.badge.shield.half.filled"; case .keePass: return "lock.rectangle.stack"; case .security: return "lock.shield"; case .connections: return "network"; case .workspace: return "rectangle.split.2x1"; case .startup: return "power"; case .updates: return "arrow.triangle.2.circlepath"; case .transfer: return "externaldrive" } }
+    var title: String { switch self { case .appearance: return "Внешний вид"; case .wireGuard: return "WireGuard"; case .keePass: return "KeePass"; case .security: return "Авторизация"; case .connections: return "Подключения"; case .workspace: return "Рабочая область"; case .startup: return "Запуск"; case .updates: return "Обновления"; case .transfer: return "Перенос данных" } }
+    var icon: String { switch self { case .appearance: return "paintbrush"; case .wireGuard: return "network.badge.shield.half.filled"; case .keePass: return "lock.rectangle.stack"; case .security: return "lock.shield"; case .connections: return "network"; case .workspace: return "rectangle.split.2x1"; case .startup: return "power"; case .updates: return "arrow.triangle.2.circlepath"; case .transfer: return "externaldrive" } }
 }
 
 struct AppSettingsView: View {
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) private var dismiss
+    @AppStorage(RecordSelectionDefaults.key) private var selectionColor = "gray"
     @AppStorage(InterfaceDensity.key) private var density = InterfaceDensity.normal.rawValue
     @AppStorage("consoleDestination.v1") private var consoleDestination = "embedded"
     @AppStorage("restoreWorkspace.v1") private var restoreWorkspace = true
@@ -58,14 +59,23 @@ struct AppSettingsView: View {
                                 }
                                 Text("iTerm2 появится в списке, если он установлен.").font(.caption).foregroundStyle(.secondary)
                             }
-                        case .workspace:
+                        case .appearance:
                             Section {
+                                Picker("Цвет выделения записей", selection: $selectionColor) { ForEach(RecordSelectionDefaults.colors, id: \.self) { Text($0 == "system" ? "Системный" : RecordActionStyle.colorTitle($0)).tag($0) } }
                                 Picker("Плотность интерфейса", selection: $density) {
                                     ForEach(InterfaceDensity.allCases) { Text($0.title).tag($0.rawValue) }
                                 }.pickerStyle(.segmented)
                                 Text("Высота строк списка и размер плиток. Применяется сразу во всех профилях.").font(.caption).foregroundStyle(.secondary)
                                 Button("Плитки всех записей…", systemImage: "square.grid.2x2") { showingActionTiles = true }
                                 Text("Общий порядок, цвета и набор плиток. Индивидуальные настройки записей имеют приоритет.").font(.caption).foregroundStyle(.secondary)
+                            }
+                            Section("Консоль") {
+                                ConsolePreferencesView()
+                                Text("Шрифт, размер, цвета и цветовые схемы применяются ко всем встроенным консолям. Быстрый доступ из сеанса использует те же настройки.").font(.caption).foregroundStyle(.secondary)
+                            }
+                            GlobalReminderAppearanceSettings()
+                        case .workspace:
+                            Section {
                                 Toggle("Восстанавливать вкладки, панели и окна", isOn: $restoreWorkspace)
                                 Text("Сохранённые SSH, Serial и SFTP-вкладки подключаются по кнопке.").font(.caption).foregroundStyle(.secondary)
                             }

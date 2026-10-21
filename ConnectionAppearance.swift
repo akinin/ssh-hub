@@ -4,14 +4,20 @@ struct ConnectionAppearance: Codable, Equatable {
     var name = ""
     var logo: Data?
     var actionTiles: [RecordActionStyle]? = nil
+    var pinnedFields: [String]? = nil
+    var reminders: [RecordReminder]? = nil
+    var reminderAppearance: RecordReminderAppearance? = nil
     var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
-    var isEmpty: Bool { trimmedName.isEmpty && logo == nil && (actionTiles?.isEmpty != false) }
+    var isEmpty: Bool { trimmedName.isEmpty && logo == nil && (actionTiles?.isEmpty != false) && pinnedFields == nil && (reminders?.isEmpty != false) && reminderAppearance == nil }
     func title(fallback: String) -> String { trimmedName.isEmpty ? fallback : trimmedName }
     var validation: String? {
         if name.count > 80 || name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) {
             return "Название должно занимать одну строку до 80 символов."
         }
         if let actionTiles, actionTiles.count > RecordActionStyle.limit || Set(actionTiles.map(\.id)).count != actionTiles.count || !actionTiles.allSatisfy(\.valid) { return "Некорректные настройки плиток." }
+        if let fields = pinnedFields, fields.count > RecordPinnedField.allCases.count || Set(fields).count != fields.count || !fields.allSatisfy({ RecordPinnedField(rawValue: $0) != nil }) { return "Некорректный набор полей карточки." }
+        if let reminders, reminders.count > 20 || Set(reminders.map(\.id)).count != reminders.count || !reminders.allSatisfy(\.valid) { return "Некорректные лицензии или оплаты: до 20 сроков на запись." }
+        if let reminderAppearance, !reminderAppearance.valid { return "Некорректное оформление напоминаний." }
         if let logo, !Self.validLogo(logo) { return "Логотип должен быть PNG до 256 × 256 пикселей и 256 КБ." }
         return nil
     }
@@ -60,11 +66,11 @@ struct RecordActionStyle: Codable, Equatable, Identifiable {
 }
 
 enum RecordAction: String, CaseIterable, Identifiable {
-    case inside, browser, connect, sftp, logs, inventory, documentation, attachments, tools, edit, check, notifications, terminal, favorite, duplicate, export, keePass, vpn, delete
+    case inside, browser, connect, sftp, logs, inventory, documentation, attachments, tools, edit, check, notifications, terminal, favorite, duplicate, export, keePass, vpn, delete, renewals
     var id: String { rawValue }
     var defaultPlacement: RecordActionPlacement { switch self { case .keePass, .vpn: return .badges; case .favorite, .duplicate, .export, .delete: return .header; default: return .tiles } }
-    var title: String { switch self { case .favorite: return "Избранное"; case .duplicate: return "Дублировать"; case .export: return "Экспортировать"; case .keePass: return "KeePass"; case .vpn: return "VPN"; case .delete: return "Удалить"; case .inside: return "Открыть внутри"; case .browser: return "Открыть в браузере"; case .connect: return "Подключиться"; case .sftp: return "SFTP"; case .logs: return "Логи"; case .inventory: return "Инвентаризация"; case .documentation: return "Документация"; case .attachments: return "Вложения"; case .tools: return "Инструменты"; case .edit: return "Редактировать"; case .check: return "Проверить"; case .notifications: return "Уведомления"; case .terminal: return "Внешний терминал" } }
-    var icon: String { switch self { case .favorite: return "star"; case .duplicate: return "plus.square.on.square"; case .export: return "square.and.arrow.up"; case .keePass: return "key"; case .vpn: return "network.badge.shield.half.filled"; case .delete: return "trash"; case .inside: return "macwindow"; case .browser, .terminal: return "arrow.up.forward.square"; case .connect: return "cable.connector"; case .sftp: return "folder"; case .logs: return "text.alignleft"; case .inventory: return "shippingbox"; case .documentation: return "doc.richtext"; case .attachments: return "paperclip"; case .tools: return "wrench.and.screwdriver"; case .edit: return "pencil"; case .check: return "network"; case .notifications: return "bell.badge" } }
+    var title: String { switch self { case .renewals: return "Лицензии и оплаты"; case .favorite: return "Избранное"; case .duplicate: return "Дублировать"; case .export: return "Экспортировать"; case .keePass: return "KeePass"; case .vpn: return "VPN"; case .delete: return "Удалить"; case .inside: return "Открыть внутри"; case .browser: return "Открыть в браузере"; case .connect: return "Подключиться"; case .sftp: return "SFTP"; case .logs: return "Логи"; case .inventory: return "Инвентаризация"; case .documentation: return "Документация"; case .attachments: return "Вложения"; case .tools: return "Инструменты"; case .edit: return "Редактировать"; case .check: return "Проверить"; case .notifications: return "Уведомления"; case .terminal: return "Внешний терминал" } }
+    var icon: String { switch self { case .renewals: return "calendar.badge.clock"; case .favorite: return "star"; case .duplicate: return "plus.square.on.square"; case .export: return "square.and.arrow.up"; case .keePass: return "key"; case .vpn: return "network.badge.shield.half.filled"; case .delete: return "trash"; case .inside: return "macwindow"; case .browser, .terminal: return "arrow.up.forward.square"; case .connect: return "cable.connector"; case .sftp: return "folder"; case .logs: return "text.alignleft"; case .inventory: return "shippingbox"; case .documentation: return "doc.richtext"; case .attachments: return "paperclip"; case .tools: return "wrench.and.screwdriver"; case .edit: return "pencil"; case .check: return "network"; case .notifications: return "bell.badge" } }
     func available(_ entry: SSHAlias) -> Bool { switch self {
         case .vpn: return entry.canSSH || [.rdp, .vnc, .web, .website, .telnet, .ftp, .ftps, .webdav].contains(entry.recordKind)
         case .inside: return entry.recordKind?.isWeb == true
@@ -75,6 +81,7 @@ enum RecordAction: String, CaseIterable, Identifiable {
         default: return true
     } }
     func detail(_ entry: SSHAlias) -> String { switch self {
+        case .renewals: return "Сроки и напоминания"
         case .favorite: return "Быстрый доступ к записи"
         case .duplicate: return "Создать копию записи"
         case .export: return "Сохранить в файл"
@@ -97,7 +104,7 @@ enum RecordAction: String, CaseIterable, Identifiable {
     } }
     static func catalog(_ stored: [RecordActionStyle]?) -> [RecordActionStyle] {
         let saved = stored ?? [], seen = Set(saved.map(\.id))
-        return (saved + allCases.filter { !seen.contains($0.id) }.map { RecordActionStyle(id: $0.id, color: $0.defaultPlacement == .header ? "gray" : "blue") }).filter { RecordAction(rawValue: $0.id) != nil || $0.isDivider }
+        return (saved + allCases.filter { !seen.contains($0.id) }.map { RecordActionStyle(id: $0.id, color: $0.defaultPlacement == .header ? "gray" : "blue", hidden: $0 == .renewals) }).filter { RecordAction(rawValue: $0.id) != nil || $0.isDivider }
     }
     static func layout(_ stored: [RecordActionStyle]?, global: [RecordActionStyle]? = nil, entry: SSHAlias) -> [RecordActionStyle] {
         catalog(stored ?? global).filter { $0.isDivider || RecordAction(rawValue: $0.id)?.available(entry) == true }
@@ -147,5 +154,91 @@ enum RecordActionDefaults {
         guard let values else { return Data() }
         guard valid(values) else { throw ConfigError.message("Некорректные общие настройки плиток.") }
         return try JSONEncoder().encode(values)
+    }
+}
+
+enum RecordPinnedField: String, CaseIterable, Identifiable {
+    case address, kind, username, port, alias, group, jump, keyFile
+    var id: String { rawValue }
+    static let defaults: [Self] = [.address, .kind, .username, .port]
+    var title: String { switch self {
+        case .address: return "Адрес"; case .kind: return "Протокол"; case .username: return "Пользователь"; case .port: return "Порт"
+        case .alias: return "Имя записи / SSH-алиас"; case .group: return "Папка"; case .jump: return "SSH-шлюз"; case .keyFile: return "Файл SSH-ключа"
+    } }
+    func value(_ entry: SSHAlias, group: String) -> String {
+        switch self {
+        case .address: return entry.website.flatMap { $0.isEmpty ? nil : $0 } ?? entry.host
+        case .kind: return (entry.recordKind ?? .ssh).title
+        case .username: return entry.user
+        case .port: return (entry.canSSH || [.rdp, .vnc, .telnet, .ftp, .ftps, .webdav, .mosh].contains(entry.recordKind)) ? entry.port : ""
+        case .alias: return entry.name
+        case .group: return group
+        case .jump: return entry.value("ProxyJump") ?? ""
+        case .keyFile: return entry.value("IdentityFile") ?? ""
+        }
+    }
+}
+
+
+enum RecordReminderKind: String, Codable, CaseIterable, Identifiable {
+    case license, payment
+    var id: String { rawValue }
+    var title: String { self == .license ? "Лицензия" : "Оплата" }
+}
+struct RecordReminder: Codable, Equatable, Identifiable {
+    var id = UUID()
+    var kind: RecordReminderKind = .license
+    var title = ""
+    // A civil date, independent of the time zone in which the record was edited.
+    var deadline = Self.dayString(Date())
+    var noticeDays = 30
+    static func calendar(_ timeZone: TimeZone = .current) -> Calendar { var result = Calendar(identifier: .gregorian); result.timeZone = timeZone; return result }
+    static func dayString(_ date: Date, calendar: Calendar = Self.calendar()) -> String {
+        let c = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", c.year!, c.month!, c.day!)
+    }
+    func date(calendar: Calendar = Self.calendar()) -> Date? {
+        let pieces = deadline.split(separator: "-", omittingEmptySubsequences: false)
+        guard deadline.utf8.count == 10, pieces.count == 3, pieces[0].count == 4, pieces[1].count == 2, pieces[2].count == 2,
+              let year = Int(pieces[0]), let month = Int(pieces[1]), let day = Int(pieces[2]), (1970...2100).contains(year), (1...12).contains(month), (1...31).contains(day),
+              let date = calendar.date(from: DateComponents(year: year, month: month, day: day)), Self.dayString(date, calendar: calendar) == deadline else { return nil }
+        return date
+    }
+    var valid: Bool { title.count <= 80 && !title.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) && (0...3650).contains(noticeDays) && date() != nil }
+    func daysRemaining(now: Date = Date(), calendar: Calendar = Self.calendar()) -> Int? {
+        guard let date = date(calendar: calendar) else { return nil }
+        return calendar.dateComponents([.day], from: calendar.startOfDay(for: now), to: calendar.startOfDay(for: date)).day
+    }
+    func notice(now: Date = Date(), calendar: Calendar = Self.calendar()) -> RecordReminderNotice? {
+        guard let days = daysRemaining(now: now, calendar: calendar), days <= noticeDays else { return nil }
+        let state = days < 0 ? "Просрочено на \(-days) дн." : days == 0 ? "Срок сегодня" : "До срока: \(days) дн."
+        return RecordReminderNotice(level: days < 0 ? 2 : 1, text: kind.title + (title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : " «" + title + "»") + ": " + state + " · " + deadline)
+    }
+}
+struct RecordReminderNotice: Equatable {
+    var level: Int
+    var text: String
+    static func collect(_ reminders: [RecordReminder]?, now: Date = Date(), calendar: Calendar = RecordReminder.calendar()) -> [Self] { (reminders ?? []).filter(\.valid).compactMap { $0.notice(now: now, calendar: calendar) }.sorted { $0.level > $1.level } }
+}
+struct RecordReminderAppearance: Codable, Equatable {
+    var showIcon = true
+    var showCount = true
+    var outline = true
+    var background = true
+    var warningColor = "orange"
+    var overdueColor = "red"
+    var icon = "calendar.badge.exclamationmark"
+    var opacity = 0.10
+    var lineWidth = 1.0
+    var tintSelection: Bool? = nil
+    var selectionOpacity: Double? = nil
+    static let icons = ["calendar.badge.exclamationmark", "calendar", "clock.badge.exclamationmark", "bell.badge", "creditcard", "key", "exclamationmark.triangle"]
+    var valid: Bool { RecordActionStyle.colors.contains(warningColor) && RecordActionStyle.colors.contains(overdueColor) && Self.icons.contains(icon) && opacity.isFinite && (0.03...0.30).contains(opacity) && lineWidth.isFinite && (1...3).contains(lineWidth) && (selectionOpacity == nil || (selectionOpacity!.isFinite && (0.35...1).contains(selectionOpacity!))) }
+    func color(_ level: Int) -> String { level > 1 ? overdueColor : warningColor }
+}
+enum RecordReminderDefaults {
+    static let key = "recordReminderAppearance.v1"
+    static func decode(_ data: Data?) -> RecordReminderAppearance {
+        guard let data, data.count < 8192, let value = try? JSONDecoder().decode(RecordReminderAppearance.self, from: data), value.valid else { return RecordReminderAppearance() }; return value
     }
 }

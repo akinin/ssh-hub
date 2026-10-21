@@ -21,6 +21,7 @@ struct ActionPalette: View {
             PaletteAction(id: "new", title: "Новая запись", detail: "⌘N", icon: "plus", run: { store.newRecord() }),
             PaletteAction(id: "templates", title: "Шаблоны записей", detail: "Proxmox, UniFi, Wiren Board и свои", icon: "square.stack", run: { store.showingTemplates = true }),
             PaletteAction(id: "commands", title: "Библиотека команд", detail: "Поиск, описания, свои команды и встроенные заготовки", icon: "books.vertical", run: { store.showingCommandLibrary = true }),
+            PaletteAction(id: "trash", title: "Корзина записей", detail: "Восстановление удалённых записей и материалов", icon: "trash", run: { store.showingTrash = true }),
             PaletteAction(id: "backup", title: "Резервное копирование", detail: "Архив и восстановление", icon: "externaldrive", run: { store.showingBackup = true }),
             PaletteAction(id: "availability", title: "Статус доступности", detail: "Выбранные серверы и интервал", icon: "waveform.path.ecg", run: { store.showingAvailability = true }),
             PaletteAction(id: "settings", title: "Настройки", detail: "⌘,", icon: "gearshape", run: { store.showingSettings = true }),

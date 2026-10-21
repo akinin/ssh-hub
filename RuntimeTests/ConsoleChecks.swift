@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import Darwin
 import SwiftTerm
 import ConsoleSupport
@@ -16,11 +17,32 @@ final class PTYProbe: LocalProcessDelegate {
         return condition()
     }
 }
+final class PasteProbe: TerminalViewDelegate {
+    var bytes: [UInt8] = []
+    func send(source: TerminalView, data: ArraySlice<UInt8>) { bytes += data }
+    func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {}
+    func setTerminalTitle(source: TerminalView, title: String) {}
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+    func scrolled(source: TerminalView, position: Double) {}
+    func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
+}
 @main struct ConsoleChecks {
     static func require(_ value: @autoclosure () -> Bool, _ message: String) {
         if !value() { fputs("PTY FAIL: \(message)\n", stderr); exit(1) }
     }
     static func main() {
+        require(TerminalPastePolicy.valid("echo one\necho two\n") && TerminalPastePolicy.needsReview("echo one\necho two\n"), "multiline paste review")
+        require(TerminalPastePolicy.needsReview("line\rnext") && TerminalPastePolicy.needsReview(String(repeating: "x", count: 1025)), "CR and large paste review")
+        require(!TerminalPastePolicy.needsReview("echo test") && TerminalPastePolicy.valid("тест\tvalue"), "single line and unicode paste")
+        require(!TerminalPastePolicy.valid("bad\u{1b}[201~") && !TerminalPastePolicy.valid("bad\0") && !TerminalPastePolicy.valid(String(repeating: "x", count: 1_048_577)), "control injection and size bounds")
+        _ = NSApplication.shared
+        let pasteProbe = PasteProbe(), terminal = TerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 300))
+        terminal.terminalDelegate = pasteProbe
+        terminal.feed(text: "\u{1b}[?2004h")
+        terminal.pasteText("edited\nтест\n")
+        require(pasteProbe.bytes == Array("\u{1b}[200~edited\nтест\n\u{1b}[201~".utf8), "reviewed string uses native bracketed paste encoder")
+        pasteProbe.bytes = []; terminal.feed(text: "\u{1b}[?2004l"); terminal.pasteText("plain")
+        require(pasteProbe.bytes == Array("plain".utf8), "plain paste without framing when not negotiated")
         let probe = PTYProbe()
         let pty = LocalProcess(delegate: probe)
         pty.startProcess(executable: "/bin/sh", args: ["-c", "stty size; stty -echo; printf 'PASSWORD_READY\\n'; IFS= read -r secret; stty echo; printf '\\nAUTH_ACCEPTED\\n'; stty size; printf '\\033[32mANSI_OK\\033[0m\\n'"], environment: ["TERM=xterm-256color", "PATH=/usr/bin:/bin"])

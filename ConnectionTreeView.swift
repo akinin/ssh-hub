@@ -54,6 +54,8 @@ private final class TreeScrollView: NSScrollView {
 }
 
 struct ConnectionTreeView: NSViewRepresentable {
+    @AppStorage(RecordSelectionDefaults.key) private var selectionColor = "gray"
+    @AppStorage(RecordReminderDefaults.key) private var reminderStyleData = Data()
     @AppStorage(InterfaceDensity.key) private var densityValue = InterfaceDensity.normal.rawValue
     @EnvironmentObject var store: AliasStore
     func makeCoordinator() -> Coordinator { Coordinator(store: store) }
@@ -81,13 +83,14 @@ struct ConnectionTreeView: NSViewRepresentable {
         context.coordinator.refresh()
         return scroll
     }
-    func updateNSView(_ nsView: NSScrollView, context: Context) { context.coordinator.density = InterfaceDensity(rawValue: densityValue) ?? .normal; context.coordinator.refresh() }
+    func updateNSView(_ nsView: NSScrollView, context: Context) { _ = selectionColor; _ = reminderStyleData; context.coordinator.density = InterfaceDensity(rawValue: densityValue) ?? .normal; context.coordinator.refresh() }
     @MainActor final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
         static let dragType = NSPasteboard.PasteboardType("com.olshaniki.ssh-hub.sidebar-record")
         let store: AliasStore
         var density = InterfaceDensity.normal
         weak var outline: NSOutlineView?
         private var availabilitySubscription: AnyCancellable?
+        private var reminderSubscription: AnyCancellable?
         private var roots: [TreeItem] = []
         private var lastPresentation: [String] = []
         private var updating = false
@@ -100,6 +103,7 @@ struct ConnectionTreeView: NSViewRepresentable {
         init(store: AliasStore) {
             self.store = store
             super.init()
+            reminderSubscription = Timer.publish(every: 60, on: .main, in: .common).autoconnect().sink { [weak self] _ in self?.refresh() }
             availabilitySubscription = store.availability.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.refresh() } }
         }
         func refresh() {
@@ -108,11 +112,12 @@ struct ConnectionTreeView: NSViewRepresentable {
             updating = true; defer { updating = false }
             let nodes = ConnectionTree.build(entries: store.filtered, groups: store.groups,
                                          folders: store.query.isEmpty && store.groupFilter == "all" ? store.folders : [], order: store.sidebarOrder, title: store.title)
-            var presentation = [store.profiles.active.uuidString, store.query, store.groupFilter, density.rawValue]
+            var presentation = [UserDefaults.standard.string(forKey: RecordSelectionDefaults.key) ?? "gray", store.profiles.active.uuidString, store.query, store.groupFilter, density.rawValue, UserDefaults.standard.data(forKey: RecordReminderDefaults.key)?.base64EncodedString() ?? ""]
             func describe(_ nodes: [ConnectionTreeNode]) {
                 for node in nodes {
                     presentation += [node.id, node.title]
                     if let entry = node.entry {
+                        presentation += [String(describing: store.appearance(entry).reminderAppearance), RecordReminderNotice.collect(store.appearance(entry).reminders).map(\.text).joined(separator: "\n")]
                         presentation += [store.featureTags[entry.favoriteID, default: []].map(\.rawValue).joined(separator: ","), entry.host, entry.user, entry.port, entry.authentication.rawValue, entry.recordKind?.rawValue ?? "ssh", entry.options.map(\.id).joined(separator: "\n"), store.appearance(entry).logo?.base64EncodedString() ?? "", String(store.availability.selected.contains(entry.favoriteID))]
                         if let result = store.availability.results[entry.favoriteID] { presentation += [String(result.reachable), result.detail, String(result.date.timeIntervalSince1970)] }
                     } else { presentation.append(store.folderAppearance(String(node.id.dropFirst("folder:".count))).logo?.base64EncodedString() ?? "") }
@@ -185,7 +190,7 @@ struct ConnectionTreeView: NSViewRepresentable {
         }
         func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
             guard let item = item as? TreeItem else { return nil }
-            let cell = NSTableCellView()
+            let cell = RecordReminderCellView()
             let icon = NSImageView(); icon.imageScaling = .scaleProportionallyUpOrDown
             let text = NSTextField(labelWithString: item.node.title); text.font = .systemFont(ofSize: density == .compact ? 12 : 13, weight: item.node.isFolder ? .medium : .regular)
             text.lineBreakMode = .byTruncatingTail; text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -200,6 +205,7 @@ struct ConnectionTreeView: NSViewRepresentable {
                 cell.toolTip = String(item.node.id.dropFirst("folder:".count))
             }
             var views: [NSView] = [icon, text]
+            var collapsible: [NSView] = []
             if let entry = item.node.entry {
                 let kind = entry.recordKind ?? .ssh
                 let badge = NSTextField(labelWithString: kind.badge)
@@ -216,7 +222,21 @@ struct ConnectionTreeView: NSViewRepresentable {
                 views.append(badge)
                 for tag in store.featureTags[entry.favoriteID, default: []] {
                     let badge = NSImageView(); badge.image = NSImage(systemSymbolName: tag.icon, accessibilityDescription: tag.title); badge.contentTintColor = .secondaryLabelColor; badge.toolTip = tag.title
-                    badge.translatesAutoresizingMaskIntoConstraints = false; badge.widthAnchor.constraint(equalToConstant: 11).isActive = true; badge.heightAnchor.constraint(equalToConstant: 11).isActive = true; views.append(badge)
+                    badge.translatesAutoresizingMaskIntoConstraints = false; badge.widthAnchor.constraint(equalToConstant: 11).isActive = true; badge.heightAnchor.constraint(equalToConstant: 11).isActive = true; views.append(badge); collapsible.append(badge)
+                }
+            }
+            if let entry = item.node.entry {
+                let notices = RecordReminderNotice.collect(store.appearance(entry).reminders)
+                let style = store.appearance(entry).reminderAppearance ?? RecordReminderDefaults.decode(UserDefaults.standard.data(forKey: RecordReminderDefaults.key))
+                if !notices.isEmpty, style.showIcon || style.showCount {
+                    var badges: [NSView] = []
+                    let color = RecordReminderColors.native(style.color(notices[0].level)), tooltip = notices.map(\.text).joined(separator: "\n")
+                    if style.showIcon {
+                        let image = NSImageView(); image.image = NSImage(systemSymbolName: style.icon, accessibilityDescription: "Лицензии и оплаты") ?? NSImage(systemSymbolName: "calendar", accessibilityDescription: "Лицензии и оплаты"); image.contentTintColor = color
+                        image.translatesAutoresizingMaskIntoConstraints = false; image.widthAnchor.constraint(equalToConstant: 13).isActive = true; image.heightAnchor.constraint(equalToConstant: 13).isActive = true; badges.append(image)
+                    }
+                    if style.showCount { let count = NSTextField(labelWithString: String(notices.count)); count.font = .monospacedDigitSystemFont(ofSize: 10, weight: .semibold); count.textColor = color; badges.append(count) }
+                    let badge = NSStackView(views: badges); badge.spacing = 3; badge.toolTip = tooltip; badge.setAccessibilityLabel("Лицензии и оплаты: \(notices.count). " + tooltip); badge.setContentCompressionResistancePriority(.required, for: .horizontal); views.append(badge); cell.reminderTint = color; cell.reminderBadge = badge
                 }
             }
             if let entry = item.node.entry, store.availability.selected.contains(entry.favoriteID) {
@@ -228,11 +248,23 @@ struct ConnectionTreeView: NSViewRepresentable {
                 views.append(status)
             }
             let stack = NSStackView(views: views); stack.orientation = .horizontal; stack.spacing = 7; stack.alignment = .centerY
+            stack.setClippingResistancePriority(.defaultLow, for: .horizontal)
+            for badge in collapsible { stack.setVisibilityPriority(.detachOnlyIfNecessary, for: badge) }
             stack.translatesAutoresizingMaskIntoConstraints = false; icon.translatesAutoresizingMaskIntoConstraints = false
             cell.addSubview(stack); cell.imageView = icon; cell.textField = text
             NSLayoutConstraint.activate([icon.widthAnchor.constraint(equalToConstant: 16), icon.heightAnchor.constraint(equalToConstant: 16),
                 stack.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2), stack.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4), stack.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
             return cell
+        }
+        func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
+            let row = RecordReminderRowView()
+            row.selectionTint = RecordSelectionDefaults.tint(UserDefaults.standard.string(forKey: RecordSelectionDefaults.key))
+            if let entry = (item as? TreeItem)?.node.entry, let notice = RecordReminderNotice.collect(store.appearance(entry).reminders).first {
+                row.style = store.appearance(entry).reminderAppearance ?? RecordReminderDefaults.decode(UserDefaults.standard.data(forKey: RecordReminderDefaults.key))
+                row.tint = RecordReminderColors.native(row.style.color(notice.level))
+                row.selectionHighlightStyle = row.style.tintSelection != false ? .none : .regular
+            }
+            return row
         }
         func outlineViewSelectionDidChange(_ notification: Notification) {
             guard !updating, let outline else { return }
@@ -261,7 +293,7 @@ struct ConnectionTreeView: NSViewRepresentable {
             menu.removeAllItems()
             if let outline { contextItem = outline.item(atRow: outline.clickedRow) as? TreeItem }
             func add(_ title: String, _ action: String) {
-                let symbols = ["connect": "play.circle", "sftp": "folder", "loginNotify": "bell.badge", "external": "arrow.up.forward.square", "website": "macwindow", "browser": "arrow.up.forward.square", "dashboard": "rectangle.grid.2x2", "documentation": "doc.richtext", "attachments": "paperclip", "edit": "pencil", "appearance": "photo", "group": "folder.badge.gearshape", "favorite": "star", "template": "square.stack", "duplicate": "plus.square.on.square", "copy": "doc.on.doc", "copyUsername": "person.crop.rectangle", "copyPassword": "key", "export": "square.and.arrow.up", "delete": "trash", "record": "plus", "folder": "folder.badge.plus", "folderLogo": "photo", "subfolder": "folder.badge.plus"]
+                let symbols = ["connect": "play.circle", "sftp": "folder", "loginNotify": "bell.badge", "external": "arrow.up.forward.square", "website": "macwindow", "browser": "arrow.up.forward.square", "dashboard": "rectangle.grid.2x2", "documentation": "doc.richtext", "attachments": "paperclip", "edit": "pencil", "appearance": "photo", "group": "folder.badge.gearshape", "favorite": "star", "template": "square.stack", "duplicate": "plus.square.on.square", "copy": "doc.on.doc", "copyUsername": "person.crop.rectangle", "copyPassword": "key", "export": "square.and.arrow.up", "delete": "trash", "record": "plus", "folder": "folder.badge.plus", "renewals": "calendar.badge.clock", "folderLogo": "photo", "subfolder": "folder.badge.plus"]
                 let item = NSMenuItem(title: title, action: #selector(menuAction(_:)), keyEquivalent: "")
                 item.image = NSImage(systemSymbolName: symbols[action] ?? "circle", accessibilityDescription: nil)
                 // Public macOS 27 API: .visible == 1. Keep the stable macOS 26 SDK build compatible with older systems.
@@ -280,7 +312,7 @@ struct ConnectionTreeView: NSViewRepresentable {
                     if entry.canSSH { add("Открыть SFTP", "sftp"); add("Во внешнем терминале", "external"); add("Уведомления о входе…", "loginNotify") }
                     add("Панель управления", "dashboard")
                     menu.addItem(.separator()); add("Копировать логин", "copyUsername"); add("Копировать пароль", "copyPassword")
-                    menu.addItem(.separator()); add("Документация", "documentation"); add("Вложения", "attachments"); add("Редактировать…", "edit"); add("Название и логотип…", "appearance"); add("Переместить в папку…", "group")
+                    menu.addItem(.separator()); add("Документация", "documentation"); add("Вложения", "attachments"); add("Лицензии и оплаты…", "renewals"); add("Редактировать…", "edit"); add("Оформление карточки…", "appearance"); add("Переместить в папку…", "group")
                     add(store.isFavorite(entry) ? "Убрать из избранного" : "В избранное", "favorite")
                     if entry.canSSH { add("Сохранить как шаблон", "template") }
                     add("Дублировать…", "duplicate"); if entry.canSSH { add("Копировать команду", "copy") }; add("Экспорт…", "export"); add("Передать в KeePass…", "keePass")
@@ -306,6 +338,7 @@ struct ConnectionTreeView: NSViewRepresentable {
                 case "website": store.openWebsite(entry)
                 case "browser": store.openWebsiteInBrowser(entry)
                 case "dashboard": store.showDashboard(entry)
+                case "renewals": store.reminderEntry = entry
                 case "attachments": store.showAttachments(entry)
                 case "documentation": store.showDocumentation(entry)
                 case "edit": store.edit(entry)
@@ -335,6 +368,7 @@ struct CreateFolderView: View {
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
+    @State private var appearance = ConnectionAppearance()
     private var path: String { [store.folderParent, name].filter { !$0.isEmpty }.joined(separator: "/") }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -342,9 +376,10 @@ struct CreateFolderView: View {
             if !store.folderParent.isEmpty { Text("В папке: " + store.folderParent).foregroundStyle(.secondary) }
             TextField("Название", text: $name).textFieldStyle(.roundedBorder)
             Text("Для вложенных папок используй /, например Дом/Серверы.").font(.caption).foregroundStyle(.secondary)
+            FolderAppearanceFields(appearance: $appearance)
             HStack { Spacer(); Button("Отмена", role: .cancel) { dismiss() }; Button("Создать") {
-                store.addFolder(path); dismiss()
+                if store.addFolder(path, appearance: appearance) { dismiss() }
             }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(!ConnectionTree.validPath(path) || name.trimmingCharacters(in: .whitespaces).isEmpty) }
-        }.padding(24).frame(width: 420).dismissOnOutsideClick()
+        }.padding(24).frame(width: 480).dismissOnOutsideClick()
     }
 }

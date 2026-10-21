@@ -23,6 +23,8 @@ final class ConsoleTerminalDelegate: TerminalViewDelegate {
 }
 
 final class HubTerminalView: LocalProcessTerminalView {
+    var canPaste: (() -> Bool)?
+    var pasteDestination: (() -> String)?
     var onOutput: ((Data) -> Void)?
     var onShortcut: ((Int) -> Void)?
     var onFind: (() -> Void)?
@@ -38,6 +40,28 @@ final class HubTerminalView: LocalProcessTerminalView {
             if key == "0" { onZoom?(0); return true }
         }
         return super.performKeyEquivalent(with: event)
+    }
+    override func paste(_ sender: Any) {
+        guard canPaste?() == true, let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { return }
+        guard TerminalPastePolicy.valid(text) else {
+            let alert = NSAlert(); alert.messageText = "Вставка недоступна"; alert.informativeText = "Текст больше 1 МиБ или содержит управляющие символы, кроме табуляции и переводов строк."; alert.runModal(); return
+        }
+        var approved = text
+        if TerminalPastePolicy.needsReview(text) {
+            let destination = pasteDestination?() ?? "Терминал"
+            let alert = NSAlert(); alert.messageText = "Предпросмотр вставки"; alert.informativeText = destination + "\nМожно исправить или удалить строки. Переводы строк могут сразу выполнить команды после подтверждения."
+            let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 620, height: 300)); scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = false
+            let preview = NSTextView(frame: scroll.bounds); preview.isEditable = true; preview.isRichText = false; preview.allowsUndo = true; preview.isAutomaticQuoteSubstitutionEnabled = false; preview.isAutomaticDashSubstitutionEnabled = false; preview.isAutomaticTextReplacementEnabled = false; preview.isAutomaticSpellingCorrectionEnabled = false; preview.isVerticallyResizable = true; preview.isHorizontallyResizable = false; preview.font = .monospacedSystemFont(ofSize: 12, weight: .regular); preview.string = text
+            preview.textContainer?.widthTracksTextView = true; preview.autoresizingMask = [.width]; scroll.documentView = preview; alert.accessoryView = scroll; alert.window.initialFirstResponder = preview
+            alert.addButton(withTitle: "Отмена"); alert.addButton(withTitle: "Вставить в этот сеанс")
+            guard alert.runModal() == .alertSecondButtonReturn, canPaste?() == true, pasteDestination?() == destination else { return }
+            approved = preview.string
+            guard TerminalPastePolicy.valid(approved) else {
+                let error = NSAlert(); error.messageText = "Вставка отменена"; error.informativeText = "Отредактированный текст пуст, больше 1 МиБ или содержит недопустимые управляющие символы."; error.runModal(); return
+            }
+        }
+        guard canPaste?() == true else { return }
+        super.pasteText(approved)
     }
     override func menu(for event: NSEvent) -> NSMenu? { consoleMenu() }
     override func rightMouseDown(with event: NSEvent) {
@@ -117,6 +141,8 @@ final class HubTerminalView: LocalProcessTerminalView {
         if let view { return view }
         let terminal = HubTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 460))
         ConsolePreferences.shared.apply(to: terminal, zoom: zoom)
+        terminal.canPaste = { [weak self, weak terminal] in guard let self else { return false }; return !self.finished && !self.awaitingConnection && !AppAccess.shared.locked && ConsoleStore.shared.selected == self.id && terminal?.process.running == true }
+        terminal.pasteDestination = { [weak self] in self.map { $0.title + " · " + $0.entry.user + "@" + $0.entry.host + " · сеанс " + $0.id.uuidString.prefix(8) } ?? "" }
         terminal.onOutput = { [weak self] data in self?.received(data) }
         terminal.onFind = { [weak self] in self?.showSearch = true }
         terminal.onZoom = { [weak self] delta in self?.changeZoom(delta) }

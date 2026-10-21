@@ -12,6 +12,9 @@ struct TransferAlias: Codable, Identifiable {
     var displayName: String?
     var logo: Data?
     var actionTiles: [RecordActionStyle]? = nil
+    var pinnedFields: [String]? = nil
+    var reminders: [RecordReminder]? = nil
+    var reminderAppearance: RecordReminderAppearance? = nil
     var authentication: SSHAuthentication?
     var standalone: Bool?
     var recordKind: RecordKind?
@@ -38,7 +41,7 @@ struct TransferAlias: Codable, Identifiable {
         }
         return draft.validation(existing: existing)
     }
-    var appearance: ConnectionAppearance { ConnectionAppearance(name: displayName ?? "", logo: logo, actionTiles: actionTiles) }
+    var appearance: ConnectionAppearance { ConnectionAppearance(name: displayName ?? "", logo: logo, actionTiles: actionTiles, pinnedFields: pinnedFields, reminders: reminders, reminderAppearance: reminderAppearance) }
     var id: String { name }
     var draft: AliasDraft {
         var value = AliasDraft()
@@ -51,7 +54,7 @@ struct TransferAlias: Codable, Identifiable {
         identity = entry.value("IdentityFile") ?? ""; jump = entry.value("ProxyJump") ?? ""
         self.group = group; self.favorite = favorite
         authentication = entry.authentication == .automatic ? nil : entry.authentication
-        displayName = appearance.trimmedName.isEmpty ? (entry.localID == nil ? nil : entry.name) : appearance.trimmedName; logo = appearance.logo; actionTiles = appearance.actionTiles
+        displayName = appearance.trimmedName.isEmpty ? (entry.localID == nil ? nil : entry.name) : appearance.trimmedName; logo = appearance.logo; actionTiles = appearance.actionTiles; pinnedFields = appearance.pinnedFields; reminders = appearance.reminders; reminderAppearance = appearance.reminderAppearance
         standalone = entry.localID == nil ? nil : true; recordKind = entry.recordKind; website = entry.website; serial = entry.serial; transport = entry.transport
     }
 }

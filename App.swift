@@ -57,6 +57,8 @@ import ConsoleSupport
     var monitoring: MonitoringModel?
     var maintenance: MaintenanceModel?
     @Published var showingCommandLibrary = false
+    @Published var showingTrash = false
+    @Published var reminderEntry: SSHAlias?
     @Published var showingBackup = false
     @Published var showingTemplates = false
     @Published var showingAvailability = false
@@ -209,13 +211,16 @@ import ConsoleSupport
         guard profiles.valid else { profiles = previous; error = "Значки папок превышают допустимый размер настроек профилей."; return }
         persistProfiles()
     }
-    func addFolder(_ path: String) {
+    @discardableResult func addFolder(_ path: String, appearance: ConnectionAppearance = ConnectionAppearance()) -> Bool {
         let path = ConnectionTree.normalized(path)
-        guard ConnectionTree.validPath(path) else { return }
-        guard folders.contains(path) || folders.count < 1000 else { error = "В профиле можно создать до 1000 папок."; return }
+        guard ConnectionTree.validPath(path), appearance.validation == nil else { return false }
+        guard !folders.contains(path), !profileEntries.contains(where: { ConnectionTree.normalized(group($0)) == path }) else { error = "Папка уже существует."; return false }
+        guard folders.count < 1000 else { error = "В профиле можно создать до 1000 папок."; return false }
+        let previous = profiles
         folders = Array(Set(folders + [path])).sorted()
-        persistProfiles()
-        folderParent = ""
+        folderAppearances = ConnectionAppearance.setting(ConnectionAppearance(logo: appearance.logo), for: path, in: folderAppearances)
+        guard profiles.valid else { profiles = previous; error = "Значки папок превышают допустимый размер настроек профилей."; return false }
+        persistProfiles(); folderParent = ""; return true
     }
     var countText: String {
         let count = profileEntries.count, last = count % 10, teen = (11...14).contains(count % 100)
@@ -358,11 +363,13 @@ import ConsoleSupport
     func delete(_ snapshot: AliasEditSnapshot) {
         deletingAlias = nil
         do {
-            let change = try config.delete(snapshot)
+            let trashed = try captureTrash(snapshot.entry)
+            let change: ConfigChange
+            do { change = try config.delete(snapshot) } catch { try? trashRepository.remove(trashed.id); throw error }
             clearUndo(); undoChange = change; undoNames = (snapshot.entry, nil)
             TunnelManager.shared.stop(alias: snapshot.entry)
             undoImportedMetadata = [:]
-            reload(); notice = "Алиас «\(snapshot.entry.name)» удалён. Можно отменить действие."
+            reload(); notice = "Запись перемещена в корзину. Можно отменить действие."
         } catch { self.error = error.localizedDescription }
     }
     func undo() {
@@ -618,6 +625,7 @@ struct HubCommands: Commands {
         CommandGroup(after: .newItem) {
             Group {
                 Button("Палитра действий…") { store.showingPalette = true }.keyboardShortcut("p", modifiers: .command)
+                Button("Корзина записей…") { store.showingTrash = true }
                 Button("Резервное копирование…") { store.showingBackup = true }
                 Button("Шаблоны записей…") { store.showingTemplates = true }
                 Button("Инструменты…") { store.openScanner() }
@@ -855,6 +863,7 @@ struct MainView: View {
         var items: [ToolbarMenuAction] = [
             .init(title: "Профили…", symbol: "person.crop.rectangle.stack", action: { store.showingProfiles = true }),
             .init(title: "Библиотека команд…", symbol: "books.vertical", action: { store.showingCommandLibrary = true }),
+            .init(title: "Корзина записей…", symbol: "trash", action: { store.showingTrash = true }),
             .init(title: "Резервное копирование…", symbol: "externaldrive", action: { store.showingBackup = true }),
             .init(title: "Шаблоны записей…", symbol: "square.stack", action: { store.showingTemplates = true }),
             .init(title: "Статус доступности…", symbol: "waveform.path.ecg", action: { store.showingAvailability = true }),
@@ -1016,6 +1025,8 @@ struct MainView: View {
         .sheet(item: $store.editingTab) { TabCustomizationView(target: $0).environmentObject(store) }
         .sheet(isPresented: $store.showingPalette) { ActionPalette().environmentObject(store) }
         .sheet(isPresented: $store.showingCommandLibrary) { CommandLibraryView() }
+        .sheet(item: $store.reminderEntry) { RecordRemindersView(entry: $0).environmentObject(store) }
+        .sheet(isPresented: $store.showingTrash) { RecordTrashView().environmentObject(store) }
         .sheet(isPresented: $store.showingBackup) { BackupView().environmentObject(store) }
         .sheet(isPresented: $store.showingTemplates) { TemplatesView().environmentObject(store) }
         .sheet(isPresented: $store.showingAvailability) { AvailabilityView(monitor: store.availability).environmentObject(store) }
@@ -1065,13 +1076,13 @@ struct MainView: View {
         .confirmationDialog("Удалить запись?", isPresented: Binding(get: { store.deletingRecord != nil }, set: { if !$0 { store.deletingRecord = nil } }), titleVisibility: .visible) {
             if let entry = store.deletingRecord { Button("Удалить запись", role: .destructive) { store.deletingRecord = nil; store.deleteRecord(entry) } }
             Button("Отмена", role: .cancel) { store.deletingRecord = nil }
-        } message: { Text(store.deletingRecord?.recordAlias == nil ? "Действие можно отменить. Документация и вложения сохранятся." : "Связанный SSH-алиас также будет удалён с резервной копией. Действие можно отменить.") }
+        } message: { Text(store.deletingRecord?.recordAlias == nil ? "Запись и локальные материалы попадут в корзину. Действие можно отменить." : "Запись попадёт в корзину. SSH-алиас удалится с резервной копией; восстановление создаст запись SSH Hub.") }
         .confirmationDialog("Удалить алиас «\(store.deletingAlias?.entry.name ?? "")»?", isPresented: Binding(get: { store.deletingAlias != nil }, set: { if !$0 { store.deletingAlias = nil } }), titleVisibility: .visible) {
             if let snapshot = store.deletingAlias {
                 Button("Удалить алиас", role: .destructive) { store.delete(snapshot) }
             }
             Button("Отмена", role: .cancel) { store.deletingAlias = nil }
-        } message: { Text("Перед удалением будет создана резервная копия. Изменение можно отменить.") }
+        } message: { Text("Запись попадёт в корзину вместе с локальными материалами. SSH-алиас удалится из конфига с резервной копией. Восстановить его можно как запись SSH Hub.") }
         .alert("Не удалось выполнить действие", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
             Button("Понятно", role: .cancel) { store.error = nil }
         } message: { Text(store.error ?? "") }
@@ -1149,6 +1160,7 @@ struct AliasDetail: View {
     }
     private func run(_ action: RecordAction) {
         switch action {
+        case .renewals: store.reminderEntry = entry
         case .favorite: store.toggleFavorite(entry)
         case .duplicate: store.duplicate(entry)
         case .export: store.export(entries: [entry])
@@ -1174,13 +1186,16 @@ struct AliasDetail: View {
         Button { store.stylingAlias = entry } label: {
             ConnectionIcon(appearance: store.appearance(entry), size: 44, symbol: entry.recordKind?.icon ?? "server.rack").padding(8)
                 .background(.blue.opacity(0.09), in: RoundedRectangle(cornerRadius: 14))
-        }.buttonStyle(.plain).help("Изменить название и логотип")
+        }.buttonStyle(.plain).help("Название, логотип и поля карточки")
     }
     private var recordInfo: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Button { store.stylingAlias = entry } label: { Text(store.title(entry)).font(.title2).bold().lineLimit(2) }.buttonStyle(.plain).help("Изменить название и логотип")
-            Text(entry.secondaryTitle).font(.callout).foregroundStyle(.secondary).textSelection(.enabled).lineLimit(2)
-            Text((entry.recordKind ?? .ssh).title + (entry.canSSH ? " · \(entry.user) · порт \(entry.port)" : "")).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            Button { store.stylingAlias = entry } label: { Text(store.title(entry)).font(.title2).bold().lineLimit(2) }.buttonStyle(.plain).help("Название, логотип и поля карточки")
+            ForEach(store.appearance(entry).pinnedFields ?? RecordPinnedField.defaults.map(\.rawValue), id: \.self) { id in
+                if let field = RecordPinnedField(rawValue: id), !field.value(entry, group: store.group(entry)).isEmpty {
+                    Text(field.title + ": " + field.value(entry, group: store.group(entry))).font(.caption).foregroundStyle(.secondary).textSelection(.enabled).lineLimit(2)
+                }
+            }
             HStack(spacing: 6) {
                 RecordFeatureBadges(tags: store.featureTags[entry.favoriteID, default: []])
                 ForEach(badgeActions) { style in
@@ -1273,7 +1288,7 @@ struct CreateAliasView: View {
     private var validation: String? { credentialEdit.validation(vault: store.credentialVault()) ?? (password.contains(where: { $0.isNewline || $0 == "\0" }) ? "Пароль должен занимать одну строку." : nil) ?? (!AliasTransfer.validGroup(group) ? "Проверь путь папки." : nil) ?? appearance.validation ?? validatedDraft.validation(existing: aliasEnabled ? store.aliasNameReservations().filter { $0.id != editing?.entry.id } : []) }
     private var preview: String { if !aliasEnabled { return "SSH-алиас будет удалён из общего конфига. Запись останется в SSH Hub и будет использовать отдельный конфиг подключения." }; return (editing ?? duplicating).flatMap { try? SSHConfig.editedPreview($0, draft: draft) } ?? draft.block }
     var body: some View {
-        RecordEditorShell(title: duplicating != nil ? "Дублирование записи" : editing == nil ? "Новая запись · SSH" : "Редактирование записи", subtitle: "SSH · остальные параметры и комментарии сохраняются", icon: editing == nil ? "plus.square" : "pencil", sections: [.general, .connection, .key, .availability, .commands, .preview], selection: $editorSection) {
+        RecordEditorShell(title: duplicating != nil ? "Дублирование записи" : editing == nil ? "Новая запись · SSH" : "Редактирование записи", subtitle: "SSH · остальные параметры и комментарии сохраняются", icon: editing == nil ? "plus.square" : "pencil", sections: [.general, .connection, .key, .availability, .commands, .renewals, .preview], selection: $editorSection) {
             switch editorSection {
             case .general:
                 ConnectionAppearanceFields(appearance: $appearance, fallback: draft.name)
@@ -1290,6 +1305,7 @@ struct CreateAliasView: View {
             case .commands:
                 if let entry = editing?.entry { ConsoleCommandsSettingsLink(entry: entry) }
                 else { Text("Сначала сохрани запись, затем назначь команды из общей библиотеки.").foregroundStyle(.secondary) }
+            case .renewals: RecordReminderDraftFields(appearance: $appearance)
             case .preview: Text(preview).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
             }
         } actions: {

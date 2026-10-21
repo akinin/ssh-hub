@@ -221,7 +221,8 @@ struct QuickAccessView: View {
                 Button("Редактировать…") { controller.openMain { store.edit(entry) } }
                 Button("Дублировать…") { controller.openMain { store.duplicate(entry) } }
                 Button("Группа…") { controller.openMain { store.groupingAlias = entry } }
-                Button("Название и логотип…") { controller.openMain { store.stylingAlias = entry } }
+                Button("Лицензии и оплаты…") { controller.openMain { store.reminderEntry = entry } }
+                Button("Оформление карточки…") { controller.openMain { store.stylingAlias = entry } }
             } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("Действия: \(entry.name)")
         }
         .padding(.horizontal, 9).padding(.vertical, 9)

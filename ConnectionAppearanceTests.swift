@@ -90,6 +90,35 @@ import AppKit
         check(movedHeader.filter { $0.effectivePlacement == .header }.map(\.id) == ["check", "favorite"] && movedHeader.filter { $0.effectivePlacement == .tiles } == interleaved.filter { $0.effectivePlacement == .tiles }, "header movement leaves tile and separator order unchanged")
         check(RecordAction.moving(interleaved, placement: .tiles, from: IndexSet([0, 2]), to: 3).filter { $0.effectivePlacement == .tiles }.map(\.id) == [separator.id, "connect", "inventory"], "multi-row group drag preserves moved row order")
         check(RecordAction.moving(interleaved, placement: .header, from: IndexSet(integer: 5), to: 0) == interleaved, "stale drag indexes do not change either group")
+        let legacyAppearance = try JSONDecoder().decode(ConnectionAppearance.self, from: Data("{\"name\":\"Fixture\"}".utf8))
+        check(legacyAppearance.pinnedFields == nil, "legacy pinned defaults")
+        var pinned = ConnectionAppearance(); pinned.pinnedFields = []
+        let pinnedRoundtrip = try JSONDecoder().decode(ConnectionAppearance.self, from: JSONEncoder().encode(pinned))
+        check(!pinned.isEmpty && pinned.validation == nil && pinnedRoundtrip.pinnedFields == [], "explicit hide-all survives persistence")
+        let endpoint = SSHAlias(name: "fixture", source: dir.appendingPathComponent("config"), line: 0, options: [SSHOption(key: "HostName", value: "127.0.0.1")], website: "")
+        check(RecordPinnedField.address.value(endpoint, group: "") == "127.0.0.1", "empty website does not hide SSH address")
+        pinned.pinnedFields = ["address", "address"]; check(pinned.validation != nil, "duplicate pinned field rejected")
+        pinned.pinnedFields = ["password"]; check(pinned.validation != nil, "secret field not allowed")
+        let utc = RecordReminder.calendar(TimeZone(secondsFromGMT: 0)!)
+        let now = utc.date(from: DateComponents(year: 2026, month: 10, day: 21, hour: 13))!
+        var reminder = RecordReminder(); reminder.title = "Owned license"; reminder.deadline = "2026-10-22"; reminder.noticeDays = 1
+        check(reminder.valid && reminder.notice(now: now, calendar: utc)?.level == 1, "inclusive warning day")
+        reminder.title = ""; check(reminder.valid && reminder.notice(now: now, calendar: utc)?.text.hasPrefix("Лицензия: ") == true, "empty optional title saves with type label"); reminder.title = "Owned license"
+        reminder.noticeDays = 0; check(reminder.notice(now: now, calendar: utc) == nil, "outside warning interval")
+        reminder.deadline = "2026-10-21"; check(reminder.notice(now: now, calendar: utc)?.level == 1 && reminder.daysRemaining(now: now, calendar: utc) == 0, "deadline includes the whole day")
+        reminder.deadline = "2026-10-20"; check(reminder.notice(now: now, calendar: utc)?.level == 2, "expired has distinct severity")
+        reminder.deadline = "2026-02-30"; check(!reminder.valid, "invalid civil date rejected")
+        reminder.deadline = "2026-03-09"
+        let eastern = RecordReminder.calendar(TimeZone(identifier: "America/New_York")!)
+        let beforeDST = eastern.date(from: DateComponents(year: 2026, month: 3, day: 7, hour: 23))!
+        check(reminder.daysRemaining(now: beforeDST, calendar: eastern) == 2, "day count spans daylight saving transition")
+        var reminderStyle = RecordReminderAppearance(); reminderStyle.showIcon = false; reminderStyle.lineWidth = 3
+        pinned.pinnedFields = ["address", "group"]; pinned.reminders = [reminder]; pinned.reminderAppearance = reminderStyle
+        check(pinned.validation == nil && !pinned.isEmpty, "reminders and custom presentation validated")
+        let exported = try AliasTransfer.decode(AliasTransfer(aliases: [TransferAlias(alias, group: "", favorite: false, appearance: pinned)]).encode())
+        check(exported.aliases[0].appearance == pinned, "pinned fields, dates and individual reminder style survive JSON roundtrip")
+        reminderStyle.opacity = .infinity; check(!reminderStyle.valid, "unbounded style rejected")
+        reminderStyle = RecordReminderAppearance(); reminderStyle.icon = "untrusted"; check(!reminderStyle.valid, "unknown icon rejected")
         print("PASS: display names, fallback, logo resizing/transparency, settings, rename/undo, reset, JSON compatibility and validation")
     }
 }

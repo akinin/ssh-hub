@@ -2724,7 +2724,14 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     {
         let clipboard = NSPasteboard.general
         let text = clipboard.string(forType: .string)
-        insertText(text ?? "", replacementRange: NSRange(location: 0, length: 0), isPaste: true)
+        pasteText(text ?? "")
+    }
+
+    /// Paste an already captured/reviewed string through the normal paste encoder.
+    /// This preserves bracketed paste and negotiated keyboard protocols without
+    /// replacing the user's clipboard to pass approved text back to the view.
+    open func pasteText(_ text: String) {
+        insertText(text, replacementRange: NSRange(location: 0, length: 0), isPaste: true)
     }
     
     @objc

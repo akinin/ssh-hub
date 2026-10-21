@@ -23,6 +23,8 @@ swiftc -swift-version 5 -module-cache-path "$build_dir/module-cache" SSHConfig.s
 "$build_dir/extended-tests"
 swiftc -swift-version 5 -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift ConnectionLogo.swift AliasTransfer.swift LocalConnections.swift ConnectionAppearanceTests.swift -o "$build_dir/appearance-tests" -framework AppKit
 "$build_dir/appearance-tests"
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift RecordTrash.swift RecordTrashTests.swift -o "$build_dir/trash-tests" -framework AppKit
+"$build_dir/trash-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConnectionAppearance.swift ConnectionLogo.swift WebsiteIconTests.swift -o "$build_dir/website-icon-tests" -framework AppKit
 python3 WebsiteIconIntegrationTests.py "$build_dir/website-icon-tests"
 swiftc -parse-as-library -swift-version 5 -D WEB_LOGIN_TEST -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift SSHCredentials.swift WebLogin.swift WebLoginPicker.swift WebPageModel.swift WebLoginTests.swift -o "$build_dir/web-login-tests" -framework AppKit -framework WebKit
