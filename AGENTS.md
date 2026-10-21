@@ -4,6 +4,11 @@
 
 Нативное приложение для macOS 14+ на Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
 
+## Изменения 3.13.0 (сборка 64)
+
+- Manual selected-record scanner; isolated CLI HOME/XDG/config and app-owned official templates, explicit installation/update. Allowlisted argv, signed HTTP or TCP/TLS; no OAST/redirect/code/headless/fuzz/bruteforce; bounded rate/concurrency/time/output/findings. No record credentials, raw request/response/extractions or URL paths/queries in reports. Private config+profile history, bounded50. Stop/timeout preserve partial status/findings; malformed/oversized output fails. Own process TERM then KILL, prelaunch/auth/profile/config/record guards; termination waits for scanner/preflight cleanup. SSH/VPN routes reject; protected ssh -G checks inherited proxy/host/port, no direct fallback. QA scans owned loopback only. Preserve appearance/fullscreen code.
+- NucleiTests covers parsing/targets/privacy/export/history/cancellation; NucleiRouteTests covers inherited routing. Optional NucleiIntegrationTests.py uses existing official signed template and owned HTTP servers, no downloads.
+
 ## Изменения 3.12.3 (сборка 63)
 
 - PublicKeyInstallation uses an immutable validated public key and current/sudo/direct target mode. Target account sudo -H -u owns HOME and file writes; preserve existing lines, deduplicate key material even with different comments, reject .ssh/authorized_keys symlinks, 0700/0600 modes. No daemon settings changes. ConsoleLaunch installation uses argv SSH, original prepared route/config, independent PTY, no multiplex/forwards/LocalCommand/RemoteCommand. ConsoleSession reuses saved password only for original SSH login and safe routing policy; supplied editor password only for unchanged unbound username. Direct different user never reads/reuses source password. Standalone console closes on sheet disappearance, app auth/profile/config changes; generation/entry guards rechecked before launch. Never run user server installs in QA: owned loopback and temporary HOME/sudo shim only.

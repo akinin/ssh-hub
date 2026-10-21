@@ -71,6 +71,10 @@ swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$b
 "$build_dir/winbox-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift ConnectionAttachments.swift ConsoleLaunch.swift TerminalLauncher.swift PublicKeys.swift RecordTests.swift -o "$build_dir/record-tests" -framework AppKit
 "$build_dir/record-tests"
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift HubFeatureStorage.swift Nuclei.swift NucleiTests.swift -o "$build_dir/nuclei-tests"
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionProbe.swift Tunnels.swift SSHCredentials.swift ToolkitRuntime.swift SSHLoginPolicy.swift NucleiRoute.swift NucleiRouteTests.swift -o "$build_dir/nuclei-route-tests" -framework AppKit -framework Security -framework LocalAuthentication
+"$build_dir/nuclei-route-tests"
+"$build_dir/nuclei-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift Nmap.swift TransportTests.swift -o "$build_dir/transport-tests"
 "$build_dir/transport-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" ReleaseUpdate.swift UpdateTests.swift -o "$build_dir/update-tests"

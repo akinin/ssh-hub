@@ -703,10 +703,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         TopologyModel.stopAll()
         KDBXClient.stopAll()
         let tunnels = TunnelManager.shared
-        guard tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending else { return .terminateNow }
+        guard tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || AppDelegate.storeForTermination?.tools.nuclei.pending == true else { return .terminateNow }
         tunnels.stopAll()
         UpdateTermination.finishAfterCleanup(sender) {
-            tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending
+            tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || AppDelegate.storeForTermination?.tools.nuclei.pending == true
         }
         return .terminateLater
     }
@@ -892,6 +892,7 @@ struct MainView: View {
         case "commands": store.showingCommandLibrary = true
         case "trash": store.showingTrash = true
         case "network": store.openScanner()
+        case "nuclei": store.openScanner(store.current, tool: .nuclei)
         case "integrations": store.operationsPanel = .integrations
         case "monitoring": store.operationsPanel = .monitoring
         case "maintenance": store.operationsPanel = .maintenance

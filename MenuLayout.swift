@@ -11,7 +11,7 @@ enum CustomMenuSurface: String, CaseIterable, Identifiable {
         let ids: [String]
         switch self {
         case .toolbar: ids = ["reload", "palette", "tools", "maps", "settings", "assistant", "lock", "record"]
-        case .tools: ids = ["commands", "trash", "divider:network", "network", "maps", "integrations", "monitoring", "maintenance", "divider:ssh", "generateKey", "keys", "history", "tunnels"]
+        case .tools: ids = ["commands", "trash", "divider:network", "network", "nuclei", "maps", "integrations", "monitoring", "maintenance", "divider:ssh", "generateKey", "keys", "history", "tunnels"]
         case .record: ids = ["website", "browser", "connect", "sftp", "external", "loginNotify", "dashboard", "divider:copy", "copyUsername", "copyPassword", "divider:materials", "documentation", "attachments", "edit", "appearance", "group", "favorite", "template", "duplicate", "copy", "export", "keePass", "divider:delete", "delete", "divider:create", "record", "folder"]
         }
         let optional = definitions.map(\.id).filter { !ids.contains($0) }
@@ -36,6 +36,7 @@ enum CustomMenuSurface: String, CaseIterable, Identifiable {
             .init("maps", "Сетевые карты", "point.3.connected.trianglepath.dotted"), .init("settings", "Настройки", "gearshape"), .init("assistant", "ИИ-помощник", "sparkles"),
             .init("lock", "Заблокировать", "lock"), .init("record", "Новая запись", "plus"), .init("folder", "Новая папка", "folder.badge.plus"),
             .init("commands", "Библиотека команд", "books.vertical"), .init("trash", "Корзина записей", "trash"), .init("network", "Сетевые инструменты", "wrench.and.screwdriver"),
+            .init("nuclei", "Проверка уязвимостей · Nuclei", "shield.checkered"),
             .init("integrations", "Интеграции", "square.stack.3d.up"), .init("monitoring", "Мониторинг сервера", "chart.xyaxis.line"), .init("maintenance", "Сценарии обслуживания", "list.bullet.clipboard"),
             .init("generateKey", "Создать SSH-ключ", "key.fill"), .init("keys", "SSH-ключи", "key.horizontal"), .init("history", "История подключений", "clock.arrow.circlepath"), .init("tunnels", "SSH-туннели", "arrow.left.arrow.right"),
             .init("credentials", "Общие учётные данные", "person.badge.key.fill"), .init("profiles", "Профили", "person.crop.rectangle.stack"), .init("templates", "Шаблоны записей", "square.stack"),
