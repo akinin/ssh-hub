@@ -45,7 +45,7 @@ fn catalog_group(group: GroupRef<'_>, path: String, trash: Option<uuid::Uuid>, i
         if !safe(title, 512) || !safe(user, 512) { continue; }
         let id = entry.id().uuid();
         if !allowed.insert(id) { return Err("invalid_database"); }
-        rows.push(json!({"id":id,"title":title,"username":user,"group":path,"expired":group_expired || expired(&entry.times),"modified":entry.times.last_modification.map(|d|d.and_utc().timestamp())}));
+        rows.push(json!({"id":id,"title":title,"username":user,"group":path,"group_id":group.id().uuid(),"expired":group_expired || expired(&entry.times),"modified":entry.times.last_modification.map(|d|d.and_utc().timestamp())}));
     }
     for child in group.groups() {
         let name: String = child.name.chars().filter(|c| !c.is_control()).take(80).collect();
@@ -53,6 +53,17 @@ fn catalog_group(group: GroupRef<'_>, path: String, trash: Option<uuid::Uuid>, i
         if child_path.len() > 2048 { return Err("catalog_limit"); }
         catalog_group(child, child_path, trash, group_expired, depth + 1, rows, allowed)?;
     }
+    Ok(())
+}
+fn catalog_groups(group: GroupRef<'_>, parent: Option<uuid::Uuid>, path: String, trash: Option<uuid::Uuid>, depth: usize, rows: &mut Vec<Value>) -> Result<(), &'static str> {
+    if trash == Some(group.id().uuid()) { return Ok(()); }
+    if depth > 64 || rows.len() >= 2000 { return Err("catalog_limit"); }
+    let name: String = group.name.chars().filter(|c| !c.is_control()).take(80).collect();
+    let path = if path.is_empty() { name.clone() } else { format!("{path}/{name}") };
+    if path.len() > 2048 { return Err("catalog_limit"); }
+    let id = group.id().uuid();
+    rows.push(json!({"id":id,"parent":parent,"name":if name.is_empty(){"Без названия"}else{&name},"title":if path.is_empty(){"Корень базы"}else{&path}}));
+    for child in group.groups() { catalog_groups(child,Some(id),path.clone(),trash,depth+1,rows)?; }
     Ok(())
 }
 fn open(request: &Request) -> Result<(Vault, Value), &'static str> {
@@ -73,7 +84,9 @@ fn open(request: &Request) -> Result<(Vault, Value), &'static str> {
     catalog_group(database.root(), String::new(), database.meta.recyclebin_uuid, false, 0, &mut rows, &mut allowed)?;
     rows.sort_by_key(|row| format!("{}/{}", row["group"],row["title"]));
     let expired = rows.iter().filter(|r| r["expired"] == true).filter_map(|r| r["id"].as_str().and_then(|id| id.parse().ok())).collect();
-    let result = json!({"entries":rows,"writable":editor.is_some(),"groups":editor.as_ref().map(|(d,_)| groups(&d.root)).unwrap_or_default()});
+    let mut group_rows = Vec::new();
+    catalog_groups(database.root(),None,String::new(),database.meta.recyclebin_uuid,0,&mut group_rows)?;
+    let result = json!({"entries":rows,"writable":editor.is_some(),"groups":group_rows});
     if serde_json::to_vec(&result).map_err(|_| "catalog_limit")?.len() > 1_500_000 { return Err("catalog_limit"); }
     Ok((Vault { database, path: path.clone(), hash: Sha256::digest(&data).to_vec(), editor, allowed, expired }, result))
 }

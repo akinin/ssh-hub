@@ -11,9 +11,12 @@ struct KDBXEntryInfo: Decodable, Identifiable, Equatable {
     var group: String
     var expired: Bool
     var modified: Double?
+    var groupID: UUID? = nil
+    enum CodingKeys: String, CodingKey { case id, title, username, group, expired, modified; case groupID = "group_id" }
     var valid: Bool { title.utf8.count <= 512 && username.utf8.count <= 512 && group.utf8.count <= 2048 && [title,username,group].allSatisfy { !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) } && modified.map(\.isFinite) != false }
 }
 struct KDBXGroupInfo: Decodable, Identifiable { var id: UUID; var title: String; var name: String? = nil; var parent: UUID? = nil }
+struct KDBXSaveReceipt { let reference: KDBXReference; let backupName: String }
 struct KDBXEntryDraft: Codable {
     var title = ""
     var username = ""
@@ -349,7 +352,8 @@ private struct KDBXUnlockMaterial: Codable {
         let result = try await Task.detached { try runtime.editRequest(database, op: "detail", fields: ["entry_id": entry.uuidString]) }.value
         return try JSONDecoder().decode(KDBXEntryDraft.self, from: JSONSerialization.data(withJSONObject: result))
     }
-    func saveDraft(database: UUID, entry: UUID?, draft: KDBXEntryDraft) async throws -> String {
+    func saveDraft(database: UUID, entry: UUID?, draft: KDBXEntryDraft) async throws -> String { try await saveDraftReceipt(database: database, entry: entry, draft: draft).backupName }
+    func saveDraftReceipt(database: UUID, entry: UUID?, draft: KDBXEntryDraft) async throws -> KDBXSaveReceipt {
         guard busy == nil else { throw KDBXError.failure("database_busy") }
         if let validation = draft.validation { throw NSError(domain: "KDBX", code: 1, userInfo: [NSLocalizedDescriptionKey: validation]) }
         busy = database; error = nil; let operation = generation
@@ -363,7 +367,9 @@ private struct KDBXUnlockMaterial: Codable {
         catch { if generation == operation { self.error = error.localizedDescription }; throw error }
         guard generation == operation else { throw KDBXError.failure("locked") }
         objectWillChange.send()
-        return result["backup_name"] as? String ?? ""
+        guard let text = result["entry_id"] as? String, let id = UUID(uuidString: text), entry == nil || entry == id,
+              runtime.catalog(database)?.contains(where: { $0.id == id }) == true else { throw KDBXError.failure("verification_failed") }
+        return KDBXSaveReceipt(reference: KDBXReference(databaseID: database, entryID: id), backupName: result["backup_name"] as? String ?? "")
     }
     func cancel() { generation = UUID(); pending?.stop(); pending = nil; busy = nil; runtime.lock(); error = nil }
 }

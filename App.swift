@@ -23,6 +23,7 @@ import ConsoleSupport
     @Published var selectedRecordKeys = Set<String>()
     @Published var batchTarget: RecordBatchTarget?
     @Published var keePassTransfer: SSHAlias?
+    @Published var keePassCopies: [String: KDBXRecordCopy] = [:]
     @Published var undoBatchChange: (RecordBatchPlan, RecordBatchTarget)?
     @Published var pages: [EntryPage] = []
     @Published var workspace = WorkspaceLayout() { didSet { saveWorkspace() } }
@@ -1052,7 +1053,10 @@ struct AliasDetail: View {
     @AppStorage(RecordActionDefaults.key) private var globalTiles = Data()
     @AppStorage(InterfaceDensity.key) private var densityValue = InterfaceDensity.normal.rawValue
     private var density: InterfaceDensity { InterfaceDensity(rawValue: densityValue) ?? .normal }
-    private var visibleTiles: [RecordActionStyle] { RecordAction.layout(store.appearance(entry).actionTiles, global: RecordActionDefaults.decode(globalTiles), entry: entry).filter { !$0.hidden } }
+    private var visibleActions: [RecordActionStyle] { RecordAction.layout(store.appearance(entry).actionTiles, global: RecordActionDefaults.decode(globalTiles), entry: entry).filter { !$0.hidden } }
+    private var visibleTiles: [RecordActionStyle] { visibleActions.filter { $0.effectivePlacement == .tiles } }
+    private var headerActions: [RecordActionStyle] { visibleActions.filter { !$0.isDivider && $0.effectivePlacement == .header } }
+    private var sections: [RecordAction.Section] { RecordAction.sections(visibleTiles) }
     private var primaryAction: String? {
         let preferred: [RecordAction] = entry.recordKind == .website ? [.browser, .inside] : entry.recordKind == .web ? [.inside, .browser] : [.connect]
         return preferred.first { action in visibleTiles.contains { $0.id == action.id } }?.id
@@ -1068,11 +1072,17 @@ struct AliasDetail: View {
                     }
                 }
                 HStack { Text("Действия").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary); Spacer(); Button("Настроить…", systemImage: "slider.horizontal.3") { customizingTiles = true }.font(.caption).help("Настроить плитки записи").accessibilityIdentifier("customizeRecordTiles") }
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 10)], spacing: 10) {
-                    ForEach(visibleTiles) { style in
-                        if let action = RecordAction(rawValue: style.id) {
-                            tile(action.title, detail: action.detail(entry), icon: action == .connect ? entry.recordKind?.icon ?? action.icon : action.icon, color: style.tint, primary: action.id == primaryAction) { run(action) }
-                                .disabled(action == .check && store.checkingID != nil)
+                ForEach(sections) { section in
+                    if section.id != sections.first?.id { Divider().padding(.vertical, 4) }
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 10)], spacing: 10) {
+                        ForEach(section.actions) { style in
+                            if let action = RecordAction(rawValue: style.id) {
+                                if action == .keePass { keePassAction(style, header: false) }
+                                else {
+                                    tile(action == .favorite && store.isFavorite(entry) ? "Убрать из избранного" : action.title, detail: action.detail(entry), icon: action == .connect ? entry.recordKind?.icon ?? action.icon : action == .favorite && store.isFavorite(entry) ? "star.fill" : action.icon, color: style.tint, primary: action.id == primaryAction) { run(action) }
+                                        .disabled(action == .check && store.checkingID != nil)
+                                }
+                            }
                         }
                     }
                 }
@@ -1106,6 +1116,11 @@ struct AliasDetail: View {
     }
     private func run(_ action: RecordAction) {
         switch action {
+        case .favorite: store.toggleFavorite(entry)
+        case .duplicate: store.duplicate(entry)
+        case .export: store.export(entries: [entry])
+        case .keePass: store.keePassTransfer = entry
+        case .delete: store.prepareDelete(entry)
         case .inside: store.openWebsite(entry)
         case .browser: store.openWebsiteInBrowser(entry)
         case .connect: store.connect(entry)
@@ -1135,24 +1150,35 @@ struct AliasDetail: View {
             RecordFeatureBadges(tags: store.featureTags[entry.favoriteID, default: []])
         }
     }
+    private func keePassAction(_ style: RecordActionStyle, header: Bool) -> some View {
+        RecordKeePassAction(entry: entry, copy: store.keePassCopies[entry.favoriteID], style: style, density: density, header: header, vault: store.credentialVault(), workspace: store.kdbx!) { store.keePassTransfer = entry }
+    }
     private var recordActions: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 6) {
-                Button { store.toggleFavorite(entry) } label: { Image(systemName: store.isFavorite(entry) ? "star.fill" : "star").foregroundStyle(store.isFavorite(entry) ? .yellow : .secondary).frame(width: 28, height: 28) }.help("Избранное").accessibilityLabel("Избранное")
-                Button { store.duplicate(entry) } label: { Image(systemName: "plus.square.on.square").frame(width: 28, height: 28) }.help("Дублировать запись").accessibilityLabel("Дублировать запись")
-                Button { store.export(entries: [entry]) } label: { Image(systemName: "square.and.arrow.up").frame(width: 28, height: 28) }.help("Экспорт записи").accessibilityLabel("Экспорт записи")
-                Button { store.keePassTransfer = entry } label: { Image(systemName: "key").frame(width: 28, height: 28) }.help("Передать в KeePass").accessibilityLabel("Передать в KeePass")
-                Button(role: .destructive) { store.prepareDelete(entry) } label: { Image(systemName: "trash").frame(width: 28, height: 28) }.help("Удалить запись").accessibilityLabel("Удалить запись")
-            }.buttonStyle(.plain).foregroundStyle(.secondary).fixedSize()
-            Menu {
-                Button(store.isFavorite(entry) ? "Убрать из избранного" : "В избранное", systemImage: "star") { store.toggleFavorite(entry) }
-                Button("Дублировать", systemImage: "plus.square.on.square") { store.duplicate(entry) }
-                Button("Передать в KeePass…", systemImage: "key") { store.keePassTransfer = entry }
-                Button("Экспортировать…", systemImage: "square.and.arrow.up") { store.export(entries: [entry]) }
-                Divider()
-                Button("Удалить…", systemImage: "trash", role: .destructive) { store.prepareDelete(entry) }
-            } label: { Image(systemName: "ellipsis.circle").frame(width: 28, height: 28) }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("Действия с записью").accessibilityLabel("Действия с записью")
+                ForEach(headerActions) { style in
+                    if let action = RecordAction(rawValue: style.id) {
+                        if action == .keePass { keePassAction(style, header: true) }
+                        else {
+                            Button(role: action == .delete ? .destructive : nil) { run(action) } label: { Image(systemName: action == .favorite && store.isFavorite(entry) ? "star.fill" : action.icon).foregroundStyle(action == .favorite && store.isFavorite(entry) ? .yellow : style.tint).frame(width: 28, height: 28) }
+                                .disabled(action == .check && store.checkingID != nil).help(action.title).accessibilityLabel(action.title)
+                        }
+                    }
+                }
+            }.buttonStyle(.plain).fixedSize()
+            HStack(spacing: 6) {
+                if let style = headerActions.first(where: { $0.id == RecordAction.keePass.id }) { keePassAction(style, header: true) }
+                if headerActions.contains(where: { $0.id != RecordAction.keePass.id }) {
+                    Menu {
+                        ForEach(headerActions.filter { $0.id != RecordAction.keePass.id }) { style in
+                            if let action = RecordAction(rawValue: style.id) {
+                                Button(action.title, systemImage: action.icon, role: action == .delete ? .destructive : nil) { run(action) }.disabled(action == .check && store.checkingID != nil)
+                            }
+                        }
+                    } label: { Image(systemName: "ellipsis.circle").frame(width: 28, height: 28) }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("Действия с записью").accessibilityLabel("Действия с записью")
+                }
+            }.fixedSize()
         }
     }
     private func tile(_ title: String, detail: String, icon: String, color: Color = .blue, primary: Bool = false, action: @escaping () -> Void) -> some View {

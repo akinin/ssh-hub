@@ -40,19 +40,29 @@ struct ConnectionAppearance: Codable, Equatable {
     }
 }
 
+enum RecordActionPlacement: String, Codable, CaseIterable, Identifiable {
+    case tiles, header
+    var id: String { rawValue }
+    var title: String { self == .tiles ? "Плитка" : "Значок вверху" }
+}
 struct RecordActionStyle: Codable, Equatable, Identifiable {
     var id: String
     var color: String = "blue"
     var hidden = false
+    var placement: RecordActionPlacement? = nil
+    var isDivider: Bool { id.hasPrefix("divider_") && id.count == 40 && id.dropFirst(8).allSatisfy { $0.isHexDigit && $0.isASCII } }
+    var effectivePlacement: RecordActionPlacement { isDivider ? .tiles : placement ?? RecordAction(rawValue: id)?.defaultPlacement ?? .tiles }
+    static func divider() -> Self { Self(id: "divider_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased(), color: "gray") }
     static let colors = ["blue", "green", "orange", "red", "purple", "pink", "gray"]
     var valid: Bool { !id.isEmpty && id.utf8.count <= 40 && id.unicodeScalars.allSatisfy { CharacterSet.alphanumerics.contains($0) || $0 == "_" } && Self.colors.contains(color) }
 }
 
 enum RecordAction: String, CaseIterable, Identifiable {
-    case inside, browser, connect, sftp, logs, inventory, documentation, attachments, tools, edit, check, notifications, terminal
+    case inside, browser, connect, sftp, logs, inventory, documentation, attachments, tools, edit, check, notifications, terminal, favorite, duplicate, export, keePass, delete
     var id: String { rawValue }
-    var title: String { switch self { case .inside: return "Открыть внутри"; case .browser: return "Открыть в браузере"; case .connect: return "Подключиться"; case .sftp: return "SFTP"; case .logs: return "Логи"; case .inventory: return "Инвентаризация"; case .documentation: return "Документация"; case .attachments: return "Вложения"; case .tools: return "Инструменты"; case .edit: return "Редактировать"; case .check: return "Проверить"; case .notifications: return "Уведомления"; case .terminal: return "Внешний терминал" } }
-    var icon: String { switch self { case .inside: return "macwindow"; case .browser, .terminal: return "arrow.up.forward.square"; case .connect: return "cable.connector"; case .sftp: return "folder"; case .logs: return "text.alignleft"; case .inventory: return "shippingbox"; case .documentation: return "doc.richtext"; case .attachments: return "paperclip"; case .tools: return "wrench.and.screwdriver"; case .edit: return "pencil"; case .check: return "network"; case .notifications: return "bell.badge" } }
+    var defaultPlacement: RecordActionPlacement { switch self { case .favorite, .duplicate, .export, .keePass, .delete: return .header; default: return .tiles } }
+    var title: String { switch self { case .favorite: return "Избранное"; case .duplicate: return "Дублировать"; case .export: return "Экспортировать"; case .keePass: return "KeePass"; case .delete: return "Удалить"; case .inside: return "Открыть внутри"; case .browser: return "Открыть в браузере"; case .connect: return "Подключиться"; case .sftp: return "SFTP"; case .logs: return "Логи"; case .inventory: return "Инвентаризация"; case .documentation: return "Документация"; case .attachments: return "Вложения"; case .tools: return "Инструменты"; case .edit: return "Редактировать"; case .check: return "Проверить"; case .notifications: return "Уведомления"; case .terminal: return "Внешний терминал" } }
+    var icon: String { switch self { case .favorite: return "star"; case .duplicate: return "plus.square.on.square"; case .export: return "square.and.arrow.up"; case .keePass: return "key"; case .delete: return "trash"; case .inside: return "macwindow"; case .browser, .terminal: return "arrow.up.forward.square"; case .connect: return "cable.connector"; case .sftp: return "folder"; case .logs: return "text.alignleft"; case .inventory: return "shippingbox"; case .documentation: return "doc.richtext"; case .attachments: return "paperclip"; case .tools: return "wrench.and.screwdriver"; case .edit: return "pencil"; case .check: return "network"; case .notifications: return "bell.badge" } }
     func available(_ entry: SSHAlias) -> Bool { switch self {
         case .inside, .browser: return entry.recordKind?.isWeb == true
         case .connect: return entry.canConnect && entry.recordKind?.isWeb != true
@@ -61,6 +71,11 @@ enum RecordAction: String, CaseIterable, Identifiable {
         default: return true
     } }
     func detail(_ entry: SSHAlias) -> String { switch self {
+        case .favorite: return "Быстрый доступ к записи"
+        case .duplicate: return "Создать копию записи"
+        case .export: return "Сохранить в файл"
+        case .keePass: return "Состояние и перенос данных"
+        case .delete: return "Удалить с подтверждением"
         case .inside: return "Во вкладке SSH Hub"
         case .browser: return entry.transport?.tunnel == nil ? "Браузер по умолчанию" : "Напрямую, без SSH-туннеля"
         case .connect: return entry.canSSH ? "Консоль SSH" : entry.recordKind?.title ?? "Сеанс"
@@ -77,15 +92,31 @@ enum RecordAction: String, CaseIterable, Identifiable {
     } }
     static func catalog(_ stored: [RecordActionStyle]?) -> [RecordActionStyle] {
         let saved = stored ?? [], seen = Set(saved.map(\.id))
-        return (saved + allCases.filter { !seen.contains($0.id) }.map { RecordActionStyle(id: $0.id) }).filter { RecordAction(rawValue: $0.id) != nil }
+        return (saved + allCases.filter { !seen.contains($0.id) }.map { RecordActionStyle(id: $0.id, color: $0.defaultPlacement == .header ? "gray" : "blue") }).filter { RecordAction(rawValue: $0.id) != nil || $0.isDivider }
     }
     static func layout(_ stored: [RecordActionStyle]?, global: [RecordActionStyle]? = nil, entry: SSHAlias) -> [RecordActionStyle] {
-        catalog(stored ?? global).filter { RecordAction(rawValue: $0.id)?.available(entry) == true }
+        catalog(stored ?? global).filter { $0.isDivider || RecordAction(rawValue: $0.id)?.available(entry) == true }
     }
     static func saving(_ edited: [RecordActionStyle], previous: [RecordActionStyle]?) -> [RecordActionStyle] {
         let seen = Set(edited.map(\.id))
-        return edited + (previous ?? []).filter { !seen.contains($0.id) }
+        return edited + (previous ?? []).filter { !seen.contains($0.id) && !$0.isDivider }
     }
+    struct Section: Identifiable {
+        var id: String
+        var actions: [RecordActionStyle]
+    }
+    static func sections(_ styles: [RecordActionStyle]) -> [Section] {
+        var result: [Section] = [], actions: [RecordActionStyle] = [], id = "first"
+        for style in styles where !style.hidden && style.effectivePlacement == .tiles {
+            if style.isDivider {
+                if !actions.isEmpty { result.append(Section(id: id, actions: actions)); actions = [] }
+                id = style.id
+            } else if RecordAction(rawValue: style.id) != nil { actions.append(style) }
+        }
+        if !actions.isEmpty { result.append(Section(id: id, actions: actions)) }
+        return result
+    }
+
 }
 
 // App preference across profiles; per-record metadata remains an optional override.

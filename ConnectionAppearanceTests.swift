@@ -64,6 +64,17 @@ import AppKit
         do { _ = try RecordActionDefaults.encode(global + global); fatalError("duplicate global actions accepted") } catch is ConfigError {}
         check(RecordAction.layout(nil, global: global + [RecordActionStyle(id: "future_action")], entry: alias).allSatisfy { RecordAction(rawValue: $0.id) != nil }, "unknown future actions never execute")
         check(try AliasTransfer.decode(AliasTransfer(aliases: [TransferAlias(alias, group: "", favorite: false, appearance: layoutOnly)]).encode()).aliases[0].appearance == layoutOnly, "export layout metadata")
+        let legacy = try JSONDecoder().decode(RecordActionStyle.self, from: Data("{\"id\":\"connect\",\"color\":\"blue\",\"hidden\":false}".utf8))
+        check(legacy.effectivePlacement == .tiles && RecordActionStyle(id: "favorite").effectivePlacement == .header, "legacy tile layouts keep default header icons")
+        let separator = RecordActionStyle.divider(), otherSeparator = RecordActionStyle.divider()
+        let mixed = [separator, RecordActionStyle(id: "connect"), separator, otherSeparator, RecordActionStyle(id: "favorite", color: "orange", placement: .tiles), RecordActionStyle(id: "inventory", placement: .header), RecordActionStyle.divider()]
+        let unique = [RecordActionStyle(id: "connect"), separator, RecordActionStyle(id: "favorite", placement: .tiles), RecordActionStyle(id: "inventory", placement: .header)]
+        check(RecordActionDefaults.valid(unique) && !RecordActionDefaults.valid(mixed), "stable separator IDs and duplicate validation")
+        let sections = RecordAction.sections(mixed)
+        check(sections.count == 2 && sections[0].actions.map(\.id) == ["connect"] && sections[1].actions.map(\.id) == ["favorite"], "full width sections collapse leading consecutive trailing separators and exclude header actions")
+        check(try JSONDecoder().decode([RecordActionStyle].self, from: JSONEncoder().encode(unique)) == unique, "placements and separators round trip")
+        check(!RecordAction.saving([RecordActionStyle(id: "connect")], previous: unique).contains(where: \.isDivider), "deleted separators do not return during merge")
+        check(RecordAction.layout(unique, entry: website).contains(where: \.isDivider), "separator metadata applies to other record types")
         print("PASS: display names, fallback, logo resizing/transparency, settings, rename/undo, reset, JSON compatibility and validation")
     }
 }

@@ -18,6 +18,8 @@ struct KDBXTransferView: View {
     @State private var unlocking: KDBXDatabaseLink?
     @State private var editing: KDBXTransferDraft?
     @State private var preparing = false
+    @State private var choosingExisting = false
+    @State private var markedExisting = false
     @State private var receipt: String?
     @State private var error: String?
     @State private var operation = UUID()
@@ -41,22 +43,35 @@ struct KDBXTransferView: View {
                 }
             }.listStyle(.inset).frame(minHeight: 130)
             if links.isEmpty { Text("Подключи базу в «Настройки → KeePass».").foregroundStyle(.secondary) }
+            Button("Отметить существующую запись…", systemImage: "link") { choosingExisting = true }.disabled(links.isEmpty || preparing || workspace.busy != nil)
+            Text("Эта отметка показывает наличие данных в KeePass и не меняет источник логина и пароля подключения.").font(.caption).foregroundStyle(.secondary)
             Toggle("Добавить сохранённый пароль", isOn: $includePassword).toggleStyle(.checkbox)
             Toggle("Добавить сохранённую документацию в заметки", isOn: $includeDocumentation).toggleStyle(.checkbox)
             Text("Название, логин, адрес и параметры подключения попадут в редактируемый просмотр. Приватные SSH-ключи, вложения и история документации не копируются.").font(.caption).foregroundStyle(.secondary)
             if let error = error ?? workspace.error { Text(error).foregroundStyle(.red).font(.caption) }
+            if markedExisting { HubNotice(text: "Отметка существующей записи KeePass сохранена.", icon: "checkmark.circle", tint: .green) }
             if let receipt { HubNotice(text: "Новая запись сохранена. Резервная копия базы: " + receipt, icon: "checkmark.circle", tint: .green).textSelection(.enabled) }
             HStack {
-                Button("Готово") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
                 if preparing { ProgressView().controlSize(.small) }
                 Button("Просмотреть перед сохранением…") { prepare() }.buttonStyle(.borderedProminent)
                     .disabled(preparing || (vault.isLocked && !workspace.allowsRemembering) || workspace.busy != nil || selected.map { !workspace.runtime.canWrite($0) } != false)
             }
-        }.padding(22).frame(width: 650, height: 550)
+        }.padding(22).frame(width: 650, height: 610)
             .sheet(item: $unlocking) { KDBXUnlockView(link: $0, workspace: workspace) }
             .sheet(item: $editing, onDismiss: { editing = nil }) { target in
-                KDBXEditView(link: target.link, entryID: nil, workspace: workspace, initialDraft: target.draft) { receipt = $0 }
+                KDBXEditView(link: target.link, entryID: nil, workspace: workspace, initialDraft: target.draft) { saved in
+                    receipt = saved.backupName
+                    do { try store.rememberKeePassCopy(saved.reference, entry: entry) }
+                    catch { self.error = "Запись в KeePass сохранена, но отметка не записалась: " + error.localizedDescription }
+                }
+            }
+            .sheet(isPresented: $choosingExisting) {
+                KDBXEntryPicker(links: links, workspace: workspace) { reference, _ in
+                    do { try store.rememberKeePassCopy(reference, entry: entry); selected = reference.databaseID; markedExisting = true; error = nil }
+                    catch { self.error = error.localizedDescription }
+                }
             }
             .onAppear { selected = links.first?.id }
             .onDisappear { operation = UUID(); editing = nil }

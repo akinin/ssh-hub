@@ -4,6 +4,12 @@
 
 Нативное приложение для macOS 14+ на Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
 
+## Изменения 3.6.0 (сборка 52)
+
+- RecordActionStyle optional placement читает старые данные: прежние действия tiles, пять новых header по умолчанию. Один общий bounded массив для обоих мест, без дублирования. Divider — только ID divider_ + 32 hex, не исполняемое действие; sections фильтрует header/hidden и пустые группы. Saving не возвращает удалённые divider из previous; недоступные типу действия сохраняет. Unknown IDs никогда не исполнять. Изменения global/record остаются draft до Save; Cancel/CAS global прежние. Верхние кнопки и плитки делегируют прежним callbacks, destructive confirm сохраняется. Не добавлять GeometryReader→State в layout.
+- KDBXRecordCopyRepository (KeePassCopies HubFeatureFile) — локальные public UUID refs + endpoint fingerprint, по config/profile, до5000. Не источник credentials, не входит в export/backup, не содержит паролей/URL/docs. Сохранять только после подтверждённого saveReceipt или явного выбора существующей записи. Сбой receipt не повторяет Save базы. Переименование переносит ключ в каждом профиле. Повреждённый файл не перезаписывать. RecordKeePassAction наблюдает vault/workspace и receipt cache; exact reference из credential binding приоритетнее copy. Не угадывать наличие по названию/URL, не читать секреты для индикатора. Closed != missing, статус по каталогу открытой базы.
+- saveDraftReceipt возвращает reference с проверенным entry_id из ответа private save; старый saveDraft String API остаётся wrapper для совместимости. KDBXEntryInfo.groupID optional; helper передаёт group_id и bounded public дерево typed groups также для read-only KDBX3. Browser фильтрует по UUID, не split paths; all/search группирует записи. KDBXCatalogBrowser общий для manager/picker, группы раскрываются всей строкой; выбор группы для Save staged до Apply. Создание в manager использует выбранный group UUID. Никакой автоматической записи или изменения credential bindings при просмотре/отметке.
+
 ## Изменения 3.5.0 (сборка 51)
 
 - PasswordEntryView: общий eye toggle, скрытие при закрытии/смене prompt, LTR/leading сохранены. Repeat по-прежнему showsGenerator=false. Секрет не копировать в clipboard при просмотре.

@@ -52,8 +52,8 @@ struct KDBXVaultsView: View {
                                 Spacer()
                                 if workspace.runtime.catalog(link.id) == nil { Button("Открыть…") { unlocking = link }.disabled(workspace.busy != nil || (vault.isLocked && !workspace.allowsRemembering) || link.bookmark == nil) }
                                 else {
-                                    if workspace.runtime.canWrite(link.id) { Button("Записи…", systemImage: "list.bullet.rectangle") { managing = link }.disabled(workspace.busy != nil) }
-                                    else { Text("Только чтение").font(.caption).foregroundStyle(.secondary) }
+                                    Button("Записи…", systemImage: "list.bullet.rectangle") { managing = link }.disabled(workspace.busy != nil)
+                                    if !workspace.runtime.canWrite(link.id) { Text("Только чтение").font(.caption).foregroundStyle(.secondary) }
                                     Button { workspace.runtime.lock(link.id) } label: { Image(systemName: "lock") }.help("Заблокировать базу").disabled(workspace.busy != nil)
                                 }
                                 Button { choose(link) } label: { Image(systemName: "folder") }.help("Выбрать файл заново").disabled(vault.isLocked)
@@ -126,27 +126,28 @@ struct KDBXEntryPicker: View {
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var unlocking: KDBXDatabaseLink?
+    @State private var selectedDatabase: UUID?
+    @State private var selectedGroup: UUID?
+    private var link: KDBXDatabaseLink? { links.first { $0.id == selectedDatabase } ?? links.first }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Label("Запись KeePass", systemImage: "key").font(.title2.bold())
+            HStack {
+                Picker("База", selection: $selectedDatabase) { ForEach(links) { Text($0.title).tag(Optional($0.id)) } }.frame(maxWidth: 340)
+                Spacer()
+                if let link, workspace.runtime.catalog(link.id) == nil { Button("Открыть базу…") { unlocking = link }.disabled(workspace.busy != nil || link.bookmark == nil) }
+            }
             TextField("Название, пользователь или группа", text: $query).textFieldStyle(.roundedBorder)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(links) { link in
-                        Text(link.title).font(.headline)
-                        if let entries = workspace.runtime.catalog(link.id) {
-                            ForEach(entries.filter { query.isEmpty || ($0.title + " " + $0.username + " " + $0.group).localizedCaseInsensitiveContains(query) }) { entry in
-                                Button { onSelect(KDBXReference(databaseID: link.id, entryID: entry.id), entry); dismiss() } label: {
-                                    HStack { Image(systemName: "key"); VStack(alignment: .leading, spacing: 3) { Text(entry.title.isEmpty ? "Без названия" : entry.title); Text([entry.group,entry.username].filter { !$0.isEmpty }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary) }; Spacer(); if entry.expired { Text("Истёк срок").foregroundStyle(.orange).font(.caption) } }.padding(9).contentShape(Rectangle())
-                                }.buttonStyle(.plain).disabled(entry.expired)
-                            }
-                        } else { HStack { Text("База заблокирована").font(.caption).foregroundStyle(.secondary); Spacer(); Button("Открыть…") { unlocking = link }.disabled(workspace.busy != nil || link.bookmark == nil) } }
-                    }
-                    if links.isEmpty { Text("Сначала подключи базу через «Базы KeePass…».").foregroundStyle(.secondary) }
-                }
-            }.frame(minHeight: 280)
+            if let link {
+                if let entries = workspace.runtime.catalog(link.id) {
+                    KDBXCatalogBrowser(entries: entries, groups: workspace.runtime.groups(link.id), query: query, selectedGroup: $selectedGroup) { entry in onSelect(KDBXReference(databaseID: link.id, entryID: entry.id), entry); dismiss() }.id(link.id)
+                } else { ContentUnavailableView("База заблокирована", systemImage: "lock", description: Text("Открой базу, чтобы просмотреть группы и записи.")).frame(maxWidth: .infinity, maxHeight: .infinity) }
+            } else { ContentUnavailableView("Нет подключённых баз", systemImage: "key", description: Text("Подключи файл в настройках KeePass.")).frame(maxWidth: .infinity, maxHeight: .infinity) }
+            if let error = workspace.error { Text(error).font(.caption).foregroundStyle(.red) }
             HStack { Spacer(); Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction) }
-        }.padding(22).frame(width: 620, height: 460)
+        }.padding(22).frame(width: 880, height: 580)
             .sheet(item: $unlocking) { KDBXUnlockView(link: $0, workspace: workspace) }
+            .onAppear { selectedDatabase = links.first?.id }
+            .onChange(of: selectedDatabase) { _, _ in selectedGroup = nil }
     }
 }

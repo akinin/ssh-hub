@@ -128,7 +128,7 @@ cp "$CARGO_TARGET_DIR/release/ssh-hub-kdbx" "$app_dir/Contents/MacOS/SSHKDBX"
 python3 KDBXHelper/test_interop.py "$app_dir/Contents/MacOS/SSHKDBX"
 python3 KDBXHelper/test_write_interop.py "$app_dir/Contents/MacOS/SSHKDBX"
 python3 KDBXHelper/licenses.py "$app_dir/Contents/Resources/KDBX-LICENSES.txt"
-swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift SSHCredentials.swift SharedCredentials.swift KDBX.swift KDBXTests.swift -o "$build_dir/kdbx-tests" -framework AppKit -framework Security -framework LocalAuthentication
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift SSHCredentials.swift SharedCredentials.swift KDBX.swift HubFeatureStorage.swift KDBXRecordLinks.swift KDBXTests.swift -o "$build_dir/kdbx-tests" -framework AppKit -framework Security -framework LocalAuthentication
 "$build_dir/kdbx-tests" "$app_dir/Contents/MacOS/SSHKDBX"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" "${infrastructure_sources[@]}" ConnectionDocumentation.swift ConnectionAttachments.swift RecordFeatureTags.swift RecordFeatureTagsTests.swift -o "$build_dir/record-feature-tests" -framework AppKit -framework Security
 "$build_dir/record-feature-tests"

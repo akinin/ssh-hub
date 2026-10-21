@@ -22,21 +22,19 @@ struct RecordActionsEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Label(entry == nil ? "Плитки всех записей" : "Плитки записи", systemImage: "square.grid.2x2").font(.title2.bold())
-            Text(entry == nil ? "Общий порядок, цвета и набор плиток для записей без индивидуальных настроек. Для каждого типа показываются только подходящие действия." : "Настройки только этой записи. Можно вернуться к общему варианту. Перетаскивай строки или используй стрелки.").font(.caption).foregroundStyle(.secondary)
+            Text(entry == nil ? "Общие настройки действий для записей без индивидуального оформления. Выбери плитку или значок вверху; добавь разделители между группами." : "Настройки только этой записи. Можно вернуться к общему варианту. Перетаскивай строки или используй стрелки.").font(.caption).foregroundStyle(.secondary)
             RecordActionRows(draft: $draft)
             HStack {
                 Button(entry == nil ? "По умолчанию" : "Использовать общие") {
                     draft = entry.map { RecordAction.layout(nil, global: inherited, entry: $0) } ?? RecordAction.catalog(nil)
                     resetSnapshot = draft
                 }
-                Menu("Добавить") {
-                    ForEach(draft.indices.filter { draft[$0].hidden }, id: \.self) { index in Button(RecordAction(rawValue: draft[index].id)?.title ?? draft[index].id) { draft[index].hidden = false } }
-                }.disabled(!draft.contains(where: \.hidden))
+                RecordActionAddMenu(draft: $draft)
                 Spacer()
                 Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Сохранить") { onSave(resetSnapshot == draft ? nil : RecordAction.saving(draft, previous: stored ?? inherited)); dismiss() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
             }
-        }.padding(20).frame(width: 660)
+        }.padding(20).frame(width: 820)
     }
 }
 
@@ -51,21 +49,46 @@ struct GlobalRecordActionsEditor: View {
 
 private struct RecordActionRows: View {
     @Binding var draft: [RecordActionStyle]
+    private func move(_ id: String, by delta: Int) { guard let index = draft.firstIndex(where: { $0.id == id }), draft.indices.contains(index + delta) else { return }; draft.swapAt(index, index + delta) }
     var body: some View {
-            List {
-                ForEach(draft.indices, id: \.self) { index in
-                    if let action = RecordAction(rawValue: draft[index].id) {
-                        HStack(spacing: 10) {
-                            Image(systemName: action.icon).foregroundStyle(draft[index].tint).frame(width: 22)
-                            Text(action.title).frame(maxWidth: .infinity, alignment: .leading)
-                            Picker("Цвет: " + action.title, selection: $draft[index].color) { ForEach(RecordActionStyle.colors, id: \.self) { Text(RecordActionStyle.colorTitle($0)).tag($0) } }.labelsHidden().frame(width: 110)
-                            Button { draft.swapAt(index, index - 1) } label: { Image(systemName: "arrow.up") }.disabled(index == 0).help("Выше")
-                            Button { draft.swapAt(index, index + 1) } label: { Image(systemName: "arrow.down") }.disabled(index == draft.count - 1).help("Ниже")
-                            Toggle("Показать " + action.title, isOn: Binding(get: { !draft[index].hidden }, set: { draft[index].hidden = !$0 })).labelsHidden().toggleStyle(.checkbox)
-                        }.padding(.vertical, 4).accessibilityElement(children: .contain)
+        List {
+            ForEach($draft) { $style in
+                HStack(spacing: 8) {
+                    Image(systemName: style.isDivider ? "minus" : RecordAction(rawValue: style.id)?.icon ?? "questionmark").foregroundStyle(style.tint).frame(width: 22)
+                    Text(style.isDivider ? "Горизонтальный разделитель" : RecordAction(rawValue: style.id)?.title ?? style.id).frame(maxWidth: .infinity, alignment: .leading)
+                    if !style.isDivider {
+                        Picker("Размещение: " + (RecordAction(rawValue: style.id)?.title ?? ""), selection: Binding(get: { style.effectivePlacement }, set: { style.placement = $0 })) { ForEach(RecordActionPlacement.allCases) { Text($0.title).tag($0) } }.labelsHidden().frame(width: 150)
+                        Picker("Цвет", selection: $style.color) { ForEach(RecordActionStyle.colors, id: \.self) { Text(RecordActionStyle.colorTitle($0)).tag($0) } }.labelsHidden().frame(width: 100)
+                    } else { Rectangle().fill(.quaternary).frame(maxWidth: 240).frame(height: 1) }
+                    Button { move(style.id, by: -1) } label: { Image(systemName: "arrow.up") }.disabled(draft.first?.id == style.id).help("Выше")
+                    Button { move(style.id, by: 1) } label: { Image(systemName: "arrow.down") }.disabled(draft.last?.id == style.id).help("Ниже")
+                    if style.isDivider {
+                        Button { let id = style.id; draft.removeAll { $0.id == id } } label: { Image(systemName: "trash") }.help("Убрать разделитель")
+                    } else {
+                        Toggle("Показать " + (RecordAction(rawValue: style.id)?.title ?? "действие"), isOn: Binding(get: { !style.hidden }, set: { style.hidden = !$0 })).labelsHidden().toggleStyle(.checkbox)
                     }
-                }.onMove { source, destination in draft.move(fromOffsets: source, toOffset: destination) }
-            }.frame(minHeight: 330)
+                }.padding(.vertical, 4).accessibilityElement(children: .contain)
+                    .contextMenu {
+                        if !style.isDivider {
+                            Button("Разделитель после этого действия", systemImage: "minus") {
+                                if let index = draft.firstIndex(where: { $0.id == style.id }), draft.count < 32 { draft.insert(.divider(), at: index + 1) }
+                            }.disabled(draft.count >= 32)
+                        }
+                    }
+            }.onMove { source, destination in draft.move(fromOffsets: source, toOffset: destination) }
+        }.frame(minHeight: 330)
+    }
+}
+private struct RecordActionAddMenu: View {
+    @Binding var draft: [RecordActionStyle]
+    var body: some View {
+        Menu("Добавить") {
+            Button("Горизонтальный разделитель", systemImage: "minus") { draft.append(.divider()) }.disabled(draft.count >= 32)
+            if draft.contains(where: \.hidden) { Divider() }
+            ForEach(draft.filter { $0.hidden && !$0.isDivider }) { style in
+                Button(RecordAction(rawValue: style.id)?.title ?? style.id) { if let index = draft.firstIndex(where: { $0.id == style.id }) { draft[index].hidden = false } }
+            }
+        }
     }
 }
 
@@ -106,11 +129,11 @@ struct RecordTileCustomizationView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("Настройка плиток", systemImage: "square.grid.2x2").font(.title2.bold())
+            Label("Настройка действий", systemImage: "square.grid.2x2").font(.title2.bold())
             Picker("Область настройки", selection: $scope) {
                 ForEach(RecordTileScope.allCases) { Text($0.title).tag($0) }
             }.pickerStyle(.segmented).accessibilityIdentifier("recordTileScope")
-            Text(scope == .record ? "Индивидуальные настройки имеют приоритет над общими. Перетаскивай строки или используй стрелки." : "Общий порядок, цвета и набор плиток для записей без индивидуальных настроек. Для каждого типа показываются только подходящие действия.").font(.caption).foregroundStyle(.secondary)
+            Text(scope == .record ? "Выбери размещение: плитка или значок вверху. Перетаскивай строки или используй стрелки; разделители делят плитки на группы." : "Общие настройки действий для записей без индивидуального оформления. Выбери плитку или значок вверху; добавь разделители между группами.").font(.caption).foregroundStyle(.secondary)
             RecordActionRows(draft: draft)
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
             HStack {
@@ -118,16 +141,12 @@ struct RecordTileCustomizationView: View {
                     if scope == .record { recordDraft = RecordAction.layout(nil, global: globalDraft, entry: entry); recordReset = recordDraft; recordTouched = true }
                     else { globalDraft = RecordAction.catalog(nil); globalReset = globalDraft; globalTouched = true }
                 }
-                Menu("Добавить") {
-                    ForEach(draft.wrappedValue.indices.filter { draft.wrappedValue[$0].hidden }, id: \.self) { index in
-                        Button(RecordAction(rawValue: draft.wrappedValue[index].id)?.title ?? draft.wrappedValue[index].id) { draft.wrappedValue[index].hidden = false }
-                    }
-                }.disabled(!draft.wrappedValue.contains(where: \.hidden))
+                RecordActionAddMenu(draft: draft)
                 Spacer()
                 Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Сохранить") { save() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
             }
-        }.padding(20).frame(width: 660)
+        }.padding(20).frame(width: 820)
             .onChange(of: scope) { _, value in
                 guard value == .record else { return }
                 if (!recordTouched && stored == nil) || recordReset == recordDraft {

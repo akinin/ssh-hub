@@ -29,6 +29,9 @@ extension AliasStore {
         guard old != new else { return }
         do {
             for profile in profiles.profiles {
+                let copies = KDBXRecordCopyRepository(file: HubFeatureFile(feature: "KeePassCopies", config: config.url, profile: profile.id))
+                var copied = try copies.load()
+                if let value = copied.removeValue(forKey: old) { copied[new] = value; try copies.file.write(copied); if profile.id == profiles.active { keePassCopies = copied } }
                 let repository = SharedCredentialRepository(config: config.url, profileID: profile.id)
                 if profile.id == profiles.active { try credentialVault().moveBinding(from: old, to: new) }
                 else { let before = try repository.load(); var after = before; after.moveBinding(from: old, to: new); if before != after { try repository.write(after, expected: before) } }
@@ -55,7 +58,7 @@ extension AliasStore {
         if let sharedCredentials { return sharedCredentials }
         let scope = SharedCredentialRepository(config: config.url, profileID: profiles.active).scope
         let workspace = KDBXWorkspace(unlockStorage: KDBXUnlockKeychain(scope: scope), authorized: { AppAccess.shared.enabled && !AppAccess.shared.locked }); kdbx = workspace
-        let value = SharedCredentialVault(config: config.url, profileID: profiles.active, kdbxSource: workspace.runtime); value.install(); sharedCredentials = value; return value
+        let value = SharedCredentialVault(config: config.url, profileID: profiles.active, kdbxSource: workspace.runtime); value.install(); sharedCredentials = value; reloadKeePassCopies(); return value
     }
     func unlockRememberedKDBX() {
         guard AppAccess.shared.enabled, !AppAccess.shared.locked, !endingWorkspace else { return }
@@ -64,6 +67,15 @@ extension AliasStore {
         let links = vault.document.kdbxDatabases ?? []
         guard let workspace = kdbx else { return }
         Task { await workspace.restoreRemembered(links) }
+    }
+    var keePassCopyRepository: KDBXRecordCopyRepository { KDBXRecordCopyRepository(file: HubFeatureFile(feature: "KeePassCopies", config: config.url, profile: profiles.active)) }
+    func reloadKeePassCopies() {
+        do { keePassCopies = try keePassCopyRepository.load() }
+        catch { keePassCopies = [:]; self.error = error.localizedDescription }
+    }
+    func rememberKeePassCopy(_ reference: KDBXReference, entry: SSHAlias) throws {
+        guard profileEntries.contains(where: { $0.favoriteID == entry.favoriteID }), !endingWorkspace else { throw SharedCredentialError.inactive }
+        keePassCopies = try keePassCopyRepository.save(reference, key: entry.favoriteID, entry: entry)
     }
     func integrationModel() -> InfrastructureIntegrationModel {
         if let infrastructure { infrastructure.entries = profileEntries; return infrastructure }
