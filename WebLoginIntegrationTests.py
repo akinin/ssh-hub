@@ -10,8 +10,28 @@ import urllib.parse
 
 USER = "fixture@example.test"
 PASSWORD = "fixture-'\"\\</script>"
-state = {"posts": [], "basic": 0, "steps": []}
+state = {"posts": [], "basic": 0, "steps": [], "roles": []}
 form = '<form action="/submit" method="post"><input name="username" autocomplete="username"><input name="password" type="password" autocomplete="current-password"><button type="submit">Войти</button></form>'
+# A DSM-like layout: input in a default-GET form, JS role button outside it,
+# a hidden password autofill field, nested arrow and delayed reactive enablement.
+role_second = '<form id="password-stage"><input syno-id="password" name="password" type="password"></form><div role="button" syno-id="password-next" aria-label="Войти"><div class="arrow"></div></div>'
+role_page = '<div id="root"><form id="username-stage"><input syno-id="username" name="username"><input name="password" type="password" hidden></form><div role="button" syno-id="account-panel-next-btn" aria-label="Войти"><div class="arrow"></div></div></div><style>.arrow{width:40px;height:40px}</style><script>' + """
+let ready=false;
+const initial=document.querySelector('[syno-id=username]');
+initial.addEventListener('input',()=>setTimeout(()=>ready=true,0));
+document.querySelector('[syno-id=account-panel-next-btn]').onclick=()=>{
+ if(!ready){document.title='Premature click';return;}
+ const username=initial.value;
+ document.querySelector('#root').innerHTML=SECOND;
+ let passwordReady=false;
+ const field=document.querySelector('[syno-id=password]');
+ field.addEventListener('input',()=>setTimeout(()=>passwordReady=true,0));
+ document.querySelector('[syno-id=password-next]').onclick=()=>{
+  if(!passwordReady){document.title='Premature password click';return;}
+  fetch('/role-finish',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({username,password:field.value})}).then(()=>document.title='Role success');
+ };
+};
+""".replace('SECOND', json.dumps(role_second)) + '</script>'
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_): pass
     def send(self, body, code=200, headers=None):
@@ -34,11 +54,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if route == "/manual": return self.send('<form action="/submit" method="post"><input id="account" name="username"><input id="credential" name="password" type="password"><button id="enter" type="submit">Continue to dashboard</button></form><form><input type="password"></form>')
         if route in ["/two", "/two-redirect"]: return self.send('<form action="/step-next' + ('-redirect' if route.endswith('redirect') else '') + '" method="post"><input id="step-user" name="username"><button id="next" type="submit">Далее</button></form>')
         if route == "/two-spa": return self.send('<input id="step-user"><button id="next" type="button">Далее</button><script>document.getElementById("next").onclick=()=>setTimeout(()=>document.body.innerHTML=' + json.dumps('<input id="step-password" type="password"><button id="finish" type="button" onclick="document.title=\'Two success\'">Войти</button>') + ',200)</script>')
+        if route == "/role-two": return self.send(role_page)
         if route == "/form": return self.send(form)
         if route == "/blank": return self.send("<h1>Blank</h1>")
         return self.send("unknown", 404)
     def do_POST(self):
         data = self.rfile.read(min(int(self.headers.get("Content-Length", "0")), 8192)).decode()
+        if self.path == '/role-finish':
+            state['roles'].append(urllib.parse.parse_qs(data)); return self.send('<h1>Role success</h1>')
         if self.path.startswith('/step-'):
             state["steps"].append({"path": self.path, "fields": urllib.parse.parse_qs(data)})
             if self.path == '/step-next-redirect': return self.send('', 302, {'Location': second_url + '/form'})
@@ -56,6 +79,7 @@ for server in servers: threading.Thread(target=server.serve_forever, daemon=True
 try:
     subprocess.run([sys.argv[1], "http://127.0.0.1:" + str(servers[0].server_port), second_url], check=True, timeout=105)
     assert [x["fields"] for x in state["steps"]] == [{"username": ["fixture-setup"]}, {"username": [USER]}, {"password": [PASSWORD]}, {"username": [USER]}], "two-step payloads and cross-origin stop"
+    assert state["roles"] == [{"username": [USER], "password": [PASSWORD]}], "role buttons, delayed DOM and exact synthetic credentials"
     assert state["basic"] == 1, "single Basic authentication"
     assert len(state["posts"]) == 5, "normal, delayed, SPA, manual selectors and one failed form attempt only"
     assert all(x["fields"] == {"username": [USER], "password": [PASSWORD]} for x in state["posts"]), "argument values preserved"

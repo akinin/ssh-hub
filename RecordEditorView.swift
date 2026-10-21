@@ -308,7 +308,7 @@ struct RecordEditorView: View {
                     RecordFieldRow("Логин") { TextField("Например, #username", text: selectorBinding(\.username)).accessibilityIdentifier("webLoginUsernameSelector") }
                     RecordFieldRow("Пароль") { TextField("Например, #password", text: selectorBinding(\.password)).accessibilityIdentifier("webLoginPasswordSelector") }
                     RecordFieldRow("Кнопка") { TextField("Например, button[type='submit']", text: selectorBinding(\.submit)).accessibilityIdentifier("webLoginSubmitSelector") }
-                    Text("CSS-селекторы должны указывать на одно видимое поле или кнопку: #id, input[name='login']. Элементы каждого шага должны принадлежать одной форме на этом сайте. CAPTCHA и одноразовые коды вводятся вручную.").font(.caption).foregroundStyle(.secondary)
+                    Text("CSS-селекторы должны указывать на одно видимое поле или кнопку: #id, input[name='login']. Поля одного шага должны принадлежать одной форме на этом сайте; кнопка JavaScript может быть вне формы. CAPTCHA и одноразовые коды вводятся вручную.").font(.caption).foregroundStyle(.secondary)
                     }.padding(.top, 8).textFieldStyle(.roundedBorder)
                 }
                 if settings.wrappedValue.webLoginSelectors?.validation == nil { Label("Поля входа настроены", systemImage: "checkmark.circle").font(.caption).foregroundStyle(.secondary) }

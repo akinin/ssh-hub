@@ -101,6 +101,32 @@ import WebKit
         let secondStep = await stepPicker.check()
         try check(secondStep?.validation == nil && secondStep?.username == "#step-user" && stepPicker.canApply && stepSetupReads == 0, "visual two-step setup retains first selectors, verifies second without credentials")
         stepPicker.close()
+        var roleSetupReads = 0
+        let roleSetup = WebPageModel(entry: entry(base + "/role-two"), config: config, setupOnly: true, credentialReader: { _,_ in roleSetupReads += 1; return (user, password) })
+        setupWindow.contentView = roleSetup.view
+        let rolePicker = WebLoginPickerModel(web: roleSetup, origin: URL(string: base)!)
+        rolePicker.setTwoStep(true); roleSetup.start(); rolePicker.start()
+        try await wait { roleSetup.view.url?.path == "/role-two" && !roleSetup.view.isLoading }
+        for (role, selector) in [("username", "input[syno-id=username]"), ("next", "[syno-id=account-panel-next-btn] .arrow")] {
+            rolePicker.role = role
+            _ = try await WebLoginPickerScript.run(in: roleSetup.view, origin: URL(string: base)!, role: role, twoStep: true)
+            _ = try await roleSetup.view.callAsyncJavaScript("document.querySelector(selector).click();", arguments: ["selector": selector], in: nil, contentWorld: .defaultClient)
+        }
+        let roleFirst = await rolePicker.check()
+        try check(roleFirst?.next == "div[syno-id=account-panel-next-btn]" && rolePicker.verified, "nested arrow selects external role button with stable locator")
+        rolePicker.advance()
+        _ = try await WebLoginPickerScript.run(in: roleSetup.view, origin: URL(string: base)!, operation: "pause", role: "password", twoStep: true)
+        _ = try await roleSetup.view.callAsyncJavaScript("document.querySelector('[syno-id=username]').value='fixture-setup';document.querySelector('[syno-id=username]').dispatchEvent(new Event('input',{bubbles:true}));", arguments: [:], in: nil, contentWorld: .defaultClient)
+        try await Task.sleep(for: .milliseconds(50))
+        _ = try await roleSetup.view.callAsyncJavaScript("document.querySelector('[syno-id=account-panel-next-btn]').click();", arguments: [:], in: nil, contentWorld: .defaultClient)
+        for (role, selector) in [("password", "input[syno-id=password]"), ("submit", "[syno-id=password-next] .arrow")] {
+            rolePicker.role = role
+            _ = try await WebLoginPickerScript.run(in: roleSetup.view, origin: URL(string: base)!, operation: "resume", role: role, twoStep: true)
+            _ = try await roleSetup.view.callAsyncJavaScript("document.querySelector(selector).click();", arguments: ["selector": selector], in: nil, contentWorld: .defaultClient)
+        }
+        let roleChoice = await rolePicker.check()
+        try check(roleChoice?.validation == nil && roleChoice?.password == "input[syno-id=password]" && rolePicker.canApply && roleSetupReads == 0, "external password role button visual setup never reads credentials")
+        rolePicker.close()
         var reads = 0
         let model = WebPageModel(entry: entry(base + "/form", automatic: false), config: config, credentialReader: { _,_ in reads += 1; return (user, password) })
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 500), styleMask: [.titled], backing: .buffered, defer: false); window.isReleasedWhenClosed = false; window.contentView = model.view
@@ -135,6 +161,13 @@ import WebKit
             try check(stepReads == (path == "/two-redirect" ? 1 : 2), "bounded two-step credential reads " + path)
             step.stop()
         }
+        var roleEntry = entry(base + "/role-two"); roleEntry.transport?.webLoginSelectors = roleChoice
+        var roleReads = 0
+        let roleLogin = WebPageModel(entry: roleEntry, config: config, credentialReader: { _,_ in roleReads += 1; return (user, password) })
+        window.contentView = roleLogin.view; roleLogin.start()
+        try await wait { roleLogin.view.title == "Role success" }
+        try await Task.sleep(for: .milliseconds(250))
+        try check(roleReads == 2, "external role buttons wait for reactive DOM, fill both steps once"); roleLogin.stop()
         var manualEntry = entry(base + "/manual"); manualEntry.transport?.webLoginSelectors = custom
         var customReads = 0
         let configured = WebPageModel(entry: manualEntry, config: config, credentialReader: { _,_ in customReads += 1; return (user, password) })
@@ -164,6 +197,15 @@ import WebKit
             let status = try await WebLoginForm.run(in: view, origin: URL(string: base)!, probe: true, selectors: steps, stage: "password")
             try check(status == expected, "second step preserves form guards " + expected)
         }
+        let externalRole = #"<form id="credentials"><input id="account"><input id="credential" type="password"></form><div role="button" id="enter"><span>Войти</span></div>"#
+        for (html, expected) in [(externalRole, "ready"), (externalRole.replacingOccurrences(of: "<div role=", with: "<a href='/submit' role=").replacingOccurrences(of: "</div>", with: "</a>"), "manual"), (externalRole.replacingOccurrences(of: "<div role=", with: "<form id='other'><div role=") + "</form>", "manual"), (externalRole.replacingOccurrences(of: "id=\"credentials\"", with: "id=\"credentials\" action=\"" + other + "/submit\""), "origin"), (externalRole.replacingOccurrences(of: "</form>", with: "<input autocomplete='one-time-code'></form>"), "manual")] {
+            _ = try await view.callAsyncJavaScript("document.body.innerHTML=html;", arguments: ["html": html], in: nil, contentWorld: .defaultClient)
+            let result = try await WebLoginForm.run(in: view, origin: URL(string: base)!, probe: true, selectors: custom)
+            try check(result == expected, "external role guard " + expected)
+        }
+        _ = try await view.callAsyncJavaScript("document.body.innerHTML=html;document.querySelector('#credential').addEventListener('input',()=>setTimeout(()=>document.querySelector('#enter').setAttribute('role','link'),0));", arguments: ["html": externalRole], in: nil, contentWorld: .defaultClient)
+        let changedRole = try await WebLoginForm.run(in: view, origin: URL(string: base)!, username: user, password: password, probe: false, selectors: custom)
+        try check(changedRole == "filled", "reactive role mutation cannot trigger changed control")
         let normal = #"<form method="post" action="/submit"><input name="username"><input type="password" name="password"><button type="submit">Войти</button></form>"#
         let cases: [(String, String)] = [
             (normal, "ready"),

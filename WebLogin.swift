@@ -24,7 +24,12 @@ enum WebLoginForm {
     static let script = #"""
     if (window !== window.top || location.origin !== origin) return 'origin';
     const visible = e => !e.disabled && !e.readOnly && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && getComputedStyle(e).display !== 'none';
+    const roleButton = e => e instanceof HTMLElement && !e.matches('input,button,a,[href]') && !e.closest('button,a[href]') && e.getAttribute('role') === 'button';
+    const validButton = e => roleButton(e) || (e instanceof HTMLButtonElement || e instanceof HTMLInputElement) && ['submit','button'].includes(e.type);
+    const jsButton = e => roleButton(e) || e.type === 'button';
+    const owner = e => roleButton(e) ? e.closest('form') : e.form;
     const manual = selectors !== null;
+    const associated = (e, f) => owner(e) === f || (manual && jsButton(e) && owner(e) === null);
     const first = stage === 'username', second = stage === 'password';
     const unique = selector => { const matches = document.querySelectorAll(selector); return matches.length === 1 && visible(matches[0]) ? matches[0] : null; };
     let user, password, button, form;
@@ -34,9 +39,9 @@ enum WebLoginForm {
       if ((!second && !user) || (!first && !password) || !button) return 'waiting';
       if ((!second && (!(user instanceof HTMLInputElement) || !['text','email','tel'].includes(user.type))) ||
           (!first && (!(password instanceof HTMLInputElement) || password.type !== 'password')) ||
-          !(button instanceof HTMLButtonElement || button instanceof HTMLInputElement) || !['submit','button'].includes(button.type)) return 'manual';
+          !validButton(button)) return 'manual';
       form = (first ? user : password).form;
-      if ((!second && user.form !== form) || button.form !== form) return 'manual';
+      if ((!second && user.form !== form) || !associated(button, form)) return 'manual';
     } else {
       const passwords = [...document.querySelectorAll('input[type="password"]')].filter(visible);
       if (passwords.length !== 1) return passwords.length ? 'ambiguous' : 'waiting';
@@ -62,12 +67,12 @@ enum WebLoginForm {
       button = submits[0];
       if (!loginLabel(button)) return 'manual';
     }
-    if (button.form !== form) return 'manual';
+    if (!associated(button, form)) return 'manual';
     if (button.formAction && new URL(button.formAction, location.href).origin !== origin) return 'origin';
     const method = button.hasAttribute('formmethod') ? button.formMethod : form?.method;
     // Ordinary GET forms can expose a password in a URL. JS-only buttons are supported.
     const post = form && method?.toLowerCase() === 'post';
-    if (!post && button.type !== 'button') return 'manual';
+    if (!post && !jsButton(button)) return 'manual';
     if (user?.value && user.value !== username && operation !== 'probe') return 'manual';
     if (password?.value) return 'manual';
     if (operation === 'probe') return 'ready';
@@ -77,15 +82,17 @@ enum WebLoginForm {
       element.dispatchEvent(new Event('change', {bubbles:true}));
     };
     if (!second) set(user, username); if (!first) set(password, secret);
+    // Vue and similar forms enable their external role=button in the next DOM update.
+    await new Promise(resolve => setTimeout(resolve, 0));
     // Input handlers may re-render or switch the form. Do not submit a changed destination.
     let sameSelection = true;
     if (manual) { try { sameSelection = (second || unique(selectors.username) === user) && (first || unique(selectors.password) === password) && unique(first ? selectors.next : selectors.submit) === button; } catch (_) { sameSelection = false; } }
-    if (!sameSelection || location.origin !== origin || (!second && !user.isConnected) || (!first && !password.isConnected) || !button.isConnected ||
+    if (!sameSelection || location.origin !== origin || (!second && !user.isConnected) || (!first && !password.isConnected) || !button.isConnected || !validButton(button) || !visible(button) || button.getAttribute('aria-disabled') === 'true' ||
         (form && new URL(form.action || location.href, location.href).origin !== origin) ||
         (button.formAction && new URL(button.formAction, location.href).origin !== origin) ||
-        (!second && user.form !== form) || (!first && password.form !== form) || button.form !== form ||
+        (!second && user.form !== form) || (!first && password.form !== form) || !associated(button, form) ||
         (post && (button.hasAttribute('formmethod') ? button.formMethod : form?.method)?.toLowerCase() !== 'post') ||
-        (!post && button.type !== 'button')) return 'filled';
+        (!post && !jsButton(button))) return 'filled';
     if (post && button.type === 'submit') form.requestSubmit(button);
     else button.click();
     return 'submitted';

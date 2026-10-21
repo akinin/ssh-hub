@@ -4,6 +4,11 @@
 
 Нативное приложение для macOS 14+ на Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
 
+## Изменения 3.8.1 (сборка 56)
+
+- Manual WebLogin supports standalone HTMLElement role=button with no href/native link/button ancestor, including controls outside the input's form. Explicit selection only; native submit still requires POST and matching form, custom JS control never requestSubmits a default-GET form. Reject a button inside a different form. After input/change, yield one event-loop turn for reactive enablement and recheck same DOM identity/type/association/destination before click. No real NAS login or credential reads in inspection; test with owned DSM-like form, hidden autofill input, nested arrow and delayed enablement.
+- Picker prefers unique public syno-id/data-testid locators before names/DOM path. Do not embed user hostnames, source HTML, personal text or data in fixtures; use synthetic layout only. Existing Keychain ACLs unchanged; Always Allow is per item, do not broaden ACLs or cache secrets to mask expected first-use prompts.
+
 ## Изменения 3.8.0 (сборка 55)
 
 - WebLoginSelectors.next optional enables explicit two-step only; old data remains single-page. Each step validates only its visible input/button pair, same exact origin/form and POST or JS button, OTP/CAPTCHA/new-password guards retained. Runtime persists attempted username step across same-origin navigation/SPA with 15s deadline, checks unchanged credential username before password, final attempt one-shot. Cross-origin main-frame navigation invalidates pending step. Picker first-step verification receipt is memory-only, preserves locators across transition, requires second-step probe before Apply; setup never reads credentials. Local fixtures cover both navigation and SPA, cross-origin and visual flow.

@@ -28,7 +28,7 @@ struct WebLoginPickerView: View {
                 Toggle("Режим выбора", isOn: $picker.selecting).toggleStyle(.switch).disabled(picker.checking)
                 Text(picker.selecting ? "Выбери тип поля и нажми на него на странице." : (picker.twoStep && picker.passwordStep ? "Введи логин и нажми «Далее» на странице, затем включи выбор." : "Перейди к форме входа, затем включи выбор.")).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            DisclosureGroup("Поддерживаемые формы") { Text("Элементы каждого шага должны быть на одном сайте и в одной форме. При двухэтапном входе сначала проверь логин и «Далее», перейди к паролю вручную, затем проверь второй шаг. Проверка не вводит пароль и не выполняет вход. CAPTCHA, SSO и одноразовые коды подтверждаются вручную.").font(.caption).foregroundStyle(.secondary).padding(.top, 4) }.font(.caption)
+            DisclosureGroup("Поддерживаемые формы") { Text("Элементы каждого шага должны быть на одном сайте. Поддерживаются обычные кнопки и кнопки входа на JavaScript вне формы. При двухэтапном входе сначала проверь логин и «Далее», перейди к паролю вручную, затем проверь второй шаг. Проверка не вводит пароль и не выполняет вход. CAPTCHA, SSO и одноразовые коды подтверждаются вручную.").font(.caption).foregroundStyle(.secondary).padding(.top, 4) }.font(.caption)
             Divider()
             if session.entry.transport?.tunnel != nil { ConnectionTunnelStatus(tunnel: session.tunnel, cancel: session.stop) }
             if let error = picker.web.error { Text(error).foregroundStyle(.red).font(.caption) }

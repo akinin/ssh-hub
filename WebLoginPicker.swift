@@ -30,6 +30,10 @@ enum WebLoginPickerScript {
       const unique = (selector, node) => { try { const all = document.querySelectorAll(selector); return all.length === 1 && all[0] === node; } catch (_) { return false; } };
       const locator = node => {
         if (node.id) { const s = '#' + CSS.escape(node.id); if (s.length <= 512 && unique(s,node)) return s; }
+        for (const attribute of ['syno-id', 'data-testid']) {
+          const value = node.getAttribute(attribute);
+          if (value) { const s = node.localName + '[' + attribute + '=' + CSS.escape(value) + ']'; if (s.length <= 512 && unique(s,node)) return s; }
+        }
         if (node.name) { const s = node.localName + '[name=' + CSS.escape(node.name) + ']'; if (s.length <= 512 && unique(s,node)) return s; }
         const path = []; let element = node;
         while (element && element.nodeType === 1) {
@@ -54,9 +58,9 @@ enum WebLoginPickerScript {
       };
       const block = e => { e.preventDefault();e.stopImmediatePropagation(); };
       const choose = e => {
-        block(e); const node = e.target instanceof Element ? e.target.closest('input,button') : null;
+        block(e); const node = e.target instanceof Element ? e.target.closest('input,button,[role=button]') : null;
         const role=state.role;
-        const valid = visible(node) && (role==='password' ? node instanceof HTMLInputElement && node.type==='password' : role==='username' ? node instanceof HTMLInputElement && ['text','email','tel'].includes(node.type) : (node instanceof HTMLButtonElement || node instanceof HTMLInputElement) && ['submit','button'].includes(node.type));
+        const valid = visible(node) && (role==='password' ? node instanceof HTMLInputElement && node.type==='password' : role==='username' ? node instanceof HTMLInputElement && ['text','email','tel'].includes(node.type) : ((node instanceof HTMLButtonElement || node instanceof HTMLInputElement) && ['submit','button'].includes(node.type) || node instanceof HTMLElement && !node.matches('input,button,a,[href]') && !node.closest('button,a[href]') && node.getAttribute('role') === 'button'));
         if (!valid) { state.error='type'; return; }
         const selector=locator(node); if (!selector) { state.error='selector'; return; }
         if (Object.entries(nodes).some(([r,n])=>r!==role && n===node)) { state.error='duplicate'; return; }
@@ -163,7 +167,7 @@ enum WebLoginPickerScript {
                 status = "Проверка не пройдена: форма изменилась или требует ручного входа. Проверь поля, метод отправки и адрес формы."; return nil
             }
             if twoStep && !passwordStep { firstVerified = true }
-            verified = true; status = "Шаг проверен. Поля и кнопка относятся к одной форме этого сайта. Пароль не вводился, вход не выполнялся."
+            verified = true; status = "Шаг проверен. Поля и кнопка доступны на этом сайте. Пароль не вводился, вход не выполнялся."
             return choice
         } catch { status = "Не удалось проверить страницу. Дождись загрузки и выбери поля заново."; return nil }
     }
