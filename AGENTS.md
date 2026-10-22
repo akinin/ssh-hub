@@ -4,6 +4,10 @@
 
 Нативное приложение для macOS 14+ на Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
 
+## Изменения 3.17.2 (сборка 74)
+
+- Inventory layout: network facts/header/rows share three equal columns with 16pt spacing; visibility button is at the far right and row cells vertically centered. Pass actual capped content width to detailed structured editors and suggestions too. Optional purchaseNote is multiline private inventory metadata, independent of general notes; keep draft/save, encrypted backup and legacy empty defaults. Summary section shortcut links and visibility-reset link removed; sidebar navigation and per-interface hide/restore remain.
+
 ## Изменения 3.17.1 (сборка 73)
 
 - Inventory ports join bounded process names/PIDs to exact protocol/address/port; preserve legacy snapshots and unknown metadata. Linux ss/netstat -p; macOS numeric netstat plus lsof -F field data, excluding connected peers. No argv/environment, sudo or elevation. Current-user rights may omit processes. Raw output remains bounded, with explicit size-limit marker. Tests use synthetic data, owned loopback SSH and an owned local listening socket.

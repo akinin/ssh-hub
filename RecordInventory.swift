@@ -6,7 +6,7 @@ enum InventoryField: String, Codable, CaseIterable, Identifiable {
     case manufacturer, model, serial, assetTag, operatingSystem, processor, memory, disks, storageUsage, interfaces, listeningPorts, location, role, owner, notes
     case deviceType, hostName, ipAddresses, macAddresses, domain, subnet, vlan, gateway, dnsServers, dhcpServer, dhcpRange, firewall, virtualMachine, hypervisor, virtualizationType
     case socketType, socketCount, physicalCores, logicalCores, monitors, software, licenses
-    case site, building, room, rack, rackUnit, department, email, phone, purchaseDate, purchaseVendor, purchaseCost, warrantyUntil, purchaseInvoice
+    case site, building, room, rack, rackUnit, department, email, phone, purchaseDate, purchaseVendor, purchaseCost, warrantyUntil, purchaseInvoice, purchaseNote
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -60,9 +60,10 @@ enum InventoryField: String, Codable, CaseIterable, Identifiable {
         case .purchaseCost: return "Стоимость"
         case .warrantyUntil: return "Гарантия до"
         case .purchaseInvoice: return "Заказ / счёт"
+        case .purchaseNote: return "Примечание"
         }
     }
-    var multiline: Bool { [.disks, .storageUsage, .interfaces, .listeningPorts, .notes, .operatingSystem, .processor, .ipAddresses, .macAddresses, .monitors, .software, .licenses].contains(self) }
+    var multiline: Bool { [.disks, .storageUsage, .interfaces, .listeningPorts, .notes, .purchaseNote, .operatingSystem, .processor, .ipAddresses, .macAddresses, .monitors, .software, .licenses].contains(self) }
 }
 
 enum InventorySection: String, CaseIterable, Identifiable {
@@ -77,7 +78,7 @@ enum InventorySection: String, CaseIterable, Identifiable {
         case .software: return [.operatingSystem, .software, .licenses]
         case .hardware: return [.manufacturer, .model, .serial, .processor, .socketType, .socketCount, .physicalCores, .logicalCores, .memory, .monitors, .disks, .storageUsage]
         case .location: return [.location, .site, .building, .room, .rack, .rackUnit]
-        case .purchase: return [.purchaseDate, .purchaseVendor, .purchaseCost, .warrantyUntil, .purchaseInvoice]
+        case .purchase: return [.purchaseDate, .purchaseVendor, .purchaseCost, .warrantyUntil, .purchaseInvoice, .purchaseNote]
         }
     }
 }

@@ -239,7 +239,7 @@ struct RecordInventoryView: View {
                         let short = group.1.filter { !$0.multiline && $0 != .processor }
                         if !short.isEmpty { LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 14, alignment: .topLeading)], alignment: .leading, spacing: 12) { ForEach(short) { fieldEditor($0) } } }
                         ForEach(group.1.filter { $0.multiline && $0 != .processor }) { field in
-                            if [.interfaces, .disks, .storageUsage, .listeningPorts].contains(field) { editableList(field) }
+                            if [.interfaces, .disks, .storageUsage, .listeningPorts].contains(field) { editableList(field, width: min(1100, width) - 28) }
                             else { fieldEditor(field) }
                         }
                     }
@@ -254,7 +254,7 @@ struct RecordInventoryView: View {
         case .hardware: return [("Устройство", [.manufacturer, .model, .serial]), ("Процессор и память", [.processor, .memory, .socketType, .socketCount, .physicalCores, .logicalCores]), ("Хранилище", [.storageUsage, .disks]), ("Мониторы", [.monitors])]
         case .software: return [("Операционная система / прошивка", [.operatingSystem]), ("Программное обеспечение", [.software]), ("Лицензии", [.licenses])]
         case .location: return [("Расположение устройства", [.location, .site, .building, .room]), ("Размещение в стойке", [.rack, .rackUnit])]
-        case .purchase: return [("Приобретение", [.purchaseDate, .purchaseVendor, .purchaseCost, .purchaseInvoice]), ("Гарантия", [.warrantyUntil])]
+        case .purchase: return [("Приобретение", [.purchaseDate, .purchaseVendor, .purchaseCost, .purchaseInvoice, .purchaseNote]), ("Гарантия", [.warrantyUntil])]
         }
     }
     private func binding(_ field: InventoryField) -> Binding<String> { Binding(get: { model.record.fields[field] }, set: { model.change(field, value: $0) }) }
@@ -276,6 +276,7 @@ struct RecordInventoryView: View {
         switch field {
         case .hostName: return model.entry.host
         case .purchaseDate, .warrantyUntil: return "ДД.ММ.ГГГГ"
+        case .purchaseNote: return "Ссылка на магазин или комментарий к покупке"
         case .ipAddresses, .macAddresses, .software, .licenses, .monitors: return "По одному элементу на строку"
         case .logicalCores: return InventoryPresentation.logicalCores(fields).isEmpty ? "Не указано" : InventoryPresentation.logicalCores(fields)
         default: return "Не указано"
@@ -308,10 +309,6 @@ struct RecordInventoryView: View {
         VStack(alignment: .leading, spacing: 12) {
             card("Устройство и система") {
                 summaryFacts([.manufacturer, .model, .serial, .operatingSystem, .processor, .memory, .physicalCores, .logicalCores, .socketCount, .socketType, .virtualMachine, .hypervisor, .virtualizationType], width: width - 28)
-                HStack {
-                    Button("Оборудование…") { section = .hardware }
-                    Button("ОС и ПО…") { section = .software }
-                }.font(.caption).buttonStyle(.link)
             }
             networkOverview(width: width)
             storageOverview(width: width)
@@ -331,7 +328,11 @@ struct RecordInventoryView: View {
     }
     private func networkOverview(width: CGFloat) -> some View {
             card("Сеть") {
-                summaryFacts([.hostName, .domain, .macAddresses, .gateway, .dnsServers, .subnet, .vlan], width: width - 28, minimumWidth: 110)
+                let contentWidth = max(0, width - 28)
+                let columns = contentWidth >= 460 ? 3 : max(1, min(3, Int((contentWidth + 16) / 126)))
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16, alignment: .topLeading), count: columns), alignment: .leading, spacing: 10) {
+                    ForEach([InventoryField.hostName, .gateway, .dnsServers, .domain, .macAddresses, .subnet, .vlan].filter { !preview[$0].isEmpty }) { summaryFact($0) }
+                }
                 if !preview[.ipAddresses].isEmpty {
                     let addresses = preview[.ipAddresses].split { $0.isWhitespace || $0 == "," || $0 == ";" }.map(String.init)
                     addressFamilies(InventoryInterfaceInfo(name: "", addresses: addresses))
@@ -341,7 +342,6 @@ struct RecordInventoryView: View {
                     receivedNote(.interfaces)
                     structuredValue(.interfaces, value: preview[.interfaces], width: width - 28)
                 } else if preview[.ipAddresses].isEmpty { Text(model.entry.host).font(.callout.monospaced()).textSelection(.enabled) }
-                Button("Редактировать сеть…") { section = .network }.font(.caption).buttonStyle(.link)
             }
     }
     private func storageOverview(width: CGFloat) -> some View {
@@ -353,7 +353,6 @@ struct RecordInventoryView: View {
                     if preview[.storageUsage].isEmpty { receivedNote(.disks); structuredValue(.disks, value: preview[.disks]) }
                     else { HubDisclosureGroup("Физические накопители") { receivedNote(.disks); structuredValue(.disks, value: preview[.disks]) }.font(.callout) }
                 }
-                Button("Редактировать хранилище…") { section = .hardware }.font(.caption).buttonStyle(.link)
             }
     }
     @ViewBuilder private func summaryFacts(_ keys: [InventoryField], width: CGFloat? = nil, minimumWidth: CGFloat = 180) -> some View {
@@ -389,7 +388,6 @@ struct RecordInventoryView: View {
                 if let observed { Text("Последнее наблюдение: " + observed.date.formatted()).font(.caption).foregroundStyle(.secondary) }
                 structuredValue(.listeningPorts, value: preview[.listeningPorts], width: width - 28)
             }
-            Button("Подробнее о портах…") { section = .network }.font(.caption).buttonStyle(.link)
         }
     }
     @ViewBuilder private func receivedNote(_ field: InventoryField) -> some View {
@@ -398,15 +396,15 @@ struct RecordInventoryView: View {
     private func card<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 12) { Text(title).font(.headline); content() }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
     }
-    @ViewBuilder private func editableList(_ field: InventoryField) -> some View {
+    @ViewBuilder private func editableList(_ field: InventoryField, width: CGFloat) -> some View {
         let structured = field == .interfaces ? !InventoryPresentation.interfaces(fields[field]).isEmpty : field == .storageUsage ? !InventoryPresentation.storage(fields[field]).isEmpty : field == .listeningPorts ? !InventoryPresentation.ports(fields[field]).isEmpty : !InventoryPresentation.disks(fields[field]).isEmpty
-        if !fields[field].isEmpty { structuredValue(field, value: fields[field]) }
+        if !fields[field].isEmpty { structuredValue(field, value: fields[field], width: width) }
         // Keep the editor at the same structural position while parsed cards appear.
         // Switching the TextField into a disclosure mid-typing would drop its focus.
         HubDisclosureGroup(structured ? "Редактировать исходный список" : field == .interfaces ? "Ввести список интерфейсов" : field == .storageUsage ? "Ввести сведения о заполненности" : field == .listeningPorts ? "Ввести список портов" : "Ввести список дисков") {
             fieldEditor(field, includeSuggestion: false).padding(.top, 8)
         }.font(.caption)
-        factSuggestion(field)
+        factSuggestion(field, width: width)
     }
     @ViewBuilder private func structuredValue(_ field: InventoryField, value: String, width: CGFloat = 0) -> some View {
         if field == .interfaces, !InventoryPresentation.interfaces(value).isEmpty {
@@ -418,7 +416,6 @@ struct RecordInventoryView: View {
                     Text("Loopback и выключенные интерфейсы без адресов скрыты по умолчанию. Исходные данные и история сохранены.").font(.caption).foregroundStyle(.secondary)
                 }.font(.caption)
             }
-            if model.record.interfaceVisibility != nil { Button("Сбросить видимость интерфейсов") { model.resetInterfaceVisibility() }.font(.caption).buttonStyle(.link) }
         } else if field == .listeningPorts {
             let rows = InventoryPresentation.ports(value)
             Text(value.hasPrefix("format=routeros-services") ? "Конфигурация /ip service, а не полный список сокетов. Доступность извне не проверялась." : "Слушающие TCP/UDP-сокеты на устройстве. Доступность извне не проверялась.").font(.caption).foregroundStyle(.secondary)
@@ -452,8 +449,8 @@ struct RecordInventoryView: View {
     private func interfaceList(_ rows: [InventoryInterfaceInfo], visible: Bool, width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             if width >= 460, !rows.isEmpty {
-                HStack(alignment: .firstTextBaseline, spacing: 20) {
-                    Text("Интерфейс").frame(width: interfaceColumnWidth(width), alignment: .leading)
+                HStack(alignment: .firstTextBaseline, spacing: 16) {
+                    Text("Интерфейс").frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                     Text("IPv4").frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                     Text("IPv6").frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                 }.font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.bottom, 8)
@@ -461,14 +458,17 @@ struct RecordInventoryView: View {
             }
             ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                 if width >= 460 {
-                    HStack(alignment: .top, spacing: 20) {
-                        interfaceIdentity(row, visible: visible).frame(width: interfaceColumnWidth(width), alignment: .leading)
+                    HStack(alignment: .center, spacing: 16) {
+                        interfaceIdentity(row).frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                         networkAddressCell(row.ipv4Addresses, title: "IPv4", showsTitle: false)
-                        networkAddressCell(row.ipv6Addresses, title: "IPv6", showsTitle: false)
+                        HStack(alignment: .center, spacing: 8) {
+                            networkAddressCell(row.ipv6Addresses, title: "IPv6", showsTitle: false)
+                            interfaceVisibilityButton(row, visible: visible)
+                        }.frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                     }.padding(.vertical, 10)
                 } else {
                     VStack(alignment: .leading, spacing: 10) {
-                        interfaceIdentity(row, visible: visible)
+                        HStack(alignment: .center, spacing: 8) { interfaceIdentity(row); Spacer(minLength: 4); interfaceVisibilityButton(row, visible: visible) }
                         HStack(alignment: .top, spacing: 20) {
                             networkAddressCell(row.ipv4Addresses, title: "IPv4", showsTitle: true)
                             networkAddressCell(row.ipv6Addresses, title: "IPv6", showsTitle: true)
@@ -479,16 +479,16 @@ struct RecordInventoryView: View {
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
-    private func interfaceColumnWidth(_ width: CGFloat) -> CGFloat { min(240, max(160, width * 0.26)) }
-    private func interfaceIdentity(_ row: InventoryInterfaceInfo, visible: Bool) -> some View {
+    private func interfaceVisibilityButton(_ row: InventoryInterfaceInfo, visible: Bool) -> some View {
+        Button { model.setInterfaceVisible(row.name, !visible) } label: { Image(systemName: visible ? "eye.slash" : "eye") }
+            .buttonStyle(.plain).foregroundStyle(.secondary).help((visible ? "Скрыть " : "Показать ") + row.name).accessibilityLabel((visible ? "Скрыть интерфейс " : "Показать интерфейс ") + row.name)
+    }
+    private func interfaceIdentity(_ row: InventoryInterfaceInfo) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 Image(systemName: "network").foregroundStyle(.tint)
                 Text(row.name).font(.callout.weight(.semibold)).textSelection(.enabled)
                 if !row.status.isEmpty { Text(row.status).font(.caption).foregroundStyle(row.status == "UP" ? .green : .secondary) }
-                Spacer(minLength: 4)
-                Button { model.setInterfaceVisible(row.name, !visible) } label: { Image(systemName: visible ? "eye.slash" : "eye") }
-                    .buttonStyle(.plain).foregroundStyle(.secondary).help((visible ? "Скрыть " : "Показать ") + row.name).accessibilityLabel((visible ? "Скрыть интерфейс " : "Показать интерфейс ") + row.name)
             }
             if !row.mac.isEmpty { Text(row.mac).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
             if !row.otherAddresses.isEmpty { Text(row.otherAddresses.joined(separator: "\n")).font(.caption.monospaced()).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
@@ -537,11 +537,11 @@ struct RecordInventoryView: View {
             }
         }
     }
-    @ViewBuilder private func factSuggestion(_ field: InventoryField) -> some View {
+    @ViewBuilder private func factSuggestion(_ field: InventoryField, width: CGFloat = 0) -> some View {
         if let snapshot, suggested.contains(field) {
             VStack(alignment: .leading, spacing: 8) {
                 Toggle("Использовать полученное значение", isOn: Binding(get: { model.selected.contains(field) }, set: { if $0 { model.selected.insert(field) } else { model.selected.remove(field) } })).toggleStyle(.checkbox).font(.caption).accessibilityLabel("Применить полученное: " + field.title)
-                structuredValue(field, value: snapshot.facts[field])
+                structuredValue(field, value: snapshot.facts[field], width: width - 20)
                 if !fields[field].isEmpty { Text("Заменит текущее значение после подтверждения").font(.caption2).foregroundStyle(.orange) }
             }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(Color.accentColor.opacity(0.055), in: RoundedRectangle(cornerRadius: 8))
         }

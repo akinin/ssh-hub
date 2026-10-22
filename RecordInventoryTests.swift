@@ -18,10 +18,11 @@ import Darwin
         try check(legacy == inventory, "missing optional fields compatible")
         let newField = try JSONDecoder().decode(RecordInventory.self, from: Data("{\"manual\":{\"model\":\"demo\",\"future\":\"ignored\"}}".utf8))
         try check(newField.manual[.model] == "demo", "future fields ignored safely")
-        inventory.manual = InventoryFields([.model: "Hand-entered", .owner: "Admin", .location: "Lab", .notes: "First\nSecond"])
+        inventory.manual = InventoryFields([.model: "Hand-entered", .owner: "Admin", .location: "Lab", .notes: "First\nSecond", .purchaseNote: "https://shop.example.test/item\nPurchase details"])
         var draft = inventory.manual; draft[.assetTag] = "INV-001"; inventory.draft = draft
         try repository.write(inventory, for: "record:first")
         try check(try repository.load("record:first") == inventory, "draft survives relaunch")
+        try check(legacy.manual[.purchaseNote].isEmpty && inventory.fields[.purchaseNote].contains("https://shop.example.test/item\n"), "purchase note is multiline, legacy-compatible and retained with draft")
         inventory.save(date: Date(timeIntervalSince1970: 10))
         try check(inventory.modified == Date(timeIntervalSince1970: 10) && !inventory.hasChanges, "save accepts draft")
         inventory.save(date: Date(timeIntervalSince1970: 20))
