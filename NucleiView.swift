@@ -96,6 +96,8 @@ import AppKit
             operation = Task {
                 defer { if runner === job { runner = nil; operation = nil; objectWillChange.send() } }
                 let start = Date(); let result: (NucleiStatus, String)
+                let templateRoot = templates
+                let sources = try? await Task.detached { try SecurityCoverage.key([SecurityCoverage.file(executable), SecurityCoverage.templates(templateRoot)]) }.value
                 do {
                     if entry.canSSH {
                         status = "Проверка маршрута SSH…"
@@ -111,7 +113,12 @@ import AppKit
                 catch { result = (.failed, NucleiText.clean(error.localizedDescription, limit: 500)) }
                 guard generation == token else { return }
                 timer?.invalidate(); timer = nil; running = false; findings = job.snapshot; seconds = Int(Date().timeIntervalSince(start))
-                let report = NucleiReport(target: target, settings: settings, status: result.0, seconds: seconds, findings: findings, message: result.1)
+                var report = NucleiReport(target: target, settings: settings, status: result.0, seconds: seconds, findings: findings, message: result.1)
+                if let sources {
+                    let after = try? await Task.detached { try SecurityCoverage.key([SecurityCoverage.file(executable), SecurityCoverage.templates(templateRoot)]) }.value
+                    guard generation == token else { return }
+                    if sources == after { report.comparisonKey = SecurityCoverage.key(["nuclei-v1", sources] + args) }
+                }
                 status = report.status.title; reports.insert(report, at: 0); reports = Array(reports.prefix(50)); reportID = report.id
                 if result.0 == .failed { error = result.1 }
                 do { try repository?.append(report); try common?.append(.nuclei(report)) } catch { self.error = "Результат доступен для экспорта, но история не сохранена: " + error.localizedDescription }

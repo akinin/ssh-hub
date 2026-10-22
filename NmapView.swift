@@ -49,6 +49,7 @@ import UniformTypeIdentifiers
         operation = Task {
             defer { if runner === job { running = false; runner = nil; operation = nil; timer?.invalidate(); timer = nil } }
             var state = SecurityCheckStatus.completed
+            let source = try? SecurityCoverage.file(executable)
             do {
                 if let entry, entry.canSSH, let config { try await NucleiRoute.check(entry: entry, config: config) }
                 try Task.checkCancellation(); guard generation == token, authorized() else { return }
@@ -61,7 +62,11 @@ import UniformTypeIdentifiers
                 result = job.partial; self.error = error.localizedDescription; summary = state.title
             }
             if let record, let history, generation == token, authorized() {
-                do { try history.append(.nmap(record: record, request: request, result: result, status: state, seconds: Int(Date().timeIntervalSince(start)))) }
+                do {
+                    var report = SecurityCheckReport.nmap(record: record, request: request, result: result, status: state, seconds: Int(Date().timeIntervalSince(start)))
+                    if let source, source == (try? SecurityCoverage.file(executable)) { report.comparisonKey = SecurityCoverage.key(["nmap-v1", source] + request.arguments) }
+                    try history.append(report)
+                }
                 catch { self.error = "Результат доступен, но история не сохранена: " + error.localizedDescription }
             }
         }
@@ -140,7 +145,7 @@ struct NmapView: View {
                                 VStack(alignment: .leading) { HStack { templateButton; portPicker }; Toggle("Версии сервисов", isOn: $model.settings.services).controlSize(.small) }
                             }
                             if model.settings.profile == .custom { TextField("Порты: 22,80,443,8000-8100", text: $model.settings.ports).textFieldStyle(.roundedBorder) }
-                            DisclosureGroup("Расширенные настройки", isExpanded: $advanced) {
+                            HubDisclosureGroup("Расширенные настройки", isExpanded: $advanced) {
                                 NmapSettingsView(settings: $model.settings, showPorts: false)
                                 TextField("Исключить адреса / подсети через запятую", text: $model.exclusions).textFieldStyle(.roundedBorder)
                             }
@@ -167,7 +172,7 @@ struct NmapView: View {
                         }
                     }
                     if let details { ScrollView { Text(details).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(10) }.frame(height: min(130, viewport.size.height * 0.18)) }
-                    DisclosureGroup("Команда и журнал", isExpanded: $showLog) { ScrollView { Text(model.log.isEmpty ? model.request.arguments.map(SSHConfig.shellQuote).joined(separator: " ") : model.log).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(height: 90) }.padding(10).controlSize(.small)
+                    HubDisclosureGroup("Команда и журнал", isExpanded: $showLog) { ScrollView { Text(model.log.isEmpty ? model.request.arguments.map(SSHConfig.shellQuote).joined(separator: " ") : model.log).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(height: 90) }.padding(10).controlSize(.small)
                 }
                 if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled).lineLimit(3).padding(10) }
             }.frame(width: viewport.size.width, height: viewport.size.height, alignment: .topLeading).clipped()

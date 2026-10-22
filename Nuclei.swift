@@ -112,6 +112,7 @@ struct NucleiReport: Codable, Identifiable {
     let status: NucleiStatus
     let seconds: Int
     let findings: [NucleiFinding]
+    var comparisonKey: String? = nil
     var message: String
     func exported(_ format: String) throws -> Data {
         if format == "json" { let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601; return try encoder.encode(self) }

@@ -133,7 +133,7 @@ struct KeyManagerView: View {
                 }
             }.frame(height: 390)
             if !warnings.isEmpty {
-                DisclosureGroup("Не удалось прочитать файлов: \(warnings.count)") {
+                HubDisclosureGroup("Не удалось прочитать файлов: \(warnings.count)") {
                     ScrollView { Text(warnings.joined(separator: "\n")).font(.caption).foregroundStyle(.secondary) }.frame(height: 70)
                 }
             }

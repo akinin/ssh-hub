@@ -698,15 +698,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ConsoleStore.shared.closeAll()
         SFTPRegistry.shared.closeAll()
         ToolkitSession.stopAll()
+        RecordDiscoveryModel.stopAll()
         RecordLogsModel.stopAll()
         InventoryModel.stopAll()
         TopologyModel.stopAll()
         KDBXClient.stopAll()
         let tunnels = TunnelManager.shared
-        guard tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || AppDelegate.storeForTermination?.tools.nuclei.pending == true || AppDelegate.storeForTermination?.tools.audits.pending == true || AppDelegate.scannerForTermination?.pending == true else { return .terminateNow }
+        guard tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || AppDelegate.storeForTermination?.tools.nuclei.pending == true || AppDelegate.storeForTermination?.tools.audits.pending == true || AppDelegate.scannerForTermination?.pending == true || RecordDiscoveryModel.pending else { return .terminateNow }
         tunnels.stopAll()
         UpdateTermination.finishAfterCleanup(sender) {
-            tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || AppDelegate.storeForTermination?.tools.nuclei.pending == true || AppDelegate.storeForTermination?.tools.audits.pending == true || AppDelegate.scannerForTermination?.pending == true
+            tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || AppDelegate.storeForTermination?.tools.nuclei.pending == true || AppDelegate.storeForTermination?.tools.audits.pending == true || AppDelegate.scannerForTermination?.pending == true || RecordDiscoveryModel.pending
         }
         return .terminateLater
     }
@@ -1185,17 +1186,17 @@ struct AliasDetail: View {
                     GroupBox { VStack(alignment: .leading, spacing: 8) {
                         Label(result.title, systemImage: result.success ? "checkmark.circle.fill" : "exclamationmark.triangle.fill").foregroundStyle(result.success ? .green : .orange)
                         Text(result.detail).font(.callout)
-                        DisclosureGroup("Журнал SSH") { ScrollView { Text(result.log).font(.system(.caption, design: .monospaced)).textSelection(.enabled) }.frame(height: 180) }
+                        HubDisclosureGroup("Журнал SSH") { ScrollView { Text(result.log).font(.system(.caption, design: .monospaced)).textSelection(.enabled) }.frame(height: 180) }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(8) }
                 }
                 if entry.canSSH {
-                    DisclosureGroup("Параметры подключения") {
+                    HubDisclosureGroup("Параметры подключения") {
                         Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 10) {
                             parameter("Сервер", entry.host); parameter("Пользователь", entry.user); parameter("Порт", entry.port); parameter("Вход", entry.authentication.title)
                             if let name = entry.sshAlias { parameter("SSH-алиас", name) }
                             if let jump = entry.value("ProxyJump") { parameter("ProxyJump", jump) }
                         }.padding(.top, 12)
-                    }.disclosureGroupStyle(FullRowDisclosureStyle())
+                    }
                     HStack { Text(entry.command).font(.system(.caption, design: .monospaced)).textSelection(.enabled); Spacer(); Button { store.copy(entry.command) } label: { Image(systemName: "doc.on.doc") }.help("Копировать команду SSH") }.padding(12).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
                 }
                 Text(entry.localID == nil ? "SSH-алиас из " + entry.source.path.replacingOccurrences(of: NSHomeDirectory(), with: "~") : entry.sshAlias == nil ? "Запись хранится в SSH Hub." : "Запись связана с SSH-алиасом «" + (entry.sshAlias ?? "") + "».").font(.caption).foregroundStyle(.secondary)

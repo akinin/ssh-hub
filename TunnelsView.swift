@@ -55,7 +55,7 @@ struct TunnelsView: View {
                 if let id = selected {
                     let report = tunnels.report(id)
                     if !report.detail.isEmpty { Text(report.detail).font(.callout).foregroundStyle(report.phase == .failed ? Color.red : Color.secondary).fixedSize(horizontal: false, vertical: true) }
-                    DisclosureGroup("Журнал SSH") {
+                    HubDisclosureGroup("Журнал SSH") {
                         ScrollView {
                             Text(report.log.isEmpty ? "Журнал пуст" : report.log).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading).padding(10)

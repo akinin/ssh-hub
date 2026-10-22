@@ -46,7 +46,7 @@ struct TopologyNodeEditor: View {
                     TextField("TCP-порт для проверки доступности",text:$port)
                     Text("Пустой порт берётся из связанной записи или обнаруженного открытого сервиса. Проверка выполняется с Mac.").font(.caption).foregroundStyle(.secondary)
                     Divider()
-                    DisclosureGroup("Сеть и производитель вручную") {
+                    HubDisclosureGroup("Сеть и производитель вручную") {
                         VStack(spacing: 10) {
                             Picker("Подключение", selection: $client.connection) { Text("Из сбора").tag(""); Text("Проводной").tag("WIRED"); Text("Wi-Fi").tag("WIRELESS"); Text("VPN").tag("VPN"); Text("Инфраструктура").tag("INFRASTRUCTURE") }
                             TextField("VLAN (пусто — из сбора)", text: $vlan)

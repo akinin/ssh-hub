@@ -36,7 +36,7 @@ struct RecordBatchView: View {
                 Text("Поля без галочки сохранятся. Выбраны записи текущего профиля.").font(.callout).foregroundStyle(.secondary)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
-                        DisclosureGroup("Выбранные записи") { ForEach(target.entries, id: \.id) { Text(store.title($0)).font(.caption).frame(maxWidth: .infinity, alignment: .leading) } }
+                        HubDisclosureGroup("Выбранные записи") { ForEach(target.entries, id: \.id) { Text(store.title($0)).font(.caption).frame(maxWidth: .infinity, alignment: .leading) } }
                         Toggle("Переместить в папку", isOn: $changeFolder).toggleStyle(.checkbox)
                         if changeFolder { HStack { TextField("Без папки", text: $folder).textFieldStyle(.roundedBorder); Menu("Выбрать") { Button("Без папки") { folder = "" }; ForEach(store.groupNames, id: \.self) { path in Button(path) { folder = path } } } } }
                         Divider()

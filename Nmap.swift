@@ -131,12 +131,14 @@ struct NmapResult: Codable {
     var hosts: [NmapHost] = []
     var xml = ""
     var scripts: [NmapScriptOutput]? = nil
-    enum CodingKeys: String, CodingKey { case ports, summary, hosts, scripts }
+    var incomplete: Bool? = nil
+    enum CodingKeys: String, CodingKey { case ports, summary, hosts, scripts, incomplete }
 }
 final class NmapXML: NSObject, XMLParserDelegate {
     private var host = NmapHost(), port: NmapPort?, inHost = false
     private var hostPorts: [NmapPort] = [], values: [NmapPort] = [], hosts: [NmapHost] = []
     private var scripts: [NmapScriptOutput] = []
+    private var incomplete = false
     private var summary = "", finished = false, successful = false, cpe = "", inCPE = false
     static func parse(_ data: Data, allowPartial: Bool = false) throws -> NmapResult {
         guard data.count <= 8_000_000, !String(decoding: data, as: UTF8.self).contains("<!ENTITY") else { throw ConfigError.message("Результат Nmap больше 8 МБ или содержит внешние сущности.") }
@@ -144,11 +146,11 @@ final class NmapXML: NSObject, XMLParserDelegate {
         parser.shouldResolveExternalEntities = false; parser.delegate = reader
         let parsed = parser.parse()
         guard allowPartial || (parsed && reader.finished && reader.successful) else { throw ConfigError.message("Nmap не вернул полный результат сканирования.") }
-        return NmapResult(ports: reader.values, summary: reader.summary, hosts: reader.hosts, xml: String(decoding: data, as: UTF8.self), scripts: reader.scripts)
+        return NmapResult(ports: reader.values, summary: reader.summary, hosts: reader.hosts, xml: String(decoding: data, as: UTF8.self), scripts: reader.scripts, incomplete: reader.incomplete)
     }
     func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes a: [String: String]) {
         switch name {
-        case "host": inHost = true; host = NmapHost(); hostPorts = []
+        case "host": inHost = true; host = NmapHost(); hostPorts = []; if a["timedout"] == "true" { incomplete = true }
         case "status" where inHost: host.state = a["state"] ?? ""; host.reason = a["reason"] ?? ""
         case "address" where inHost:
             if ["ipv4", "ipv6"].contains(a["addrtype"] ?? "") { host.address = a["addr"] ?? "" }

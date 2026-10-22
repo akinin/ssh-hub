@@ -108,6 +108,7 @@ extension AliasStore {
         }
     }
     func stopOperations(clear: Bool = false) {
+        RecordDiscoveryModel.stopAll()
         scanner.cancel(clear: true); tools.audits.stop(clear: true); tools.nuclei.cancel(clear: true)
         wireGuard?.suspend()
         keePassTransfer = nil

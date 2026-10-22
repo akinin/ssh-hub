@@ -40,13 +40,17 @@ struct RecordChooserView: View {
     @State private var query = ""
     @State private var selection = "ssh"
     @State private var kind: RecordKind?
+    @State private var scanner = false
+    @State private var seed: LocalConnectionRecord?
     private var choices: [RecordTypeChoice] { RecordTypeChoice.all.filter { (category == .all || $0.category == category) && (query.isEmpty || ($0.title + " " + $0.subtitle).localizedCaseInsensitiveContains(query)) } }
     var body: some View {
-        if let kind { RecordEditorView(kind: kind, initialGroup: store.creatingRecordFolder, back: { self.kind = nil }).environmentObject(store) }
+        if let kind { RecordEditorView(kind: kind, initialGroup: store.creatingRecordFolder, back: { self.kind = nil; seed = nil }, seed: seed).environmentObject(store) }
+        else if scanner { RecordDiscoveryView(back: { scanner = false }, create: { value in seed = value; kind = value.kind; scanner = false }).environmentObject(store) }
         else {
             VStack(spacing: 0) {
                 HStack {
                     Text("Новая запись").font(.title2).bold(); Spacer()
+                    Button("Сканер…", systemImage: "network") { scanner = true }
                     Button("Из шаблона…", systemImage: "square.stack") { dismiss(); DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { store.showingTemplates = true } }
                 }.padding(20)
                 Divider()

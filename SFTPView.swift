@@ -308,7 +308,7 @@ struct SFTPView: View {
             }
             }
             if !model.failed.isEmpty {
-                DisclosureGroup("Неудачные передачи: \(model.failed.count)") {
+                HubDisclosureGroup("Неудачные передачи: \(model.failed.count)") {
                     ScrollView { ForEach(model.failed) { item in
                         HStack {
                             VStack(alignment: .leading) {
@@ -323,7 +323,7 @@ struct SFTPView: View {
                 }.font(.caption)
             }
             if !model.pending.isEmpty {
-                DisclosureGroup("В очереди: \(model.pending.count)") {
+                HubDisclosureGroup("В очереди: \(model.pending.count)") {
                     ScrollView { ForEach(model.pending) { job in HStack { Text(job.title).lineLimit(1); Spacer(); Button { model.removePending(job.id) } label: { Image(systemName: "xmark") }.buttonStyle(.plain) } } }.frame(maxHeight: 65)
                 }.font(.caption)
             }
@@ -345,7 +345,7 @@ struct SFTPView: View {
                 Text("Используются настройки SSH-записи: ключ, ssh-agent или пароль. Ключ нового сервера сначала подтверди через консоль.").font(.caption).foregroundStyle(.secondary)
             }
             if !model.log.isEmpty {
-                DisclosureGroup("Журнал SSH") { ScrollView { Text(model.log).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(height: 80) }.font(.caption)
+                HubDisclosureGroup("Журнал SSH") { ScrollView { Text(model.log).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(height: 80) }.font(.caption)
             }
             HStack {
                 Circle().fill(model.connected ? Color.green : Color.secondary).frame(width: 7, height: 7)

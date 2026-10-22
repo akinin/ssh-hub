@@ -311,7 +311,7 @@ struct RecordInventoryView: View {
         if !fields[field].isEmpty { structuredValue(field, value: fields[field]) }
         // Keep the editor at the same structural position while parsed cards appear.
         // Switching the TextField into a disclosure mid-typing would drop its focus.
-        DisclosureGroup(structured ? "Редактировать исходный список" : field == .interfaces ? "Ввести список интерфейсов" : "Ввести список дисков") {
+        HubDisclosureGroup(structured ? "Редактировать исходный список" : field == .interfaces ? "Ввести список интерфейсов" : "Ввести список дисков") {
             fieldEditor(field, includeSuggestion: false).padding(.top, 8)
         }.font(.caption)
         factSuggestion(field)

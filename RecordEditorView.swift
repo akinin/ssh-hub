@@ -347,7 +347,7 @@ struct RecordEditorView: View {
             Button("Выбрать поля на странице…", systemImage: "cursorarrow.click") { visualWebLogin = true }.disabled(!LocalConnectionRecord.validWebsite(record.website)).accessibilityIdentifier("visualWebLoginSetup")
             Toggle("Указать поля и кнопку входа вручную", isOn: Binding(get: { settings.wrappedValue.webLoginSelectors != nil }, set: { settings.wrappedValue.webLoginSelectors = $0 ? WebLoginSelectors() : nil; advancedWebLogin = $0 })).accessibilityIdentifier("manualWebLoginSelectors")
             if settings.wrappedValue.webLoginSelectors != nil {
-                DisclosureGroup("CSS-селекторы", isExpanded: $advancedWebLogin) {
+                HubDisclosureGroup("CSS-селекторы", isExpanded: $advancedWebLogin) {
                     VStack(alignment: .leading, spacing: 10) {
                     Toggle("Логин и пароль на разных шагах", isOn: Binding(get: { settings.wrappedValue.webLoginSelectors?.isTwoStep == true }, set: { value in var choice = settings.wrappedValue.webLoginSelectors ?? WebLoginSelectors(); choice.next = value ? "" : nil; settings.wrappedValue.webLoginSelectors = choice }))
                     if settings.wrappedValue.webLoginSelectors?.isTwoStep == true { RecordFieldRow("Далее") { TextField("Например, #next", text: Binding(get: { settings.wrappedValue.webLoginSelectors?.next ?? "" }, set: { settings.wrappedValue.webLoginSelectors?.next = $0 })) } }

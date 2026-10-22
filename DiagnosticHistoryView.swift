@@ -91,12 +91,12 @@ private struct DiagnosticStepDiffView: View {
         VStack(alignment: .leading, spacing: 7) {
             HStack { Label(step.title, systemImage: step.passed ? "checkmark.circle" : "exclamationmark.triangle").foregroundStyle(step.passed ? Color.primary : .orange); Spacer(); if changed { Text("Изменилось").font(.caption.bold()).foregroundStyle(.orange) } }
             if let previous, previous.status != step.status { Text(previous.status + " → " + step.status).font(.caption).foregroundStyle(.orange) } else { Text(step.status).font(.caption).foregroundStyle(.secondary) }
-            DisclosureGroup("Команда") { Text("$ " + step.command).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 4) }.font(.caption).foregroundStyle(.secondary)
+            HubDisclosureGroup("Команда") { Text("$ " + step.command).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 4) }.font(.caption).foregroundStyle(.secondary)
             if let previous, changed {
                 ForEach(DiagnosticDiffLine.lines(old: previous.output, new: step.output)) { line in
                     Text((line.kind < 0 ? "− " : line.kind > 0 ? "+ " : "  ") + line.text).font(.system(.caption, design: .monospaced)).foregroundStyle(line.kind < 0 ? Color.red : line.kind > 0 ? .green : .secondary).frame(maxWidth: .infinity, alignment: .leading)
                 }
-                DisclosureGroup("Полный сохранённый вывод") { Text(step.output).font(.system(.caption, design: .monospaced)).textSelection(.enabled) }
+                HubDisclosureGroup("Полный сохранённый вывод") { Text(step.output).font(.system(.caption, design: .monospaced)).textSelection(.enabled) }
             } else { Text(step.output.isEmpty ? "Нет вывода" : step.output).font(.system(.caption, design: .monospaced)).textSelection(.enabled) }
         }.padding(12).background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 9))
     }

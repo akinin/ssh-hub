@@ -101,3 +101,18 @@ struct FullRowDisclosureStyle: DisclosureGroupStyle {
         }
     }
 }
+
+// Apply the same header hit area to every collapsible section, including sheets.
+struct HubDisclosureGroup<Content: View>: View {
+    let title: String
+    var isExpanded: Binding<Bool>?
+    let content: Content
+    @State private var expanded = false
+    init(_ title: String, isExpanded: Binding<Bool>? = nil, @ViewBuilder content: () -> Content) {
+        self.title = title; self.isExpanded = isExpanded; self.content = content()
+    }
+    var body: some View {
+        DisclosureGroup(isExpanded: isExpanded ?? $expanded) { content } label: { Text(title) }
+            .disclosureGroupStyle(FullRowDisclosureStyle())
+    }
+}

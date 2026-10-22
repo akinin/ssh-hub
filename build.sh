@@ -75,9 +75,12 @@ swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$b
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionProbe.swift Tunnels.swift SSHCredentials.swift ToolkitRuntime.swift SSHLoginPolicy.swift NucleiRoute.swift NucleiRouteTests.swift -o "$build_dir/nuclei-route-tests" -framework AppKit -framework Security -framework LocalAuthentication
 "$build_dir/nuclei-route-tests"
 "$build_dir/nuclei-tests"
-swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift Nmap.swift Nuclei.swift HubFeatureStorage.swift SecurityChecks.swift SecurityRemote.swift SecurityChecksTests.swift -o "$build_dir/security-checks-tests"
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift Nmap.swift Nuclei.swift HubFeatureStorage.swift SecurityChecks.swift SecurityRemote.swift SecurityIntelligence.swift SecurityAssessment.swift SecurityChecksTests.swift -o "$build_dir/security-checks-tests"
 "$build_dir/security-checks-tests"
 python3 SecurityChecksIntegrationTests.py "$build_dir/security-checks-tests"
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift IPCalculator.swift RecordDiscoveryData.swift Nmap.swift Nuclei.swift HubFeatureStorage.swift SecurityChecks.swift SecurityRemote.swift SecurityIntelligence.swift SecurityAssessment.swift SecurityAssessmentTests.swift -o "$build_dir/security-assessment-tests" -framework AppKit -framework SystemConfiguration
+"$build_dir/security-assessment-tests"
+python3 SecurityIntelIntegrationTests.py "$build_dir/security-assessment-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift Nmap.swift TransportTests.swift -o "$build_dir/transport-tests"
 "$build_dir/transport-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" ReleaseUpdate.swift UpdateTests.swift -o "$build_dir/update-tests"

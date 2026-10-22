@@ -46,8 +46,9 @@ struct SecurityFinding: Codable, Identifiable, Equatable {
     var component = ""
     var evidence = ""
     var recommendation = ""
+    var identity: String? = nil
     var valid: Bool {
-        rule.count <= 200 && title.count <= 500 && component.count <= 500 && evidence.count <= 4000 && recommendation.count <= 2000 && cves.count <= 30 && cves.allSatisfy { SSHConfig.matches($0, "^CVE-[0-9]{4}-[0-9]{4,12}$") } && (score.map { $0.isFinite && (0...10).contains($0) } ?? true)
+        rule.count <= 200 && title.count <= 500 && component.count <= 500 && evidence.count <= 4000 && recommendation.count <= 2000 && (identity?.count ?? 0) <= 200 && cves.count <= 30 && cves.allSatisfy { SSHConfig.matches($0, "^CVE-[0-9]{4}-[0-9]{4,12}$") } && (score.map { $0.isFinite && (0...10).contains($0) } ?? true)
     }
 }
 struct SecurityCheckReport: Codable, Identifiable {
@@ -60,15 +61,16 @@ struct SecurityCheckReport: Codable, Identifiable {
     var parameters: String
     var message: String
     var findings: [SecurityFinding]
-    var valid: Bool { record.key.count <= 4096 && record.name.count <= 160 && record.address.count <= 1024 && (0...86400).contains(seconds) && parameters.count <= 2000 && message.count <= 2000 && findings.count <= 2000 && Set(findings.map(\.id)).count == findings.count && findings.allSatisfy(\.valid) }
+    var comparisonKey: String? = nil
+    var valid: Bool { record.key.count <= 4096 && record.name.count <= 160 && record.address.count <= 1024 && (0...86400).contains(seconds) && parameters.count <= 2000 && message.count <= 2000 && (comparisonKey.map { SSHConfig.matches($0, "^[a-f0-9]{64}$") } ?? true) && findings.count <= 2000 && Set(findings.map(\.id)).count == findings.count && findings.allSatisfy(\.valid) }
     static func nuclei(_ report: NucleiReport) -> Self {
         Self(id: report.id, date: report.date, record: .init(key: report.target.recordKey, name: report.target.name, address: report.target.address), engine: .nuclei,
              status: SecurityCheckStatus(rawValue: report.status.rawValue) ?? .failed, seconds: min(86400, max(0, report.seconds)),
              parameters: "\(report.settings.requestsPerSecond) запросов/с; параллельно \(report.settings.concurrency); CVE: \(report.settings.cveOnly ? "да" : "нет"); " + report.settings.severities.map(\.rawValue).sorted().joined(separator: ","),
-             message: SecurityText.clean(report.message, limit: 2000), findings: report.findings.map { .init(rule: $0.template, title: $0.title, severity: $0.severity, cves: $0.cves, score: $0.score, component: $0.endpoint) })
+             message: SecurityText.clean(report.message, limit: 2000), findings: report.findings.map { .init(rule: $0.template, title: $0.title, severity: $0.severity, cves: $0.cves, score: $0.score, component: $0.endpoint, identity: $0.matcher) }, comparisonKey: report.comparisonKey)
     }
     static func nmap(record: SecurityCheckRecord, request: NmapRequest, result: NmapResult?, status: SecurityCheckStatus, seconds: Int) -> Self {
-        let status: SecurityCheckStatus = status == .completed && ((result?.ports.count ?? 0) > 1000 || (result?.scripts?.count ?? 0) >= 1000) ? .limited : status
+        let status: SecurityCheckStatus = status == .completed && (result?.incomplete == true || (result?.ports.count ?? 0) > 1000 || (result?.scripts?.count ?? 0) >= 1000) ? .limited : status
         var rows: [SecurityFinding] = (result?.ports ?? []).prefix(1000).map { .init(rule: "port", title: "\($0.port)/\($0.proto) · \($0.state)", severity: .info, component: SecurityText.clean($0.address + ":" + $0.port, limit: 500), evidence: SecurityText.clean($0.service)) }
         rows += (result?.scripts ?? []).prefix(1000).map { .init(rule: SecurityText.clean($0.script, limit: 200), title: SecurityText.clean($0.script, limit: 500), severity: nil, component: SecurityText.clean($0.address + ($0.port.isEmpty ? "" : ":" + $0.port), limit: 500), evidence: SecurityText.clean($0.output)) }
         let parameters = "\(request.profile.rawValue); порты: \(request.profile == .custom ? request.ports : "по профилю"); NSE: " + request.settings.scripts.map(\.rawValue).sorted().joined(separator: ",")

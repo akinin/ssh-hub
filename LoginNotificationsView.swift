@@ -88,7 +88,7 @@ struct LoginNotificationsView: View {
                 Label(warning, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
             if !status.paths.isEmpty {
-                DisclosureGroup("Связанные файлы") {
+                HubDisclosureGroup("Связанные файлы") {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(Array(status.paths.enumerated()), id: \.offset) { _, path in Text(verbatim: path).font(.system(.caption, design: .monospaced)).textSelection(.enabled) }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 6)
@@ -239,7 +239,7 @@ struct LoginNotificationReviewSummary: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(12).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
             }
             Text("Настройки входа SSH, пакеты, firewall и общие уведомления Proxmox не меняются.").font(.caption).foregroundStyle(.secondary)
-            DisclosureGroup("Технические подробности: пути, команда и исходники") {
+            HubDisclosureGroup("Технические подробности: пути, команда и исходники") {
                 Text(verbatim: review.reviewText).font(.system(size: 11, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
             }.font(.caption)
         }
