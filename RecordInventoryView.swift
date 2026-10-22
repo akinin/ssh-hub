@@ -48,6 +48,19 @@ import AppKit
         catch { self.error = error.localizedDescription }
     }
     func discard() { guard loadSucceeded else { return }; record.draft = nil; persist(); notice = "Черновик отменён" }
+    func setInterfaceVisible(_ name: String, _ visible: Bool) {
+        guard loadSucceeded else { return }
+        var updated = record
+        var visibility = updated.interfaceVisibility ?? [:]; visibility[name] = visible; updated.interfaceVisibility = visibility
+        do { try repository.write(updated, for: key); record = updated; error = nil }
+        catch { self.error = error.localizedDescription }
+    }
+    func resetInterfaceVisibility() {
+        guard loadSucceeded else { return }
+        var updated = record; updated.interfaceVisibility = nil
+        do { try repository.write(updated, for: key); record = updated; error = nil }
+        catch { self.error = error.localizedDescription }
+    }
     private func persist() {
         guard loadSucceeded else { return }
         do { try repository.write(record, for: key); error = nil }
@@ -136,9 +149,9 @@ struct RecordInventoryView: View {
                                 Button("Повторить чтение") { model.reload() }
                             } else {
                                 if !model.notice.isEmpty { Text(model.notice).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
-                                if showingHistory { history } else { manualFields }
+                                if showingHistory { history } else { manualFields(width: min(1100, geometry.size.width - (geometry.size.width >= 700 ? 196 : 0) - 32)) }
                             }
-                        }.frame(maxWidth: 1100, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading).padding(20)
+                        }.frame(maxWidth: 1100, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading).padding(16)
                     }.frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
                 }
                 if !showingHistory, let snapshot, model.loadSucceeded, !suggested.isEmpty { Divider(); applyBar(snapshot) }
@@ -214,20 +227,21 @@ struct RecordInventoryView: View {
             }
         }.padding(12).frame(width: 195).background(Color.primary.opacity(0.025))
     }
-    private var manualFields: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            heading(section.title, subtitle: model.record.hasChanges ? "Черновик сохраняется между запусками. Прими изменения кнопкой «Сохранить»." : model.record.modified.map { "Изменено: " + $0.formatted() } ?? "Заполни сведения об устройстве или получи их через сбор.")
+    private func manualFields(width: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
             identity
             if let snapshot { snapshotSummary(snapshot) }
-            if section == .summary { overview(preview) }
-            ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
-                card(group.0) {
-                    if group.1.contains(.processor) { fieldEditor(.processor) }
-                    let short = group.1.filter { !$0.multiline && $0 != .processor }
-                    if !short.isEmpty { LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 18, alignment: .topLeading)], alignment: .leading, spacing: 16) { ForEach(short) { fieldEditor($0) } } }
-                    ForEach(group.1.filter { $0.multiline && $0 != .processor }) { field in
-                        if field == .interfaces || field == .disks { editableList(field) }
-                        else { fieldEditor(field) }
+            if section == .summary { summary(width: width) }
+            else {
+                ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
+                    card(group.0) {
+                        if group.1.contains(.processor) { fieldEditor(.processor) }
+                        let short = group.1.filter { !$0.multiline && $0 != .processor }
+                        if !short.isEmpty { LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 14, alignment: .topLeading)], alignment: .leading, spacing: 12) { ForEach(short) { fieldEditor($0) } } }
+                        ForEach(group.1.filter { $0.multiline && $0 != .processor }) { field in
+                            if [.interfaces, .disks, .storageUsage, .listeningPorts].contains(field) { editableList(field) }
+                            else { fieldEditor(field) }
+                        }
                     }
                 }
             }
@@ -236,8 +250,8 @@ struct RecordInventoryView: View {
     private var groups: [(String, [InventoryField])] {
         switch section {
         case .summary: return [("Основные сведения", [.deviceType, .role, .assetTag]), ("Заметки", [.notes])]
-        case .network: return [("Адреса и домен", [.hostName, .domain, .ipAddresses, .macAddresses]), ("Интерфейсы", [.interfaces]), ("Виртуализация", [.virtualMachine, .hypervisor, .virtualizationType]), ("Параметры сети", [.subnet, .vlan, .gateway, .dnsServers, .firewall, .dhcpServer, .dhcpRange])]
-        case .hardware: return [("Устройство", [.manufacturer, .model, .serial]), ("Процессор и память", [.processor, .memory, .socketType, .socketCount, .physicalCores, .logicalCores]), ("Накопители и мониторы", [.disks, .monitors])]
+        case .network: return [("Адреса и домен", [.hostName, .domain, .ipAddresses, .macAddresses]), ("Интерфейсы", [.interfaces]), ("Порты и сервисы", [.listeningPorts]), ("Виртуализация", [.virtualMachine, .hypervisor, .virtualizationType]), ("Параметры сети", [.subnet, .vlan, .gateway, .dnsServers, .firewall, .dhcpServer, .dhcpRange])]
+        case .hardware: return [("Устройство", [.manufacturer, .model, .serial]), ("Процессор и память", [.processor, .memory, .socketType, .socketCount, .physicalCores, .logicalCores]), ("Хранилище", [.storageUsage, .disks]), ("Мониторы", [.monitors])]
         case .software: return [("Операционная система / прошивка", [.operatingSystem]), ("Программное обеспечение", [.software]), ("Лицензии", [.licenses])]
         case .location: return [("Расположение устройства", [.location, .site, .building, .room]), ("Размещение в стойке", [.rack, .rackUnit])]
         case .purchase: return [("Приобретение", [.purchaseDate, .purchaseVendor, .purchaseCost, .purchaseInvoice]), ("Гарантия", [.warrantyUntil])]
@@ -281,69 +295,166 @@ struct RecordInventoryView: View {
             .accessibilityLabel("Тип устройства").frame(maxWidth: .infinity, alignment: .leading)
     }
     private var identity: some View {
-        HStack(spacing: 16) {
-            ConnectionIcon(appearance: appearance, size: 64, symbol: device.icon).accessibilityLabel("Логотип записи").accessibilityIdentifier("inventoryRecordLogo")
+        HStack(spacing: 12) {
+            ConnectionIcon(appearance: appearance, size: 48, symbol: device.icon).accessibilityLabel("Логотип записи").accessibilityIdentifier("inventoryRecordLogo")
             VStack(alignment: .leading, spacing: 5) {
                 Text(title.isEmpty ? appearance.title(fallback: model.entry.name) : title).font(.title2.bold()).textSelection(.enabled)
                 Text([fields[.model], fields[.manufacturer], fields[.role].isEmpty ? model.entry.host : fields[.role]].filter { !$0.isEmpty }.joined(separator: " · ")).foregroundStyle(.secondary).textSelection(.enabled)
+                Text(model.record.hasChanges ? "Есть черновик · изменения принимаются кнопкой «Сохранить»" : model.record.modified.map { "Изменено: " + $0.formatted() } ?? "Инвентаризация устройства").font(.caption).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading)
         }
     }
-    private func overview(_ values: InventoryFields) -> some View {
-        let ip = InventoryPresentation.primaryAddress(values)
-        let items = [("ОС", InventoryPresentation.operatingSystem(values[.operatingSystem]), "desktopcomputer", values[.operatingSystem] != fields[.operatingSystem]), ("Процессор", InventoryPresentation.firstLine(values[.processor]), "cpu", values[.processor] != fields[.processor]), ("Память", values[.memory], "memorychip", values[.memory] != fields[.memory]), ("Сеть", ip, "network", ip != InventoryPresentation.primaryAddress(fields))]
-        return LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 12)], alignment: .leading, spacing: 12) {
-            ForEach(items, id: \.0) { item in
-                VStack(alignment: .leading, spacing: 10) {
-                    Label(item.0, systemImage: item.2).font(.caption).foregroundStyle(.secondary)
-                    Text(item.1.isEmpty ? "Не указано" : item.1).font(.callout.weight(.medium)).lineLimit(3).textSelection(.enabled).frame(maxWidth: .infinity, minHeight: 34, alignment: .topLeading)
-                    if item.3 { Text("Получено · не сохранено").font(.caption2).foregroundStyle(.secondary) }
-                }.padding(14).background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+    private func summary(width: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            card("Устройство и система") {
+                summaryFacts([.manufacturer, .model, .serial, .operatingSystem, .processor, .memory, .physicalCores, .logicalCores, .socketCount, .socketType, .virtualMachine, .hypervisor, .virtualizationType])
+                HStack {
+                    Button("Оборудование…") { section = .hardware }
+                    Button("ОС и ПО…") { section = .software }
+                }.font(.caption).buttonStyle(.link)
+            }
+            if width >= 720 {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 12) { networkOverview; deviceOverview }
+                    VStack(alignment: .leading, spacing: 12) { storageOverview; portsOverview }
+                }
+            } else { networkOverview; storageOverview; portsOverview; deviceOverview }
+        }
+    }
+    private var deviceOverview: some View {
+            card("Карточка устройства") {
+                summaryFacts([.deviceType, .role, .assetTag, .location, .site, .room, .rack, .rackUnit])
+                if !fields[.notes].isEmpty { Text(fields[.notes]).font(.callout).textSelection(.enabled) }
+                HubDisclosureGroup("Редактировать основные сведения и заметки") {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), alignment: .topLeading)], alignment: .leading, spacing: 12) { fieldEditor(.deviceType); fieldEditor(.role); fieldEditor(.assetTag) }.padding(.top, 8)
+                    fieldEditor(.notes)
+                }.font(.callout)
+            }
+    }
+    private var networkOverview: some View {
+            card("Сеть") {
+                summaryFacts([.hostName, .domain, .ipAddresses, .macAddresses, .gateway, .dnsServers, .subnet, .vlan])
+                if !preview[.interfaces].isEmpty {
+                    receivedNote(.interfaces)
+                    structuredValue(.interfaces, value: preview[.interfaces])
+                } else if preview[.ipAddresses].isEmpty { Text(model.entry.host).font(.callout.monospaced()).textSelection(.enabled) }
+                Button("Редактировать сеть…") { section = .network }.font(.caption).buttonStyle(.link)
+            }
+    }
+    private var storageOverview: some View {
+            card("Хранилище") {
+                receivedNote(.storageUsage)
+                if !preview[.storageUsage].isEmpty { structuredValue(.storageUsage, value: preview[.storageUsage]) }
+                else { Text("Заполненность не получена. Обнови сбор, чтобы увидеть занятое и свободное место.").font(.caption).foregroundStyle(.secondary) }
+                if !preview[.disks].isEmpty {
+                    if preview[.storageUsage].isEmpty { receivedNote(.disks); structuredValue(.disks, value: preview[.disks]) }
+                    else { HubDisclosureGroup("Физические накопители") { receivedNote(.disks); structuredValue(.disks, value: preview[.disks]) }.font(.callout) }
+                }
+                Button("Редактировать хранилище…") { section = .hardware }.font(.caption).buttonStyle(.link)
+            }
+    }
+    private func summaryFacts(_ keys: [InventoryField]) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 16, alignment: .topLeading)], alignment: .leading, spacing: 10) {
+            ForEach(keys.filter { !preview[$0].isEmpty }) { field in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(field.title).font(.caption).foregroundStyle(.secondary)
+                    Text(field == .deviceType ? (InventoryDeviceType(rawValue: preview[field])?.title ?? preview[field]) : field == .virtualMachine ? (preview[field] == "true" ? "Да" : "Нет") : preview[field]).font(.callout.weight(.medium)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    receivedNote(field)
+                }.frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
-    private func heading(_ title: String, subtitle: String) -> some View { VStack(alignment: .leading, spacing: 6) { Label(title, systemImage: section.icon).font(.title2.bold()); Text(subtitle).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) } }
+    private var portsOverview: some View {
+        card(preview[.listeningPorts].hasPrefix("format=routeros-services") ? "Сервисы RouterOS" : "Слушающие порты") {
+            receivedNote(.listeningPorts)
+            if preview[.listeningPorts].isEmpty { Text("Порты появятся после следующего сбора инвентаризации.").font(.caption).foregroundStyle(.secondary) }
+            else {
+                let observed = snapshot.flatMap { $0.facts[.listeningPorts] == preview[.listeningPorts] ? $0 : nil } ?? model.record.snapshots.last { $0.facts[.listeningPorts] == preview[.listeningPorts] }
+                if let observed { Text("Последнее наблюдение: " + observed.date.formatted()).font(.caption).foregroundStyle(.secondary) }
+                structuredValue(.listeningPorts, value: preview[.listeningPorts])
+            }
+            Button("Подробнее о портах…") { section = .network }.font(.caption).buttonStyle(.link)
+        }
+    }
+    @ViewBuilder private func receivedNote(_ field: InventoryField) -> some View {
+        if !preview[field].isEmpty, preview[field] != fields[field] { Text("Получено · не сохранено").font(.caption2).foregroundStyle(.secondary) }
+    }
     private func card<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 16) { Text(title).font(.headline); content() }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+        VStack(alignment: .leading, spacing: 12) { Text(title).font(.headline); content() }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
     }
     @ViewBuilder private func editableList(_ field: InventoryField) -> some View {
-        let structured = field == .interfaces ? !InventoryPresentation.interfaces(fields[field]).isEmpty : !InventoryPresentation.disks(fields[field]).isEmpty
+        let structured = field == .interfaces ? !InventoryPresentation.interfaces(fields[field]).isEmpty : field == .storageUsage ? !InventoryPresentation.storage(fields[field]).isEmpty : field == .listeningPorts ? !InventoryPresentation.ports(fields[field]).isEmpty : !InventoryPresentation.disks(fields[field]).isEmpty
         if !fields[field].isEmpty { structuredValue(field, value: fields[field]) }
         // Keep the editor at the same structural position while parsed cards appear.
         // Switching the TextField into a disclosure mid-typing would drop its focus.
-        HubDisclosureGroup(structured ? "Редактировать исходный список" : field == .interfaces ? "Ввести список интерфейсов" : "Ввести список дисков") {
+        HubDisclosureGroup(structured ? "Редактировать исходный список" : field == .interfaces ? "Ввести список интерфейсов" : field == .storageUsage ? "Ввести сведения о заполненности" : field == .listeningPorts ? "Ввести список портов" : "Ввести список дисков") {
             fieldEditor(field, includeSuggestion: false).padding(.top, 8)
         }.font(.caption)
         factSuggestion(field)
     }
     @ViewBuilder private func structuredValue(_ field: InventoryField, value: String) -> some View {
         if field == .interfaces, !InventoryPresentation.interfaces(value).isEmpty {
-            ForEach(InventoryPresentation.interfaces(value)) { row in
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: "network").foregroundStyle(.tint).frame(width: 22)
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack { Text(row.name).font(.callout.bold()); if !row.status.isEmpty { Text(row.status).font(.caption).foregroundStyle(row.status == "UP" ? .green : .secondary) } }
-                        if !row.addresses.isEmpty { Text(row.addresses.joined(separator: "\n")).font(.callout.monospaced()).textSelection(.enabled) }
-                        if !row.mac.isEmpty { Text("MAC · " + row.mac).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled) }
-                        if row.addresses.isEmpty && row.mac.isEmpty { Text("Адреса не получены").font(.caption).foregroundStyle(.secondary) }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                }.padding(10).background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
+            let rows = InventoryPresentation.interfaces(value), visible = rows.filter { model.record.isInterfaceVisible($0) }, hidden = rows.filter { !model.record.isInterfaceVisible($0) }
+            ForEach(visible) { interfaceRow($0, visible: true) }
+            if !hidden.isEmpty {
+                HubDisclosureGroup("Скрытые интерфейсы · \(hidden.count)") {
+                    ForEach(hidden) { interfaceRow($0, visible: false) }
+                    Text("Loopback и выключенные интерфейсы без адресов скрыты по умолчанию. Исходные данные и история сохранены.").font(.caption).foregroundStyle(.secondary)
+                }.font(.caption)
             }
+            if model.record.interfaceVisibility != nil { Button("Сбросить видимость интерфейсов") { model.resetInterfaceVisibility() }.font(.caption).buttonStyle(.link) }
+        } else if field == .listeningPorts {
+            let rows = InventoryPresentation.ports(value)
+            Text(value.hasPrefix("format=routeros-services") ? "Конфигурация /ip service, а не полный список сокетов. Доступность извне не проверялась." : "Слушающие TCP/UDP-сокеты на устройстве. Доступность извне не проверялась.").font(.caption).foregroundStyle(.secondary)
+            if rows.isEmpty {
+                Text("Распознанных портов нет: список пуст или недоступен для текущего пользователя.").font(.caption).foregroundStyle(.secondary)
+                if !value.isEmpty { HubDisclosureGroup("Исходные данные портов") { Text(value).font(.caption.monospaced()).textSelection(.enabled) }.font(.caption) }
+            } else {
+                ForEach(Array(rows.prefix(6))) { portRow($0) }
+                if rows.count > 6 { HubDisclosureGroup("Ещё портов · \(rows.count - 6)") { ForEach(Array(rows.dropFirst(6))) { portRow($0) } }.font(.caption) }
+            }
+        } else if field == .storageUsage, !InventoryPresentation.storage(value).isEmpty {
+            let rows = InventoryPresentation.storage(value)
+            ForEach(rows.filter { !$0.auxiliary }) { InventoryStorageRow(row: $0) }
+            let auxiliary = rows.filter(\.auxiliary)
+            if !auxiliary.isEmpty { HubDisclosureGroup("Служебные тома · \(auxiliary.count)") { ForEach(auxiliary) { InventoryStorageRow(row: $0) } }.font(.caption) }
         } else if field == .disks, !InventoryPresentation.disks(value).isEmpty {
             ForEach(InventoryPresentation.disks(value)) { row in
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: "internaldrive").foregroundStyle(.tint).frame(width: 22)
                     VStack(alignment: .leading, spacing: 5) { Text(row.name).font(.callout.bold()); if !row.detail.isEmpty { Text(row.detail).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) } }.frame(maxWidth: .infinity, alignment: .leading)
                     Text(row.capacity).font(.callout.weight(.medium)).textSelection(.enabled)
-                }.padding(10).background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
+                }.padding(.vertical, 4)
             }
         } else { Text(value).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading) }
+    }
+    private func interfaceRow(_ row: InventoryInterfaceInfo, visible: Bool) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "network").foregroundStyle(.tint).frame(width: 18)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack { Text(row.name).font(.callout.bold()); if !row.status.isEmpty { Text(row.status).font(.caption).foregroundStyle(row.status == "UP" ? .green : .secondary) } }
+                if !row.addresses.isEmpty { Text(row.addresses.joined(separator: " · ")).font(.callout.monospaced()).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
+                if !row.mac.isEmpty { Text("MAC · " + row.mac).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled) }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            Button { model.setInterfaceVisible(row.name, !visible) } label: { Image(systemName: visible ? "eye.slash" : "eye") }
+                .buttonStyle(.plain).foregroundStyle(.secondary).help((visible ? "Скрыть " : "Показать ") + row.name).accessibilityLabel((visible ? "Скрыть интерфейс " : "Показать интерфейс ") + row.name)
+        }.padding(.vertical, 4)
+    }
+    private func portRow(_ row: InventoryPortInfo) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(String(row.port)).font(.callout.monospaced().weight(.semibold)).frame(width: 48, alignment: .leading)
+            Text(row.transport).font(.caption).foregroundStyle(.secondary).frame(width: 32, alignment: .leading)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.address).font(.caption.monospaced()).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                if !row.service.isEmpty { Text(row.service).font(.caption).textSelection(.enabled) }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            if row.loopback { Image(systemName: "house").foregroundStyle(.secondary).help("Только localhost").accessibilityLabel("Только localhost") }
+        }.padding(.vertical, 2)
     }
     private func snapshotSummary(_ snapshot: InventorySnapshot) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Label(snapshot.sourceTitle + " · " + snapshot.date.formatted(), systemImage: "arrow.down.doc").font(.caption).foregroundStyle(.secondary)
-            if suggested.isEmpty { Text("Нет новых значений для полей карточки.").font(.caption).foregroundStyle(.secondary) }
-            else {
+            if !suggested.isEmpty {
                 Text("Новые значения показаны рядом с полями. Выбери нужные и нажми «Сохранить»; заполненные поля сохраняются до подтверждения.").font(.caption).foregroundStyle(.secondary)
                 ViewThatFits(in: .horizontal) {
                     HStack { selectionButtons }
@@ -389,5 +500,39 @@ struct RecordInventoryView: View {
                 }
             }
         }
+    }
+}
+
+struct InventoryStorageRow: View {
+    let row: InventoryStorageInfo
+    private func size(_ bytes: Int64) -> String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline) {
+                Label(row.mount == "/" ? "Системный том · /" : row.mount, systemImage: "internaldrive").font(.callout.weight(.medium)).textSelection(.enabled)
+                Spacer(minLength: 8)
+                Text("\(Int((row.fraction * 100).rounded()))%").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            Text("Занято \(size(row.used)) из \(size(row.total))").font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+            ProgressView(value: row.fraction).progressViewStyle(InventoryStorageBarStyle(tint: row.fraction >= 0.95 ? .red : row.fraction >= 0.85 ? .orange : .green))
+                .accessibilityLabel("Заполненность " + row.mount).accessibilityValue("\(Int((row.fraction * 100).rounded())) процентов")
+            HStack {
+                Text(row.source).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                Spacer(minLength: 8)
+                Text("Доступно \(size(row.available))").textSelection(.enabled)
+            }.font(.caption).foregroundStyle(.secondary)
+        }.padding(.vertical, 5)
+    }
+}
+
+private struct InventoryStorageBarStyle: ProgressViewStyle {
+    let tint: Color
+    func makeBody(configuration: Configuration) -> some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.primary.opacity(0.1))
+                Capsule().fill(tint).frame(width: geometry.size.width * (configuration.fractionCompleted ?? 0))
+            }
+        }.frame(height: 8)
     }
 }

@@ -81,6 +81,42 @@ import Darwin
         let macDisks = InventoryPresentation.disks("/dev/disk0 (internal, physical):\n   0: GUID_partition_scheme *500.3 GB disk0\n   1: Apple_APFS 500.0 GB disk0s1")
         try check(macDisks.count == 1 && macDisks[0].capacity == "500.3 GB", "macOS whole disks without invented partition data")
         try check(InventoryPresentation.disks("Storage: 1000000 bytes").count == 1, "RouterOS storage")
+        let usage = InventoryPresentation.storage("Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 1000 600 350 64% /\ntmpfs 200 1 199 1% /run\n/dev/sdb1 2000 100 1900 5% /media/Data Disk")
+        try check(usage.count == 2 && usage[0].total == 1_024_000 && usage[0].used == 614_400 && usage[0].available == 358_400 && usage[0].fraction == 0.6 && usage[1].mount == "/media/Data Disk", "df KiB values preserve reserved space and paths with spaces; pseudo filesystems excluded")
+        let apfs = InventoryPresentation.storage("/dev/disk3s1s1 1000 100 600 15% /\n/dev/disk3s5 1000 300 600 34% /System/Volumes/Data\n/dev/disk3s6 1000 0 600 0% /System/Volumes/VM")
+        try check(apfs.count == 3 && apfs.filter(\.auxiliary).count == 1 && apfs[1].fraction == 0.3, "APFS volumes retain their own usage, no physical/container total is invented")
+        let routerUsage = InventoryPresentation.storage("bytes total=1000000 free=250000")
+        try check(routerUsage.count == 1 && routerUsage[0].used == 750000 && routerUsage[0].fraction == 0.75, "RouterOS total/free bytes")
+        for malformed in ["/dev/x 0 0 0 0% /", "/dev/x 10 11 0 100% /", "/dev/x 10 1 10 1% /", "/dev/x 999999999999999999 1 1 0% /", "bytes total=10 free=11", "unknown", String(repeating: "x", count: 16385)] {
+            try check(InventoryPresentation.storage(malformed).isEmpty, "invalid/overflow/unrecognized storage never produces a bar")
+        }
+        try check(InventoryPresentation.storage("/dev/x 10 0 10 0% /\n/dev/x 10 0 10 0% /").count == 1, "duplicate mount identity not rendered twice")
+        var visibility = RecordInventory()
+        let loopback = InventoryInterfaceInfo(name: "lo", addresses: ["127.0.0.1/8"], status: "UP")
+        let down = InventoryInterfaceInfo(name: "eth1", status: "DOWN")
+        let vpn = InventoryInterfaceInfo(name: "wg0", addresses: ["192.0.2.2/32"], status: "UP")
+        try check(!visibility.isInterfaceVisible(loopback) && !visibility.isInterfaceVisible(down) && visibility.isInterfaceVisible(vpn), "default interface filter keeps active VPN and hides only loopback/inactive unaddressed links")
+        visibility.manual[.interfaces] = linuxInterfaces
+        visibility.interfaceVisibility = ["lo": true, "wg0": false]
+        try check(visibility.isInterfaceVisible(loopback) && !visibility.isInterfaceVisible(vpn), "explicit visibility overrides default in both directions")
+        try repository.write(visibility, for: "visibility")
+        try check(try repository.load("visibility") == visibility && !visibility.hasChanges && visibility.manual[.interfaces] == linuxInterfaces, "visibility persists without changing facts, draft or save state")
+        visibility.interfaceVisibility = ["bad\nname": false]
+        try rejected({ try repository.write(visibility, for: "visibility") }, "visibility names bounded and control-free")
+        try check(legacy.interfaceVisibility == nil && legacy.manual[.storageUsage].isEmpty, "legacy files require no usage/visibility migration")
+        let socketText = "format=ss\ntcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:*\ntcp LISTEN 0 128 [::1]:8000 [::]:*\nudp UNCONN 0 0 127.0.0.53%lo:53 0.0.0.0:*\ntcp ESTAB 0 0 192.0.2.1:49152 192.0.2.2:443\ntcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:*"
+        let ports = InventoryPresentation.ports(socketText)
+        try check(ports.count == 3 && ports.map(\.port) == [22, 53, 8000] && ports[1].transport == "UDP" && ports[2].loopback, "ss collects TCP listeners and unconnected UDP; deduplicates and excludes active TCP sessions")
+        let netstat = InventoryPresentation.ports("format=linux-netstat\ntcp6 0 0 :::22 :::* LISTEN\nudp 0 0 0.0.0.0:67 0.0.0.0:*\nudp 0 0 192.0.2.1:123 192.0.2.2:123")
+        try check(netstat.count == 2 && netstat[0].address == "::" && netstat[1].port == 67, "Linux netstat fallback excludes connected UDP peers")
+        let macPorts = InventoryPresentation.ports("format=mac-netstat\ntcp46 0 0 *.22 *.* LISTEN\ntcp6 0 0 ::1.8080 *.* LISTEN\nudp4 0 0 *.5353 *.*\ntcp4 0 0 192.0.2.1.12345 192.0.2.2.443 ESTABLISHED")
+        try check(macPorts.count == 3 && macPorts.last?.port == 8080 && macPorts.last?.loopback == true, "macOS numeric dot endpoints, dual-stack TCP and UDP; no outbound sessions")
+        let services = InventoryPresentation.ports("format=routeros-services\n0 name=ssh port=22 proto=tcp disabled=no\n1 X name=www port=80 proto=tcp\n2 name=api port=8728 disabled=yes\n3 name=winbox port=8291 proto=tcp connection=yes\n4 name=legacy port=1234")
+        try check(services.count == 2 && services[0].service == "ssh" && services[0].address == "По конфигурации" && services[1].transport == "—", "RouterOS is labelled configuration, disabled/connections excluded and missing protocol never invented")
+        for invalidPorts in ["tcp LISTEN 0 0 0.0.0.0:22 *:*", "format=ss\ntcp LISTEN 0 0 invalid:22 *:*", "format=ss\ntcp LISTEN 0 0 *:65536 *:*", "format=ss\ntcp LISTEN 0 0 *:0 *:*", String(repeating: "x", count: 16385)] {
+            try check(InventoryPresentation.ports(invalidPorts).isEmpty, "unknown/invalid/oversized ports do not become socket facts")
+        }
+        try check(legacy.manual[.listeningPorts].isEmpty, "legacy inventory has no invented port state")
         try check(InventoryPresentation.disks("unknown").isEmpty && InventoryPresentation.interfaces("unknown").isEmpty, "unrecognized data remains raw")
         try check(InventoryPresentation.interfaces(String(repeating: "x", count: 16385)).isEmpty, "presentation input bounded")
         try check(InventoryPresentation.operatingSystem("ProductName: macOS\nProductVersion: 26.0\nBuildVersion: fixture") == "macOS 26.0", "OS summary formats facts without altering raw value")
@@ -113,6 +149,7 @@ import Darwin
         try process.run(); let localOutput = out.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
         let local = try InventoryCollection.parse(String(decoding: localOutput, as: UTF8.self), collector: .macOS)
         try check(process.terminationStatus == 0 && local.facts[.manufacturer] == "Apple" && !local.facts[.model].isEmpty && !local.facts[.memory].isEmpty, "macOS collector runs locally and parses")
+        try check(!InventoryPresentation.storage(local.facts[.storageUsage]).isEmpty, "local macOS df collection yields real volume utilization")
         print("Record inventory tests passed: compatibility, bounded private storage, draft/save, snapshots, explicit merge/diff, backup roundtrip, symlink/special-file rejection and local macOS collection")
     }
 }

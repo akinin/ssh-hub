@@ -3,7 +3,7 @@ import CryptoKit
 import Darwin
 
 enum InventoryField: String, Codable, CaseIterable, Identifiable {
-    case manufacturer, model, serial, assetTag, operatingSystem, processor, memory, disks, interfaces, location, role, owner, notes
+    case manufacturer, model, serial, assetTag, operatingSystem, processor, memory, disks, storageUsage, interfaces, listeningPorts, location, role, owner, notes
     case deviceType, hostName, ipAddresses, macAddresses, domain, subnet, vlan, gateway, dnsServers, dhcpServer, dhcpRange, firewall, virtualMachine, hypervisor, virtualizationType
     case socketType, socketCount, physicalCores, logicalCores, monitors, software, licenses
     case site, building, room, rack, rackUnit, department, email, phone, purchaseDate, purchaseVendor, purchaseCost, warrantyUntil, purchaseInvoice
@@ -18,7 +18,9 @@ enum InventoryField: String, Codable, CaseIterable, Identifiable {
         case .processor: return "Процессор"
         case .memory: return "Память"
         case .disks: return "Диски"
+        case .storageUsage: return "Заполненность хранилища"
         case .interfaces: return "Интерфейсы · MAC / IP"
+        case .listeningPorts: return "Порты и сервисы"
         case .location: return "Расположение"
         case .role: return "Назначение"
         case .owner: return "Ответственный"
@@ -60,7 +62,7 @@ enum InventoryField: String, Codable, CaseIterable, Identifiable {
         case .purchaseInvoice: return "Заказ / счёт"
         }
     }
-    var multiline: Bool { [.disks, .interfaces, .notes, .operatingSystem, .processor, .ipAddresses, .macAddresses, .monitors, .software, .licenses].contains(self) }
+    var multiline: Bool { [.disks, .storageUsage, .interfaces, .listeningPorts, .notes, .operatingSystem, .processor, .ipAddresses, .macAddresses, .monitors, .software, .licenses].contains(self) }
 }
 
 enum InventorySection: String, CaseIterable, Identifiable {
@@ -71,9 +73,9 @@ enum InventorySection: String, CaseIterable, Identifiable {
     var fields: [InventoryField] {
         switch self {
         case .summary: return [.deviceType, .role, .assetTag, .notes]
-        case .network: return [.hostName, .ipAddresses, .macAddresses, .domain, .interfaces, .virtualMachine, .hypervisor, .virtualizationType, .subnet, .vlan, .gateway, .dnsServers, .dhcpServer, .dhcpRange, .firewall]
+        case .network: return [.hostName, .ipAddresses, .macAddresses, .domain, .interfaces, .listeningPorts, .virtualMachine, .hypervisor, .virtualizationType, .subnet, .vlan, .gateway, .dnsServers, .dhcpServer, .dhcpRange, .firewall]
         case .software: return [.operatingSystem, .software, .licenses]
-        case .hardware: return [.manufacturer, .model, .serial, .processor, .socketType, .socketCount, .physicalCores, .logicalCores, .memory, .monitors, .disks]
+        case .hardware: return [.manufacturer, .model, .serial, .processor, .socketType, .socketCount, .physicalCores, .logicalCores, .memory, .monitors, .disks, .storageUsage]
         case .location: return [.location, .site, .building, .room, .rack, .rackUnit]
         case .purchase: return [.purchaseDate, .purchaseVendor, .purchaseCost, .warrantyUntil, .purchaseInvoice]
         }
@@ -172,19 +174,23 @@ struct RecordInventory: Codable, Equatable {
     var draft: InventoryFields?
     var modified: Date?
     var snapshots: [InventorySnapshot] = []
+    // Presentation only. Missing names use the default filter; never remove raw facts.
+    var interfaceVisibility: [String: Bool]?
     var fields: InventoryFields { draft ?? manual }
     var hasChanges: Bool { fields != manual }
     init() {}
-    private enum CodingKeys: String, CodingKey { case manual, draft, modified, snapshots }
+    private enum CodingKeys: String, CodingKey { case manual, draft, modified, snapshots, interfaceVisibility }
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         manual = try container.decodeIfPresent(InventoryFields.self, forKey: .manual) ?? InventoryFields()
         draft = try container.decodeIfPresent(InventoryFields.self, forKey: .draft)
         modified = try container.decodeIfPresent(Date.self, forKey: .modified)
         snapshots = try container.decodeIfPresent([InventorySnapshot].self, forKey: .snapshots) ?? []
+        interfaceVisibility = try container.decodeIfPresent([String: Bool].self, forKey: .interfaceVisibility)
     }
     mutating func save(date: Date = Date()) { if hasChanges { manual = fields; modified = date }; draft = nil }
     mutating func append(_ snapshot: InventorySnapshot) { snapshots.append(snapshot); snapshots = Array(snapshots.suffix(20)) }
+    func isInterfaceVisible(_ interface: InventoryInterfaceInfo) -> Bool { interfaceVisibility?[interface.name] ?? !interface.hiddenByDefault }
 }
 
 enum InventoryError: LocalizedError {
@@ -261,7 +267,10 @@ struct InventoryRepository {
             return strings.allSatisfy { $0.utf8.count <= 16_384 && !$0.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) && $0 != "\n" && $0 != "\t" }) }
                 && strings.reduce(0, { $0 + $1.utf8.count }) <= 131_072
         }
-        guard validFields(inventory.manual), inventory.draft.map(validFields) ?? true,
+        let visibilityValid = inventory.interfaceVisibility.map { values in
+            values.count <= 256 && values.keys.allSatisfy { !$0.isEmpty && $0.utf8.count <= 256 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }
+        } ?? true
+        guard visibilityValid, validFields(inventory.manual), inventory.draft.map(validFields) ?? true,
               inventory.modified.map({ $0.timeIntervalSince1970.isFinite }) ?? true,
               inventory.snapshots.count <= 20, Set(inventory.snapshots.map(\.id)).count == inventory.snapshots.count,
               inventory.snapshots.allSatisfy({ validFields($0.facts) && $0.date.timeIntervalSince1970.isFinite && ($0.source.map { $0.utf8.count <= 512 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) } ?? true) }) else { throw InventoryError.invalidData }
@@ -274,12 +283,35 @@ struct InventoryInterfaceInfo: Identifiable, Equatable {
     var mac = ""
     var status = ""
     var id: String { name }
+    var hiddenByDefault: Bool {
+        name == "lo" || name == "lo0" || (status == "DOWN" && addresses.isEmpty)
+    }
 }
 struct InventoryDiskInfo: Identifiable, Equatable {
     var name: String
     var capacity: String
     var detail: String
     var id: String { name }
+}
+struct InventoryStorageInfo: Identifiable, Equatable {
+    let source: String
+    let mount: String
+    let total: Int64
+    let used: Int64
+    let available: Int64
+    var id: String { source + "\0" + mount }
+    var fraction: Double { Double(used) / Double(total) }
+    var auxiliary: Bool {
+        (mount.hasPrefix("/System/Volumes/") && mount != "/System/Volumes/Data") || mount == "/boot" || mount.hasPrefix("/boot/") || source.hasPrefix("/dev/loop")
+    }
+}
+struct InventoryPortInfo: Identifiable, Equatable {
+    let port: Int
+    let transport: String
+    let address: String
+    var service = ""
+    var id: String { transport + ":" + String(port) + ":" + address + ":" + service }
+    var loopback: Bool { address == "::1" || address.hasPrefix("127.") || address.hasPrefix("::ffff:127.") }
 }
 enum InventoryPresentation {
     // Display only: filling the preview never changes manual fields or the draft.
@@ -334,6 +366,68 @@ enum InventoryPresentation {
         }
         return rows
     }
+    static func storage(_ text: String) -> [InventoryStorageInfo] {
+        guard text.utf8.count <= 16_384 else { return [] }
+        var rows: [InventoryStorageInfo] = []
+        for raw in text.split(separator: "\n").prefix(128) {
+            let line = String(raw).trimmingCharacters(in: .whitespaces)
+            var row: InventoryStorageInfo?
+            if let columns = match(#"^(\S+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+[0-9]+%\s+(.+)$"#, line),
+               !["tmpfs", "devtmpfs", "udev", "devfs", "shm", "none", "proc", "sysfs"].contains(columns[0]),
+               let total = Int64(columns[1]), let used = Int64(columns[2]), let available = Int64(columns[3]),
+               total > 0, total <= Int64.max / 1024, used <= total, available <= total, used <= total - available {
+                row = InventoryStorageInfo(source: columns[0], mount: columns[4], total: total * 1024, used: used * 1024, available: available * 1024)
+            } else if let columns = match(#"^bytes total=([0-9]+) free=([0-9]+)$"#, line),
+                      let total = Int64(columns[0]), let available = Int64(columns[1]), total > 0, available <= total {
+                row = InventoryStorageInfo(source: "RouterOS", mount: "Хранилище", total: total, used: total - available, available: available)
+            }
+            if let row, !rows.contains(where: { $0.id == row.id }) { rows.append(row) }
+            if rows.count == 64 { break }
+        }
+        return rows
+    }
+    static func ports(_ text: String) -> [InventoryPortInfo] {
+        guard text.utf8.count <= 16_384 else { return [] }
+        let lines = text.components(separatedBy: .newlines)
+        guard let format = lines.first, ["format=ss", "format=linux-netstat", "format=mac-netstat", "format=routeros-services"].contains(format) else { return [] }
+        var rows: [InventoryPortInfo] = []
+        for line in lines.dropFirst().prefix(256) {
+            let columns = line.split(whereSeparator: \.isWhitespace).map(String.init)
+            var row: InventoryPortInfo?
+            if format == "format=routeros-services" {
+                // /ip service is configuration, not proof of a listening socket or firewall reachability.
+                guard property("disabled", line) != "yes", property("invalid", line) != "yes", property("connection", line) != "yes",
+                      match(#"^\s*[0-9]+\s+[A-Za-z]*[XIc][A-Za-z]*\s+"#, line) == nil,
+                      let portText = property("port", line), let port = Int(portText), (1...65535).contains(port), let name = property("name", line), name.utf8.count <= 128 else { continue }
+                let proto = property("proto", line) ?? property("protocol", line) ?? "—"
+                guard ["tcp", "udp", "—"].contains(proto) else { continue }
+                row = InventoryPortInfo(port: port, transport: proto.uppercased(), address: "По конфигурации", service: name)
+            } else {
+                guard columns.count >= 5 else { continue }
+                let proto = columns[0]
+                guard ["tcp", "tcp4", "tcp6", "tcp46", "udp", "udp4", "udp6", "udp46"].contains(proto) else { continue }
+                let tcp = proto.hasPrefix("tcp")
+                let endpoint: String
+                if format == "format=ss" {
+                    guard columns.count >= 6, tcp ? columns[1] == "LISTEN" : columns[1] == "UNCONN" else { continue }
+                    endpoint = columns[4]
+                } else {
+                    guard tcp ? columns.contains("LISTEN") : ["*.*", "*:*", "0.0.0.0:*", ":::*", "[::]:*"].contains(columns[4]) else { continue }
+                    endpoint = columns[3]
+                }
+                let pattern = format == "format=mac-netstat" ? #"^(.+)\.([0-9]+)$"# : #"^(.+):([0-9]+)$"#
+                guard let pair = match(pattern, endpoint), let port = Int(pair[1]), (1...65535).contains(port), pair[0].utf8.count <= 256 else { continue }
+                let address = pair[0].trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+                let literal = address.components(separatedBy: "%")[0]
+                var ipv4 = in_addr(), ipv6 = in6_addr()
+                guard literal == "*" || inet_pton(AF_INET, literal, &ipv4) == 1 || inet_pton(AF_INET6, literal, &ipv6) == 1 else { continue }
+                row = InventoryPortInfo(port: port, transport: tcp ? "TCP" : "UDP", address: address)
+            }
+            if let row, !rows.contains(where: { $0.id == row.id }) { rows.append(row) }
+            if rows.count == 128 { break }
+        }
+        return rows.sorted { ($0.port, $0.transport, $0.address, $0.service) < ($1.port, $1.transport, $1.address, $1.service) }
+    }
     static func firstLine(_ value: String) -> String { value.split(separator: "\n").first.map(String.init) ?? "" }
     static func primaryAddress(_ fields: InventoryFields) -> String {
         let manual = firstLine(fields[.ipAddresses]); if !manual.isEmpty { return manual }
@@ -371,6 +465,8 @@ enum InventoryCollection {
                 section(.processor, "awk -F: '/^(model name|Hardware|Processor)[[:space:]]*:/{sub(/^[[:space:]]*/,\"\",$2); print $2; exit}' /proc/cpuinfo 2>/dev/null; getconf _NPROCESSORS_ONLN 2>/dev/null | awk '{print \"CPU threads: \" $0}'"),
                 section(.memory, "awk '/^MemTotal:/{printf \"%.0f MiB\\n\",$2/1024}' /proc/meminfo 2>/dev/null"),
                 section(.disks, "lsblk -dn -o NAME,SIZE,TYPE,MODEL 2>/dev/null | head -64"),
+                section(.storageUsage, "df -Pk 2>/dev/null | head -65"),
+                section(.listeningPorts, "if command -v ss >/dev/null 2>&1; then printf 'format=ss\\n'; ss -H -lntu 2>/dev/null | head -128; elif command -v netstat >/dev/null 2>&1; then printf 'format=linux-netstat\\n'; netstat -lntu 2>/dev/null | head -128; fi"),
                 section(.interfaces, "ip -o link show 2>/dev/null | head -64; ip -o address show 2>/dev/null | head -128")
             ].joined(separator: "; ") + "; true"
         case .macOS:
@@ -382,6 +478,8 @@ enum InventoryCollection {
                 section(.processor, "/usr/sbin/sysctl -n machdep.cpu.brand_string; /usr/sbin/sysctl -n hw.logicalcpu | /usr/bin/awk '{print \"CPU threads: \" $0}'"),
                 section(.memory, "/usr/sbin/sysctl -n hw.memsize | /usr/bin/awk '{printf \"%.0f MiB\\n\",$0/1048576}'"),
                 section(.disks, "/usr/sbin/diskutil list | /usr/bin/head -100"),
+                section(.storageUsage, "/bin/df -Pk 2>/dev/null | /usr/bin/head -65"),
+                section(.listeningPorts, "printf 'format=mac-netstat\\n'; /usr/sbin/netstat -an -p tcp 2>/dev/null | /usr/bin/awk '$1 ~ /^tcp/ && $6 == \"LISTEN\"' | /usr/bin/head -64; /usr/sbin/netstat -an -p udp 2>/dev/null | /usr/bin/awk '$1 ~ /^udp/ && $5 == \"*.*\"' | /usr/bin/head -64"),
                 section(.interfaces, "/sbin/ifconfig | /usr/bin/awk '/^[^[:space:]]/{print} /ether /{print} /inet /{print} /inet6 /{print}' | /usr/bin/head -160")
             ].joined(separator: "; ") + "; true"
         case .routerOS:
@@ -394,6 +492,8 @@ enum InventoryCollection {
                 routerSection(.processor, ":put ([/system resource get cpu] . \" / cores: \" . [/system resource get cpu-count] . \" / MHz: \" . [/system resource get cpu-frequency])"),
                 routerSection(.memory, ":put ([/system resource get total-memory] . \" bytes\")"),
                 routerSection(.disks, ":put (\"Storage: \" . [/system resource get total-hdd-space] . \" bytes\")"),
+                routerSection(.storageUsage, ":put (\"bytes total=\" . [/system resource get total-hdd-space] . \" free=\" . [/system resource get free-hdd-space])"),
+                routerSection(.listeningPorts, ":put \"format=routeros-services\"; /ip service print terse without-paging where disabled=no"),
                 routerSection(.interfaces, "/interface print terse without-paging; /ip address print terse without-paging; :do { /ipv6 address print terse without-paging } on-error={ :put \"\" }")
             ].joined(separator: "; ")
         }

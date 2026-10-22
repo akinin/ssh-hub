@@ -4,6 +4,12 @@
 
 Нативное приложение для macOS 14+ на Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
 
+## Изменения 3.17.0 (сборка 72): инвентаризация
+
+- Summary shows populated hardware/OS/network/storage together; detailed editors, preview-only blank filling, immutable proposal and explicit Save/conflict confirmation remain. Preserve raw disk/interface facts. Optional storageUsage is df -Pk (KiB) or RouterOS total/free bytes, bounded and overflow checked; unknown/legacy data has no invented utilization. Volumes are individual, never sum APFS/shared/container capacities. Auxiliary volumes stay in a disclosure.
+- Optional per-record interfaceVisibility overrides presentation defaults (loopback and DOWN without addresses). Writes are bounded, load-gated, durable before publishing, independent of draft/Save/Discard; retain snapshots/manual data. Reset removes overrides. Tests use synthetic Linux/RouterOS/df and owned loopback SSH plus local Mac collection; never collect from user servers for UI QA.
+- Optional listeningPorts is gathered by the same explicit SSH/local collector, no scan: Linux numeric ss listening TCP/unconnected UDP, netstat fallback; macOS numeric netstat filtered before collection. Parse bounded typed source formats; omit connected peers, invalid addresses/ports, deduplicate. No PID/process/root enumeration or guessed service names. RouterOS /ip service enabled configuration is explicitly labelled configuration, not full socket/firewall reachability. Legacy/missing/failed/empty data never proves absence of open ports. Keep raw snapshots, explicit Save and preview rules.
+
 ## Изменения 3.16.2 (сборка 69): MFA-индикатор и перетаскивание
 
 - Row indicators include MFA presence only, using noninteractive Keychain attribute lookup for visible rows; never load TOTP secrets/codes into the tree. TOTP write notification refreshes the tree. Indicator editor reuses the same native MenuCustomizationRows drag table and local-only drop validation as menu settings; visibility and Save/Cancel/CAS semantics remain unchanged. Existing preferences append the new MFA indicator without reordering saved items.

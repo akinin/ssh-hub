@@ -38,6 +38,13 @@ __SSH_HUB_INVENTORY_model__
 Loopback Machine
 __SSH_HUB_INVENTORY_operatingSystem__
 Debian fixture / synthetic inventory
+__SSH_HUB_INVENTORY_storageUsage__
+Filesystem 1024-blocks Used Available Capacity Mounted on
+/dev/demo1 1000000 650000 300000 69% /
+__SSH_HUB_INVENTORY_listeningPorts__
+format=ss
+tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:*
+udp UNCONN 0 0 127.0.0.1:53 0.0.0.0:*
 __SSH_HUB_INVENTORY_interfaces__
 eth0 aa:bb:cc:dd:ee:ff
 inet 192.0.2.44/24""")
