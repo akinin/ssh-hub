@@ -49,7 +49,7 @@ struct RecordTOTPBadge: View {
                 if let token {
                     TimelineView(.periodic(from: .now, by: 1)) { context in
                         Button { store.copyTOTP(entry) } label: {
-                            Label("MFA " + token.code(at: context.date), systemImage: "lock.rotation")
+                            Label(String(format: "%02d", Int(ceil(token.remaining(at: context.date)))) + " с · " + token.code(at: context.date), systemImage: "lock.rotation")
                                 .font(.caption.weight(.medium)).monospacedDigit().padding(.horizontal, 8).padding(.vertical, 4)
                         }.buttonStyle(.plain).background(.quaternary, in: Capsule()).fixedSize()
                             .help("Копировать MFA-код · обновится через \(Int(ceil(token.remaining(at: context.date)))) с")
