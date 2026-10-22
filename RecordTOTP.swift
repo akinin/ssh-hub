@@ -10,6 +10,7 @@ struct TOTPToken: Codable, Equatable {
     var digits = 6
     var period = 30
     var valid: Bool { (10...128).contains(secret.count) && [6, 8].contains(digits) && (15...120).contains(period) }
+    func remaining(at date: Date = Date()) -> Double { Double(period) - date.timeIntervalSince1970.truncatingRemainder(dividingBy: Double(period)) }
     static func parse(_ input: String, algorithm: Algorithm = .SHA1, digits: Int = 6, period: Int = 30) throws -> Self {
         guard input.utf8.count <= 4096 else { throw ConfigError.message("Ссылка или секрет TOTP слишком длинные.") }
         var text = input.trimmingCharacters(in: .whitespacesAndNewlines), algorithm = algorithm, digits = digits, period = period
@@ -50,6 +51,7 @@ struct TOTPToken: Codable, Equatable {
     }
 }
 enum RecordTOTPStore {
+    static let changed = Notification.Name("SSHHubRecordTOTPChanged")
     static func account(config: URL, record: String) -> String { SHA256.hash(data: Data((config.standardizedFileURL.path + "\0" + record).utf8)).map { String(format: "%02x", $0) }.joined() }
     private static func query(_ account: String) -> [String: Any] { [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.olshaniki.sshhub.totp.v1", kSecAttrAccount as String: account] }
     static func has(_ account: String) -> Bool {
@@ -57,18 +59,20 @@ enum RecordTOTPStore {
         let context = LAContext(); context.interactionNotAllowed = true; q[kSecUseAuthenticationContext as String] = context
         return SecItemCopyMatching(q as CFDictionary, nil) == errSecSuccess
     }
-    static func read(_ account: String) throws -> TOTPToken? {
+    static func read(_ account: String, allowInteraction: Bool = true) throws -> TOTPToken? {
         var q = query(account); q[kSecReturnData as String] = true
+        if !allowInteraction { let context = LAContext(); context.interactionNotAllowed = true; q[kSecUseAuthenticationContext as String] = context; q[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail }
         var result: CFTypeRef?; let status = SecItemCopyMatching(q as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = result as? Data, data.count <= 2048, let token = try? JSONDecoder().decode(TOTPToken.self, from: data), token.valid else { throw ConfigError.message("Не удалось прочитать TOTP из Связки ключей.") }; return token
     }
     static func write(_ token: TOTPToken?, account: String) throws {
-        guard let token else { let status = SecItemDelete(query(account) as CFDictionary); guard status == errSecSuccess || status == errSecItemNotFound else { throw ConfigError.message("Не удалось удалить TOTP.") }; return }
+        guard let token else { let status = SecItemDelete(query(account) as CFDictionary); guard status == errSecSuccess || status == errSecItemNotFound else { throw ConfigError.message("Не удалось удалить TOTP.") }; NotificationCenter.default.post(name: changed, object: nil); return }
         guard token.valid else { throw ConfigError.message("Некорректные параметры TOTP.") }
         let value: [String: Any] = [kSecValueData as String: try JSONEncoder().encode(token)]
         var status = SecItemUpdate(query(account) as CFDictionary, value as CFDictionary)
         if status == errSecItemNotFound { var q = query(account); value.forEach { q[$0.key] = $0.value }; q[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly; q[kSecAttrLabel as String] = "SSH Hub · TOTP"; status = SecItemAdd(q as CFDictionary, nil) }
         guard status == errSecSuccess else { throw ConfigError.message("Не удалось сохранить TOTP в Связке ключей.") }
+        NotificationCenter.default.post(name: changed, object: nil)
     }
 }

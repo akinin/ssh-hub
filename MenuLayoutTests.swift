@@ -16,6 +16,9 @@ import AppKit
             check(CustomMenuLayout.visible(hiddenData, for: surface).isEmpty, "hiding all commands stays explicit")
         }
         let input = [CustomMenuItem(id: "a"), .init(id: "b"), .init(id: "c")]
+        let legacy = CustomMenuSurface.record.defaults.filter { $0.id != "copyTOTP" }
+        let legacyData = try JSONEncoder().encode(legacy)
+        check(CustomMenuLayout.visible(legacyData, for: .record).contains { $0.id == "copyTOTP" }, "MFA copy added to existing menu configurations")
         check(CustomMenuLayout.move(input, from: 0, to: 3).map(\.id) == ["b", "c", "a"], "drag to end")
         check(CustomMenuLayout.move(input, from: 2, to: 0).map(\.id) == ["c", "a", "b"], "drag to beginning")
         check(CustomMenuLayout.move(input, from: 0, to: 1) == input && CustomMenuLayout.move(input, from: -1, to: 0) == input && CustomMenuLayout.move(input, from: 1, to: 9) == input, "same and invalid insertion preserve order")

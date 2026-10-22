@@ -1,6 +1,46 @@
 import Foundation
 import Darwin
 
+enum RecordRowBadge: String, CaseIterable, Identifiable {
+    case recordType, notifications, documentation, attachments, inventory, licenses, payments, availability, certificate
+    var id: String { rawValue }
+    var title: String { switch self {
+    case .recordType: return "Тип записи · SSH, WEB, RDP…"
+    case .notifications: return "Уведомления"
+    case .documentation: return "Документация"
+    case .attachments: return "Вложения"
+    case .inventory: return "Инвентаризация"
+    case .licenses: return "Лицензии"
+    case .payments: return "Оплаты"
+    case .availability: return "Доступность"
+    case .certificate: return "Сертификат TLS"
+    } }
+    var icon: String { switch self {
+    case .recordType: return "tag"
+    case .notifications: return "bell.badge"
+    case .documentation: return "doc.text"
+    case .attachments: return "paperclip"
+    case .inventory: return "shippingbox"
+    case .licenses: return "key.horizontal"
+    case .payments: return "creditcard"
+    case .availability: return "circle.fill"
+    case .certificate: return "checkmark.shield"
+    } }
+}
+struct RecordRowBadgeItem: Codable, Equatable, Identifiable {
+    var id: String
+    var visible = true
+}
+enum RecordRowBadgeSettings {
+    static let key = "recordRowBadges.v1"
+    static var defaults: [RecordRowBadgeItem] { RecordRowBadge.allCases.map { .init(id: $0.rawValue) } }
+    static func decode(_ data: Data?) -> [RecordRowBadgeItem] {
+        guard let data, data.count <= 8192, let items = try? JSONDecoder().decode([RecordRowBadgeItem].self, from: data), items.count <= 32, Set(items.map(\.id)).count == items.count else { return defaults }
+        let known = items.filter { RecordRowBadge(rawValue: $0.id) != nil }, present = Set(items.map(\.id))
+        return known + defaults.filter { !present.contains($0.id) }
+    }
+}
+
 struct ConnectionAppearance: Codable, Equatable {
     var name = ""
     var logo: Data?

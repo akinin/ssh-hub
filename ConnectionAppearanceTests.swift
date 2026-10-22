@@ -4,6 +4,20 @@ import AppKit
 @main struct ConnectionAppearanceTests {
     static func check(_ condition: Bool, _ message: String) { if !condition { fatalError(message) } }
     static func main() throws {
+        do {
+        let badges = RecordRowBadgeSettings.defaults
+        check(RecordRowBadgeSettings.decode(nil) == badges, "legacy rows retain all indicators")
+        var ordered = Array(badges.reversed()); ordered[0].visible = false
+        check(RecordRowBadgeSettings.decode(try JSONEncoder().encode(ordered)) == ordered, "row indicator order and visibility persist")
+        let hidden = badges.map { RecordRowBadgeItem(id: $0.id, visible: false) }
+        check(RecordRowBadgeSettings.decode(try JSONEncoder().encode(hidden)).allSatisfy { !$0.visible }, "hide all stays explicit")
+        check(RecordRowBadgeSettings.decode(Data("invalid".utf8)) == badges, "corrupt row preferences fall back")
+        let duplicate = try JSONEncoder().encode([badges[0], badges[0]])
+        check(RecordRowBadgeSettings.decode(duplicate) == badges, "duplicate indicators rejected")
+        let partial = try JSONEncoder().encode([RecordRowBadgeItem(id: "documentation", visible: false), .init(id: "unknown")])
+        let migrated = RecordRowBadgeSettings.decode(partial)
+        check(migrated.first?.id == "documentation" && migrated.first?.visible == false && migrated.count == badges.count, "new indicators migrate without losing existing visibility")
+        }
         var pair = RecordAddressPair(domain: "server.example.test", ip: "192.0.2.10")
         check(pair.valid && pair.selected == "server.example.test", "domain is selected without losing IP")
         pair.preferred = .ip

@@ -1202,7 +1202,6 @@ struct AliasDetail: View {
                     HStack { Text(entry.command).font(.system(.caption, design: .monospaced)).textSelection(.enabled); Spacer(); Button { store.copy(entry.command) } label: { Image(systemName: "doc.on.doc") }.help("Копировать команду SSH") }.padding(12).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
                 }
                 if entry.recordKind?.isWeb == true, store.appearance(entry).checkCertificate == true { RecordCertificateDetails(entry: entry, monitor: store.certificates) }
-                RecordTOTPCode(entry: entry, config: store.config.url)
                 Text(entry.localID == nil ? "SSH-алиас из " + entry.source.path.replacingOccurrences(of: NSHomeDirectory(), with: "~") : entry.sshAlias == nil ? "Запись хранится в SSH Hub." : "Запись связана с SSH-алиасом «" + (entry.sshAlias ?? "") + "».").font(.caption).foregroundStyle(.secondary)
             }.padding(density == .compact ? 16 : 24).frame(maxWidth: 1000, alignment: .leading).frame(maxWidth: .infinity)
         }.sheet(isPresented: $customizingTiles) {
@@ -1264,6 +1263,7 @@ struct AliasDetail: View {
                     if style.id == RecordAction.vpn.id { RecordWireGuardBadge(entry: entry, workspace: store.wireGuardWorkspace()) { store.selectingWireGuard = entry } }
                     else if style.id == RecordAction.keePass.id { keePassAction(style, header: true) }
                 }
+                RecordTOTPBadge(entry: entry)
             }
         }
     }

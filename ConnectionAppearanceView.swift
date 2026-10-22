@@ -3,6 +3,43 @@ import AppKit
 import UniformTypeIdentifiers
 import ImageIO
 
+struct RecordRowBadgesEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var items = RecordRowBadgeSettings.defaults
+    @State private var expected = Data()
+    @State private var error: String?
+    var body: some View {
+        VStack(spacing: 0) {
+            HubSheetHeader(title: "Значки после названия записи", subtitle: "Общий набор и порядок для списка записей", icon: "tag").padding(20)
+            Divider()
+            List {
+                ForEach(items.indices, id: \.self) { index in
+                    if let kind = RecordRowBadge(rawValue: items[index].id) {
+                        HStack {
+                            Toggle(isOn: $items[index].visible) { Label(kind.title, systemImage: kind.icon) }.toggleStyle(.checkbox)
+                            Spacer()
+                            Button { items.swapAt(index, index - 1) } label: { Image(systemName: "chevron.up") }.disabled(index == 0).help("Переместить вверх").accessibilityLabel("Вверх: " + kind.title)
+                            Button { items.swapAt(index, index + 1) } label: { Image(systemName: "chevron.down") }.disabled(index == items.count - 1).help("Переместить вниз").accessibilityLabel("Вниз: " + kind.title)
+                        }.padding(.vertical, 4)
+                    }
+                }.onMove { source, destination in items.move(fromOffsets: source, toOffset: destination) }
+            }
+            Text("Значки появляются только при наличии соответствующих данных. Скрытие значка не отключает проверки доступности, сертификатов или напоминания.").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.vertical, 12)
+            if let error { Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal, 20) }
+            Divider()
+            HStack {
+                Button("По умолчанию") { items = RecordRowBadgeSettings.defaults }
+                Spacer()
+                Button("Отмена", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Сохранить") {
+                    guard (UserDefaults.standard.data(forKey: RecordRowBadgeSettings.key) ?? Data()) == expected else { error = "Настройки изменились. Открой окно заново."; return }
+                    if let data = try? JSONEncoder().encode(items) { UserDefaults.standard.set(data, forKey: RecordRowBadgeSettings.key); dismiss() }
+                }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+            }.padding(16)
+        }.frame(width: 570, height: 550).onAppear { expected = UserDefaults.standard.data(forKey: RecordRowBadgeSettings.key) ?? Data(); items = RecordRowBadgeSettings.decode(expected) }
+    }
+}
+
 
 struct ConnectionAppearanceFields: View {
     @Binding var appearance: ConnectionAppearance

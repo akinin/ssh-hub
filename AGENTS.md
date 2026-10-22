@@ -4,6 +4,11 @@
 
 Нативное приложение для macOS 14+ на Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
 
+## Изменения 3.16.1 (сборка 68): живой MFA и значки списка
+
+- The record header shows a live TOTP capsule only while unlocked and in the same record/config/profile/auth scope. Automatic Keychain reads are noninteractive; explicit copy/retry may interact. Secrets never enter tree rows or menu titles. Copy MFA revalidates scope after Keychain access, marks clipboard concealed and clears at the exact code boundary if unchanged. TOTP write notifications invalidate visible cached tokens. Record row badge preferences are global, bounded, order/visibility only; hiding never stops checks or alters data. Preserve selection/reminder coloring when splitting license/payment badges.
+
+
 ## Изменения 3.16.0 (сборка 67): MFA, сертификаты, справочник и обнаружение
 
 - RecordTOTP implements RFC6238 SHA1/256/512, Base32/otpauth TOTP only, 6/8 digits and bounded periods/secrets. Secrets live only in Keychain service totp.v1, hashed config+record account, WhenUnlockedThisDeviceOnly. RecordTOTPDraft applies on outer Save with rollback on failure; Cancel clears input. On-demand codes clear on lock/profile/disappearance; clipboard code clears at expiry if unchanged. No automatic login/form submission, JSON/backup TOTP export, or server-side enrollment. Tests use public RFC vectors and no user secrets; native QA may use only an isolated config/account with public fixture secrets.

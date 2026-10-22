@@ -16,6 +16,7 @@ import Foundation
         }
         let secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
         let token = try TOTPToken.parse(secret, digits: 8)
+        check(token.remaining(at: Date(timeIntervalSince1970: 60)) == 30 && abs(token.remaining(at: Date(timeIntervalSince1970: 89.75)) - 0.25) < 0.0001, "clipboard expires at the actual code boundary")
         check(token.secret == Data("12345678901234567890".utf8), "Base32 decoding")
         let uri = try TOTPToken.parse("otpauth://totp/Fixture?secret=" + secret + "&algorithm=SHA1&digits=8&period=30")
         check(uri == token, "otpauth parameters")

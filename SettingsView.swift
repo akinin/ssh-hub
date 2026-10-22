@@ -24,6 +24,7 @@ struct AppSettingsView: View {
     @State private var requiresApproval = false
     @State private var error: String?
     @State private var showingActionTiles = false
+    @State private var showingRowBadges = false
     @State private var customizingMenu: CustomMenuSurface?
     @State private var selectedSection = AppSettingsSection.connections
     var body: some View {
@@ -73,6 +74,7 @@ struct AppSettingsView: View {
                                 }.pickerStyle(.segmented)
                                 Text("Высота строк списка и размер плиток. Применяется сразу во всех профилях.").font(.caption).foregroundStyle(.secondary)
                                 Button("Плитки всех записей…", systemImage: "square.grid.2x2") { showingActionTiles = true }
+                                Button("Значки после названия записи…", systemImage: "tag") { showingRowBadges = true }
                                 Text("Общий порядок, цвета и набор плиток. Индивидуальные настройки записей имеют приоритет.").font(.caption).foregroundStyle(.secondary)
                             }
                             Section("Панель и меню") {
@@ -135,6 +137,7 @@ struct AppSettingsView: View {
             }.padding(16)
         }.frame(width: 820, height: 600).dismissOnOutsideClick()
             .sheet(isPresented: $showingActionTiles) { GlobalRecordActionsEditor() }
+            .sheet(isPresented: $showingRowBadges) { RecordRowBadgesEditor() }
             .sheet(item: $customizingMenu) { MenuCustomizationView(surface: $0) }
             .onAppear { refreshLoginStatus() }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refreshLoginStatus() }

@@ -66,6 +66,7 @@ private final class TreeScrollView: NSScrollView {
 struct ConnectionTreeView: NSViewRepresentable {
     @AppStorage(RecordSelectionDefaults.key) private var selectionColor = "gray"
     @AppStorage(RecordReminderDefaults.key) private var reminderStyleData = Data()
+    @AppStorage(RecordRowBadgeSettings.key) private var rowBadgeData = Data()
     @AppStorage(InterfaceDensity.key) private var densityValue = InterfaceDensity.normal.rawValue
     @EnvironmentObject var store: AliasStore
     func makeCoordinator() -> Coordinator { Coordinator(store: store) }
@@ -93,7 +94,7 @@ struct ConnectionTreeView: NSViewRepresentable {
         context.coordinator.refresh()
         return scroll
     }
-    func updateNSView(_ nsView: NSScrollView, context: Context) { _ = selectionColor; _ = reminderStyleData; context.coordinator.density = InterfaceDensity(rawValue: densityValue) ?? .normal; context.coordinator.refresh() }
+    func updateNSView(_ nsView: NSScrollView, context: Context) { _ = selectionColor; _ = reminderStyleData; _ = rowBadgeData; context.coordinator.density = InterfaceDensity(rawValue: densityValue) ?? .normal; context.coordinator.refresh() }
     @MainActor final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
         static let dragType = NSPasteboard.PasteboardType("com.olshaniki.ssh-hub.sidebar-record")
         let store: AliasStore
@@ -125,6 +126,7 @@ struct ConnectionTreeView: NSViewRepresentable {
             let nodes = ConnectionTree.build(entries: store.filtered, groups: store.groups,
                                          folders: store.query.isEmpty && store.groupFilter == "all" ? store.folders : [], order: store.sidebarOrder, title: store.title)
             var presentation = [UserDefaults.standard.string(forKey: RecordSelectionDefaults.key) ?? "gray", store.profiles.active.uuidString, store.query, store.groupFilter, density.rawValue, UserDefaults.standard.data(forKey: RecordReminderDefaults.key)?.base64EncodedString() ?? ""]
+            presentation.append(UserDefaults.standard.data(forKey: RecordRowBadgeSettings.key)?.base64EncodedString() ?? "")
             func describe(_ nodes: [ConnectionTreeNode]) {
                 for node in nodes {
                     presentation += [node.id, node.title]
@@ -220,6 +222,7 @@ struct ConnectionTreeView: NSViewRepresentable {
             }
             var views: [NSView] = [icon, text]
             var collapsible: [NSView] = []
+            var rowBadges: [RecordRowBadge: NSView] = [:]
             if let entry = item.node.entry {
                 let kind = entry.recordKind ?? .ssh
                 let badge = NSTextField(labelWithString: kind.badge)
@@ -233,10 +236,10 @@ struct ConnectionTreeView: NSViewRepresentable {
                 badge.setAccessibilityLabel("Тип записи: " + kind.title)
                 badge.translatesAutoresizingMaskIntoConstraints = false
                 badge.widthAnchor.constraint(greaterThanOrEqualToConstant: CGFloat(kind.badge.count * 6 + 8)).isActive = true
-                views.append(badge)
+                rowBadges[.recordType] = badge
                 for tag in store.featureTags[entry.favoriteID, default: []] {
                     let badge = NSImageView(); badge.image = NSImage(systemSymbolName: tag.icon, accessibilityDescription: tag.title); badge.contentTintColor = .secondaryLabelColor; badge.toolTip = tag.title
-                    badge.translatesAutoresizingMaskIntoConstraints = false; badge.widthAnchor.constraint(equalToConstant: 11).isActive = true; badge.heightAnchor.constraint(equalToConstant: 11).isActive = true; views.append(badge); collapsible.append(badge)
+                    badge.translatesAutoresizingMaskIntoConstraints = false; badge.widthAnchor.constraint(equalToConstant: 11).isActive = true; badge.heightAnchor.constraint(equalToConstant: 11).isActive = true; if let kind = RecordRowBadge(rawValue: tag.rawValue) { rowBadges[kind] = badge }; collapsible.append(badge)
                 }
             }
             if let entry = item.node.entry {
@@ -244,7 +247,7 @@ struct ConnectionTreeView: NSViewRepresentable {
                 let style = store.appearance(entry).reminderAppearance ?? RecordReminderDefaults.decode(UserDefaults.standard.data(forKey: RecordReminderDefaults.key))
                 if !notices.isEmpty, style.showIcon || style.showCount {
                     let color = RecordReminderColors.native(style.color(notices[0].level))
-                    var groups: [NSView] = []
+
                     for kind in [RecordReminderKind.license, .payment] {
                         let values = RecordReminderNotice.collect(store.appearance(entry).reminders?.filter { $0.kind == kind })
                         guard !values.isEmpty else { continue }
@@ -257,10 +260,9 @@ struct ConnectionTreeView: NSViewRepresentable {
                             image.translatesAutoresizingMaskIntoConstraints = false; image.widthAnchor.constraint(equalToConstant: 13).isActive = true; image.heightAnchor.constraint(equalToConstant: 13).isActive = true; group.addArrangedSubview(image)
                         }
                         if style.showCount { let count = NSTextField(labelWithString: String(values.count)); count.font = .monospacedDigitSystemFont(ofSize: 10, weight: .semibold); count.textColor = tint; group.addArrangedSubview(count) }
-                        group.toolTip = tooltip; group.setAccessibilityLabel(title + ": \(values.count). " + tooltip); groups.append(group)
+                        group.toolTip = tooltip; group.setAccessibilityLabel(title + ": \(values.count). " + tooltip); rowBadges[kind == .license ? .licenses : .payments] = group; cell.reminderBadges.append(group)
                     }
-                    let badge = NSStackView(views: groups); badge.spacing = 7; badge.setContentCompressionResistancePriority(.required, for: .horizontal)
-                    views.append(badge); cell.reminderTint = color; cell.reminderBadge = badge
+                    cell.reminderTint = color
                 }
             }
             if let entry = item.node.entry, store.availability.selected.contains(entry.favoriteID) {
@@ -269,7 +271,7 @@ struct ConnectionTreeView: NSViewRepresentable {
                 status.toolTip = store.availability.results[entry.favoriteID]?.detail ?? "Проверка…"
                 status.translatesAutoresizingMaskIntoConstraints = false
                 status.widthAnchor.constraint(equalToConstant: 7).isActive = true; status.heightAnchor.constraint(equalToConstant: 7).isActive = true
-                views.append(status)
+                rowBadges[.availability] = status
             }
             if let entry = item.node.entry, store.appearance(entry).checkCertificate == true {
                 let status = NSImageView(); status.image = NSImage(systemSymbolName: "checkmark.shield", accessibilityDescription: "Сертификат TLS")
@@ -278,11 +280,13 @@ struct ConnectionTreeView: NSViewRepresentable {
                 status.toolTip = result.map { $0.summary + " · " + $0.checked.formatted(date: .numeric, time: .shortened) } ?? "Сертификат ещё не проверен"
                 status.setAccessibilityLabel(status.toolTip)
                 status.translatesAutoresizingMaskIntoConstraints = false; status.widthAnchor.constraint(equalToConstant: 12).isActive = true; status.heightAnchor.constraint(equalToConstant: 12).isActive = true
-                views.append(status)
+                rowBadges[.certificate] = status
             }
+            let settings = RecordRowBadgeSettings.decode(UserDefaults.standard.data(forKey: RecordRowBadgeSettings.key))
+            views += settings.filter(\.visible).compactMap { RecordRowBadge(rawValue: $0.id).flatMap { rowBadges[$0] } }
             let stack = NSStackView(views: views); stack.orientation = .horizontal; stack.spacing = 7; stack.alignment = .centerY
             stack.setClippingResistancePriority(.defaultLow, for: .horizontal)
-            for badge in collapsible { stack.setVisibilityPriority(.detachOnlyIfNecessary, for: badge) }
+            for badge in collapsible where views.contains(where: { $0 === badge }) { stack.setVisibilityPriority(.detachOnlyIfNecessary, for: badge) }
             stack.translatesAutoresizingMaskIntoConstraints = false; icon.translatesAutoresizingMaskIntoConstraints = false
             cell.addSubview(stack); cell.imageView = icon; cell.textField = text
             let preferredTrailing = stack.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4); preferredTrailing.priority = .defaultHigh
@@ -327,7 +331,7 @@ struct ConnectionTreeView: NSViewRepresentable {
             menu.removeAllItems()
             if let outline { contextItem = outline.item(atRow: outline.clickedRow) as? TreeItem }
             func add(_ title: String, _ action: String) {
-                let symbols = ["connect": "play.circle", "sftp": "folder", "loginNotify": "bell.badge", "external": "arrow.up.forward.square", "website": "macwindow", "browser": "arrow.up.forward.square", "dashboard": "rectangle.grid.2x2", "documentation": "doc.richtext", "attachments": "paperclip", "edit": "pencil", "appearance": "photo", "group": "folder.badge.gearshape", "favorite": "star", "template": "square.stack", "duplicate": "plus.square.on.square", "copy": "doc.on.doc", "copyUsername": "person.crop.rectangle", "copyPassword": "key", "export": "square.and.arrow.up", "delete": "trash", "record": "plus", "folder": "folder.badge.plus", "licenses": "key.horizontal", "payments": "creditcard", "folderLogo": "pencil", "subfolder": "folder.badge.plus"]
+                let symbols = ["connect": "play.circle", "sftp": "folder", "loginNotify": "bell.badge", "external": "arrow.up.forward.square", "website": "macwindow", "browser": "arrow.up.forward.square", "dashboard": "rectangle.grid.2x2", "documentation": "doc.richtext", "attachments": "paperclip", "edit": "pencil", "appearance": "photo", "group": "folder.badge.gearshape", "favorite": "star", "template": "square.stack", "duplicate": "plus.square.on.square", "copy": "doc.on.doc", "copyUsername": "person.crop.rectangle", "copyPassword": "key", "copyTOTP": "lock.rotation", "export": "square.and.arrow.up", "delete": "trash", "record": "plus", "folder": "folder.badge.plus", "licenses": "key.horizontal", "payments": "creditcard", "folderLogo": "pencil", "subfolder": "folder.badge.plus"]
                 let item = NSMenuItem(title: title, action: #selector(menuAction(_:)), keyEquivalent: "")
                 item.image = NSImage(systemSymbolName: symbols[action] ?? "circle", accessibilityDescription: nil)
                 // Public macOS 27 API: .visible == 1. Keep the stable macOS 26 SDK build compatible with older systems.
@@ -346,6 +350,7 @@ struct ConnectionTreeView: NSViewRepresentable {
                     if entry.canSSH { add("Открыть SFTP", "sftp"); add("Во внешнем терминале", "external"); add("Уведомления о входе…", "loginNotify") }
                     add("Панель управления", "dashboard")
                     menu.addItem(.separator()); add("Копировать логин", "copyUsername"); add("Копировать пароль", "copyPassword")
+                    if !AppAccess.shared.locked, RecordTOTPStore.has(RecordTOTPStore.account(config: store.config.url, record: entry.favoriteID)) { add("Копировать MFA-код", "copyTOTP") }
                     menu.addItem(.separator()); add("Документация", "documentation"); add("Вложения", "attachments"); add("Лицензии…", "licenses"); add("Оплаты…", "payments"); add("Редактировать…", "edit"); add("Оформление карточки…", "appearance"); add("Переместить в папку…", "group")
                     add(store.isFavorite(entry) ? "Убрать из избранного" : "В избранное", "favorite")
                     if entry.canSSH { add("Сохранить как шаблон", "template") }
@@ -386,6 +391,7 @@ struct ConnectionTreeView: NSViewRepresentable {
                 case "copy": store.copy(entry.command)
                 case "copyUsername": store.copyCredential(entry, password: false)
                 case "copyPassword": store.copyCredential(entry, password: true)
+                case "copyTOTP": store.copyTOTP(entry)
                 case "export": store.export(entries: [entry])
                 case "keePass": store.keePassTransfer = entry
                 case "delete": store.prepareDelete(entry)

@@ -54,15 +54,11 @@ final class RecordReminderKindBadge: NSStackView {
     }
 }
 final class RecordReminderCellView: NSTableCellView {
-    var reminderBadge: NSStackView? { didSet { updateReminder() } }
+    var reminderBadges: [RecordReminderKindBadge] = [] { didSet { updateReminder() } }
     var reminderTint: NSColor? { didSet { updateReminder() } }
     override var backgroundStyle: NSView.BackgroundStyle { didSet { updateReminder() } }
     private func updateReminder() {
-        let color: NSColor = backgroundStyle == .emphasized ? .white : reminderTint ?? .secondaryLabelColor
-        for view in reminderBadge?.arrangedSubviews ?? [] {
-            if let badge = view as? RecordReminderKindBadge { badge.update(emphasized: backgroundStyle == .emphasized) }
-            else { (view as? NSTextField)?.textColor = color; (view as? NSImageView)?.contentTintColor = color }
-        }
+        for badge in reminderBadges { badge.update(emphasized: backgroundStyle == .emphasized) }
     }
 }
 
