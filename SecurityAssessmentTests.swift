@@ -16,6 +16,18 @@ import Foundation
     }
     static func main() async throws {
         let args = CommandLine.arguments
+        if args.count == 5, args[1] == "--tcp-discovery" {
+            check(args[2] == "127.0.0.1", "owned loopback only")
+            let job = Task { try await RecordTCPDiscovery.run(target: args[2], ports: args[3], seconds: 2) }
+            if args[4] == "cancel" { job.cancel() }
+            let value = try await job.value, devices = RecordDiscoveredHost.hosts(value.result)
+            if args[4] == "cancel" { check(!value.complete && devices.isEmpty, "native cancellation cleans probes") }
+            else {
+                check(value.complete && !value.denied && devices.count == 1, "native responsive host")
+                check(devices[0].ports.count == (args[4] == "open" ? 1 : 0), "open and refused ports distinguished")
+            }
+            print("PASS owned native TCP discovery " + args[4]); return
+        }
         if args.count == 5, args[1] == "--download" {
             guard let url = URL(string: args[2]), url.host == "127.0.0.1", url.scheme == "http" else { fatalError("owned loopback only") }
             let job = Task { try await SecurityIntelDownload().get(url) }
@@ -33,6 +45,10 @@ import Foundation
         defer { if !fixtureMode { try? FileManager.default.removeItem(at: root) } }
         let config = fixtureMode ? URL(fileURLWithPath: args[3]) : root.appendingPathComponent("config")
         let reports = fixtures(config: config), a = reports[0], b = reports[1]
+        check(try RecordTCPDiscovery.addresses("192.0.2.0/30") == ["192.0.2.1", "192.0.2.2"], "discovery excludes subnet and broadcast")
+        check(try RecordTCPDiscovery.addresses("192.0.2.0/31").count == 2 && RecordTCPDiscovery.addresses("192.0.2.1/32").count == 1, "point-to-point and single-host discovery")
+        check(try RecordTCPDiscovery.ports("80,22,80") == [22, 80], "bounded unique ports")
+        reject { _ = try RecordTCPDiscovery.ports("1-65535") }
         let comparison = SecurityAssessment(report: b, baseline: a, earlier: reports, reviews: [:], intelligence: [:])
         check(comparison.canResolve && comparison.rows.filter { $0.change == .resolved }.count == 1 && comparison.rows.filter { $0.change == .new }.count == 1 && comparison.rows.filter { $0.change == .repeated }.count == 1, "new/repeated/resolved comparison")
         check(comparison.rows.first { $0.change == .resolved }?.workTitle == "Закрыто проверкой" && comparison.rows.first { $0.change == .resolved }?.isOpen == false, "resolved finding is not open work")
@@ -89,6 +105,14 @@ import Foundation
         let ports = [NmapPort(address: "127.0.0.1", port: "8080", proto: "tcp", state: "open", service: "http"), NmapPort(address: "192.0.2.1", port: "80", proto: "tcp", state: "closed", service: "http")]
         let result = NmapResult(ports: ports, summary: "fixture", hosts: [NmapHost(address: "192.0.2.1", state: "up")])
         let devices = RecordDiscoveredHost.hosts(result); check(devices.count == 1 && devices[0].address == "127.0.0.1", "assumed-up closed host never discovered")
+        let closedXML = #"<nmaprun><host><status state="up" reason="user-set"/><address addr="192.0.2.1" addrtype="ipv4"/><ports><extraports state="closed" count="12"><extrareasons reason="conn-refused" count="12"/></extraports></ports></host><runstats><finished exit="success"/></runstats></nmaprun>"#
+        let responsive = RecordDiscoveredHost.hosts(try NmapXML.parse(Data(closedXML.utf8)))
+        check(responsive.count == 1 && responsive[0].ports.isEmpty, "closed ports TCP refusal proves host response")
+        let silentXML = closedXML.replacingOccurrences(of: "conn-refused", with: "no-response").replacingOccurrences(of: "closed", with: "filtered")
+        check(RecordDiscoveredHost.hosts(try NmapXML.parse(Data(silentXML.utf8))).isEmpty, "silent assumed-up host stays excluded")
+        var discoveryOptions = NmapSettings(); discoveryOptions.discoverFirst = true
+        let scoped = NmapRequest(target: "127.0.0.1", profile: .custom, ports: "54321", options: discoveryOptions, discoveryPorts: "54321")
+        check(scoped.validation == nil && scoped.arguments.contains("-PS54321") && !scoped.arguments.contains("-Pn"), "discovery probes only selected ports")
         let seed = devices[0].seed(kind: .web)
         check(seed.port == "8080" && seed.user.isEmpty && seed.website.hasPrefix("http://127.0.0.1:8080"), "discovery creates public draft without credentials")
         let custom = RecordDiscoveredHost(address: "127.0.0.1", name: "", ports: [NmapPort(address: "127.0.0.1", port: "2222", proto: "tcp", state: "open", service: "ssh")])

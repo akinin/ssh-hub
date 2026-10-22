@@ -41,7 +41,8 @@ struct RecordDiscoveredHost: Identifiable {
     var id: String { address }
     static func hosts(_ result: NmapResult) -> [Self] {
         // -Pn assumes hosts are up; only an actually open TCP port is evidence.
-        let addresses = Set(result.ports.filter { $0.state == "open" }.map(\.address))
+        let addresses = Set(result.ports.filter { $0.state == "open" || ["conn-refused", "reset", "syn-ack"].contains($0.reason) }.map(\.address))
+            .union(result.hosts.filter { $0.response != nil || ($0.state == "up" && ["echo-reply", "arp-response", "syn-ack", "conn-refused", "reset"].contains($0.reason)) }.map(\.address))
         return addresses.sorted().map { address in
             Self(address: address, name: result.hosts.first { $0.address == address }?.name ?? "", ports: result.ports.filter { $0.address == address && $0.state == "open" })
         }

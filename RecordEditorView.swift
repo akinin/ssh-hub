@@ -2,10 +2,10 @@ import SwiftUI
 import AppKit
 
 enum RecordEditorSection: String, Identifiable {
-    case general, connection, key, availability, commands, licenses, payments, preview
+    case general, connection, key, mfa, certificates, availability, commands, licenses, payments, preview
     var id: String { rawValue }
-    var title: String { switch self { case .licenses: return "Лицензии"; case .payments: return "Оплаты"; case .general: return "Общие"; case .connection: return "Подключение"; case .key: return "SSH-ключи"; case .availability: return "Доступность"; case .commands: return "Команды"; case .preview: return "SSH-конфиг" } }
-    var icon: String { switch self { case .licenses: return "key.horizontal"; case .payments: return "creditcard"; case .general: return "slider.horizontal.3"; case .connection: return "cable.connector"; case .key: return "key"; case .availability: return "waveform.path.ecg"; case .commands: return "terminal"; case .preview: return "doc.text" } }
+    var title: String { switch self { case .mfa: return "MFA"; case .certificates: return "Сертификаты"; case .licenses: return "Лицензии"; case .payments: return "Оплаты"; case .general: return "Общие"; case .connection: return "Подключение"; case .key: return "SSH-ключи"; case .availability: return "Доступность"; case .commands: return "Команды"; case .preview: return "SSH-конфиг" } }
+    var icon: String { switch self { case .mfa: return "lock.rotation"; case .certificates: return "checkmark.shield"; case .licenses: return "key.horizontal"; case .payments: return "creditcard"; case .general: return "slider.horizontal.3"; case .connection: return "cable.connector"; case .key: return "key"; case .availability: return "waveform.path.ecg"; case .commands: return "terminal"; case .preview: return "doc.text" } }
 }
 struct RecordAddressFields: View {
     @Binding var address: String
@@ -43,6 +43,7 @@ struct RecordAddressFields: View {
     }
 }
 struct RecordSSHConnectionFields: View {
+    @EnvironmentObject var store: AliasStore
     @Binding var host: String
     @Binding var appearance: ConnectionAppearance
     @Binding var user: String
@@ -67,8 +68,27 @@ struct RecordSSHConnectionFields: View {
             if reusePassword && !removePassword && !usesExternalCredentials { Button("Удалить сохранённый пароль") { removePassword = true } }
             Text("Сохранение пароля независимо от способа входа. Пароль приватного ключа вводится отдельно.").font(.caption).foregroundStyle(.secondary)
             RecordFieldRow("Порт") { TextField("22", text: $port).accessibilityIdentifier(identifier + "Port") }
-            RecordFieldRow("ProxyJump") { TextField("user@host:port или алиас", text: $jump).accessibilityIdentifier(identifier + "Jump") }
+            SSHJumpPicker(jump: $jump, entries: store.rawAliases.filter { $0.host != host || $0.user != user || $0.port != port })
         }.textFieldStyle(.roundedBorder)
+    }
+}
+struct SSHJumpPicker: View {
+    @Binding var jump: String
+    var entries: [SSHAlias]
+    private var names: [String] { Array(Set(entries.filter { $0.canSSH && SSHConfig.matches($0.name, "^[A-Za-z0-9_.-]+$") }.map(\.name))).sorted() }
+    private var selection: Binding<String> { Binding(get: { jump.isEmpty ? "" : names.contains(jump) ? "alias:" + jump : "manual" }, set: { if $0.hasPrefix("alias:") { jump = String($0.dropFirst(6)) } else if $0.isEmpty { jump = "" } else if names.contains(jump) || jump.isEmpty { jump = " " } }) }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            RecordFieldRow("SSH-шлюз") {
+                Picker("SSH-шлюз", selection: selection) {
+                    Text("Без SSH-шлюза").tag("")
+                    ForEach(names, id: \.self) { Text($0).tag("alias:" + $0) }
+                    Text("Указать вручную…").tag("manual")
+                }.labelsHidden()
+            }
+            if selection.wrappedValue == "manual" { RecordFieldRow("ProxyJump") { TextField("user@host:port или цепочка алиасов", text: $jump).textFieldStyle(.roundedBorder) } }
+            if !jump.trimmingCharacters(in: .whitespaces).isEmpty { Text("Шлюз использует параметры своего SSH-алиаса. Для выбора записи SSH Hub включи у неё «SSH-алиас в конфиге».").font(.caption).foregroundStyle(.secondary) }
+        }
     }
 }
 struct RecordSSHAliasFields: View {
@@ -224,6 +244,7 @@ struct RecordEditorView: View {
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) private var dismiss
     @StateObject private var licenseFiles = LicenseFileDrafts()
+    @StateObject private var totp = RecordTOTPDraft()
     @State private var visualWebLogin = false
     @State private var advancedWebLogin = false
     @State private var credentialEdit = RecordCredentialEdit()
@@ -265,7 +286,7 @@ struct RecordEditorView: View {
     }
     private var usesSharedCredential: Bool { credentialEdit.choice.isExternal }
     private var validation: String? {
-        if !ready { return "Загрузка записи…" }
+        if !ready { return "Загрузка записи…" }; if let error = totp.validation { return error }
         if kind == .ssh || kind.hasPassword || kind.isWeb, let issue = credentialEdit.validation(vault: store.credentialVault()) { return issue }
         if let error = appearance.validation ?? candidate.validation { return error }
         if !AliasTransfer.validGroup(group) { return "Путь папки — до 40 символов, без переносов строк." }
@@ -280,7 +301,7 @@ struct RecordEditorView: View {
         if kind == .ssh { sections.append(.key) }
         if [.ssh, .rdp, .vnc, .website, .web, .telnet, .ftp, .ftps, .webdav, .mosh, .adb].contains(kind) { sections.append(.availability) }
         if kind.isConsole { sections.append(.commands) }
-        sections += [.licenses, .payments]
+        sections += [.mfa, .licenses, .payments]; if kind.isWeb { sections.append(.certificates) }
         return sections
     }
     var body: some View {
@@ -308,6 +329,8 @@ struct RecordEditorView: View {
                 if [.rdp, .vnc].contains(kind) || kind.isWeb { tunnelFields }
                 if [.ssh, .rdp, .vnc, .web, .website, .telnet, .ftp, .ftps, .webdav].contains(kind) { WireGuardProfilePicker(selected: Binding(get: { record.transport?.wireGuardID }, set: { value in var settings = record.transport ?? ConnectionSettings(); settings.wireGuardID = value; record.transport = settings }), workspace: store.wireGuardWorkspace()) }
             case .key: RecordSSHKeyFields(identity: $record.identity, entry: installationEntry, password: usesSharedCredential ? "" : password).environmentObject(store)
+            case .mfa: RecordTOTPFields(draft: totp, entry: savedEntry, config: store.config.url)
+            case .certificates: RecordCertificateFields(appearance: $appearance, entry: savedEntry, monitor: store.certificates)
             case .availability: availabilityFields
             case .commands:
                 if let entry = savedEntry { ConsoleCommandsSettingsLink(entry: entry) }
@@ -323,7 +346,7 @@ struct RecordEditorView: View {
                 Button("Отмена", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
                 Button(original == nil ? "Создать запись" : "Сохранить") { save() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(validation != nil)
             }
-        }.dismissOnOutsideClick().onAppear { load() }.onDisappear { password = "" }
+        }.dismissOnOutsideClick().onAppear { load() }.onDisappear { password = ""; totp.clear() }
         .sheet(isPresented: $visualWebLogin) {
             if let url = URL(string: target.website ?? ""), WebLoginOrigin(url) != nil {
                 WebLoginPickerView(entry: target, config: store.config.url, gateway: store.profileEntries.first { $0.favoriteID == target.transport?.tunnel?.sshID && $0.canSSH }) { settings.wrappedValue.webLoginSelectors = $0 }
@@ -503,9 +526,11 @@ struct RecordEditorView: View {
         var stagedTemplateURLs: [URL] = []
         var recordCommitted = false
         var ssh: ConfigChange?, credentialChanged = false, previousPassword: String?
+        var undoTOTP: (() throws -> Void)?
         var bindingChange: CredentialBindingChange?
         do {
             try licenseFiles.prepare(appearance.reminders)
+            undoTOTP = try totp.prepare(target: target, original: savedEntry, config: store.config.url)
             try beforeSave?()
             if kind == .ssh || kind.hasPassword || kind.isWeb { bindingChange = try store.applyCredentialEdit(credentialEdit, target: target.favoriteID) }
             let changePassword = !usesSharedCredential && ( removePassword || ((kind.isWeb || kind == .ssh || kind.hasPassword) && ((!keepPassword && reusePassword) || (keepPassword && !password.isEmpty))))
@@ -533,6 +558,7 @@ struct RecordEditorView: View {
             licenseFiles.finish(); dismiss()
         } catch {
             var detail = error.localizedDescription
+            if !recordCommitted { do { try undoTOTP?() } catch { detail += "\nНе удалось откатить MFA: " + error.localizedDescription } }
             if !recordCommitted { for url in stagedTemplateURLs { try? FileManager.default.removeItem(at: url) } }
             if let ssh { do { _ = try store.config.undo(ssh) } catch { detail += "\nНе удалось откатить SSH-конфиг: " + error.localizedDescription } }
             if credentialChanged { do { try SSHPasswordStore.set(previousPassword, for: target, config: store.config.url) } catch { detail += "\nНе удалось восстановить пароль в Связке ключей." } }

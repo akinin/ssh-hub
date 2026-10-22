@@ -93,6 +93,13 @@ enum ToolkitText {
         return (resolver.isEmpty ? [] : ["@" + resolver]) + [host, type, "+time=3", "+tries=1", "+noall", "+comments", "+answer", "+stats"]
     }
 }
+struct TLSCertificateSnapshot: Equatable {
+    var trusted: Bool
+    var expires: Date?
+    var subject: String
+    var fingerprint: String
+    var warning: Bool { !trusted || expires == nil || expires!.timeIntervalSinceNow < 30 * 86400 }
+}
 final class TLSInspector: @unchecked Sendable {
     private static func readable(_ value: Any) -> String {
         if let entries = value as? [Any] { return entries.map(readable).filter { !$0.isEmpty }.joined(separator: "; ") }
@@ -108,9 +115,19 @@ final class TLSInspector: @unchecked Sendable {
     private var connection: NWConnection?
     private var continuation: CheckedContinuation<String, Error>?
     private var certificateReport: String?
+    private var certificateSnapshot: TLSCertificateSnapshot?
+    var snapshot: TLSCertificateSnapshot? { lock.lock(); defer { lock.unlock() }; return certificateSnapshot }
     private var cancelled = false
     func cancel() { lock.lock(); cancelled = true; lock.unlock(); finish(.failure(CancellationError())) }
-    func inspect(host: String, port: Int, anchors: [SecCertificate]? = nil) async throws -> String {
+    func inspect(host: String, port: Int, anchors: [SecCertificate]? = nil, proxyPort: Int? = nil) async throws -> String {
+        if let proxyPort {
+            let bridge = TLSSOCKSBridge(); defer { bridge.stop() }
+            let localPort = try await bridge.start(host: host, port: port, proxyPort: proxyPort)
+            return try await inspectTransport(host: host, port: port, anchors: anchors, localPort: localPort)
+        }
+        return try await inspectTransport(host: host, port: port, anchors: anchors)
+    }
+    private func inspectTransport(host: String, port: Int, anchors: [SecCertificate]?, localPort: Int? = nil) async throws -> String {
         guard ToolkitText.hostValid(host), (1...65535).contains(port) else { throw ConfigError.message("Проверь имя TLS-сервера и порт.") }
         return try await withTaskCancellationHandler(operation: { try await withCheckedThrowingContinuation { continuation in
             let tls = NWProtocolTLS.Options()
@@ -123,8 +140,10 @@ final class TLSInspector: @unchecked Sendable {
                 var error: CFError?; let trusted = SecTrustEvaluateWithError(reference, &error)
                 let certificates = (SecTrustCopyCertificateChain(reference) as? [SecCertificate]) ?? []
                 var rows = ["TLS · \(host):\(port)", trusted ? "Доверие: подтверждено системой; имя сервера совпадает" : "Доверие: ошибка — \(error?.localizedDescription ?? "неизвестная причина")", "Сертификатов в цепочке: \(certificates.count)"]
+                var snapshot = TLSCertificateSnapshot(trusted: trusted, expires: nil, subject: "", fingerprint: "")
                 for (index, certificate) in certificates.enumerated() {
                     let bytes = SecCertificateCopyData(certificate) as Data
+                    if index == 0 { snapshot.subject = SecCertificateCopySubjectSummary(certificate) as String? ?? "Без имени"; snapshot.fingerprint = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined() }
                     rows.append("\n\(index + 1). \(SecCertificateCopySubjectSummary(certificate) as String? ?? "Без имени")")
                     rows.append("SHA-256: " + SHA256.hash(data: bytes).map { String(format: "%02X", $0) }.joined(separator: ":"))
                     let keys = [kSecOIDX509V1IssuerName, kSecOIDX509V1SubjectName, kSecOIDX509V1ValidityNotBefore, kSecOIDX509V1ValidityNotAfter, kSecOIDSubjectAltName]
@@ -133,6 +152,7 @@ final class TLSInspector: @unchecked Sendable {
                             guard let property = values[key] as? [CFString: Any], let value = property[kSecPropertyKeyValue] else { continue }
                             if let seconds = value as? NSNumber, key == kSecOIDX509V1ValidityNotAfter || key == kSecOIDX509V1ValidityNotBefore {
                                 let date = Date(timeIntervalSinceReferenceDate: seconds.doubleValue)
+                                if index == 0, key == kSecOIDX509V1ValidityNotAfter { snapshot.expires = date }
                                 rows.append("\(key == kSecOIDX509V1ValidityNotAfter ? "Действителен до" : "Действителен с"): \(date.formatted())")
                                 if key == kSecOIDX509V1ValidityNotAfter { rows.append("До истечения: \(Int(ceil(date.timeIntervalSinceNow / 86400))) дней" + (date.timeIntervalSinceNow < 30 * 86400 ? " · требуется внимание" : "")) }
                             } else {
@@ -142,10 +162,12 @@ final class TLSInspector: @unchecked Sendable {
                         }
                     }
                 }
-                self.lock.lock(); self.certificateReport = rows.joined(separator: "\n"); self.lock.unlock()
+                self.lock.lock(); self.certificateReport = rows.joined(separator: "\n"); self.certificateSnapshot = snapshot; self.lock.unlock()
                 complete(trusted) // Inspection never accepts an untrusted certificate and sends no application data.
             }, queue)
-            let connection = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: UInt16(port))!, using: NWParameters(tls: tls, tcp: NWProtocolTCP.Options()))
+            let parameters = NWParameters(tls: tls, tcp: NWProtocolTCP.Options())
+            if localPort != nil { parameters.preferNoProxies = true }
+            let connection = NWConnection(host: NWEndpoint.Host(localPort == nil ? host : "127.0.0.1"), port: NWEndpoint.Port(rawValue: UInt16(localPort ?? port))!, using: parameters)
             lock.lock(); if cancelled { lock.unlock(); continuation.resume(throwing: CancellationError()); return }; self.continuation = continuation; self.connection = connection; lock.unlock()
             connection.stateUpdateHandler = { [weak self] state in
                 guard let self else { return }; self.lock.lock(); let report = self.certificateReport; self.lock.unlock()

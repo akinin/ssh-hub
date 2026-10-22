@@ -17,13 +17,18 @@ import AppKit
     @Published var status = ""
     @Published var error: String?
     @Published var executable: URL?
+    @Published var networkDenied = false
     private var worker: NmapRunner?
     private var task: Task<Void, Never>?
     private var timer: Timer?
     private var generation = UUID()
     var request: NmapRequest {
-        var options = NmapSettings(); options.hostTimeout = 15; options.totalTimeout = 180
-        return NmapRequest(target: target, profile: .custom, ports: ports, services: versions, options: options)
+        var options = NmapSettings(); options.hostTimeout = 45; options.totalTimeout = 180; options.discoverFirst = true
+        return NmapRequest(target: target, profile: .custom, ports: ports, services: versions, options: options, discoveryPorts: ports)
+    }
+    var validation: String? {
+        if let validation = request.validation { return validation }
+        do { _ = try RecordTCPDiscovery.ports(ports); return nil } catch { return error.localizedDescription }
     }
     var host: RecordDiscoveredHost? { hosts.first { $0.id == selected } }
     func resetResults() { if task == nil { hosts = []; selected = nil; status = ""; error = nil } }
@@ -36,19 +41,40 @@ import AppKit
         if clear { generation = UUID(); hosts = []; selected = nil; timer?.invalidate(); timer = nil }
     }
     func start(authorized: @escaping () -> Bool) {
-        guard task == nil, let executable, request.validation == nil, authorized() else { return }
-        let request = request, worker = NmapRunner(), token = UUID(); generation = token; self.worker = worker
-        running = true; hosts = []; selected = nil; error = nil; status = "Поиск устройств…"
+        guard task == nil, validation == nil, authorized(), !versions || executable != nil else { return }
+        let request = request, token = UUID(), start = Date(), executable = executable; generation = token
+        running = true; hosts = []; selected = nil; error = nil; networkDenied = false; status = "Поиск устройств…"
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in MainActor.assumeIsolated { if !authorized() { self?.stop(clear: true) } } }
         task = Task {
             defer { self.worker = nil; task = nil; running = false; timer?.invalidate(); timer = nil }
             do {
-                let result = try await Task.detached { try worker.run(executable: executable, request: request).0 }.value
+                let result = try await RecordTCPDiscovery.run(target: request.target, ports: request.ports, seconds: request.services ? 90 : 180)
                 guard generation == token, authorized() else { return }
-                hosts = RecordDiscoveredHost.hosts(result); status = "Найдено устройств: \(hosts.count). Обнаружение по выбранным TCP-портам может пропустить устройства."
+                hosts = RecordDiscoveredHost.hosts(result.result)
+                if result.denied {
+                    networkDenied = true; error = "macOS запретила доступ к локальной сети. Разреши доступ SSH Hub в «Системные настройки → Конфиденциальность и безопасность → Локальная сеть» и повтори поиск."
+                    status = "Поиск ограничен разрешением macOS."; return
+                }
+                status = "Найдено устройств: \(hosts.count)." + (result.complete ? "" : " Поиск не завершён; доступные результаты сохранены.")
+                guard request.services, let executable, !hosts.isEmpty, !Task.isCancelled else { return }
+                let addresses = hosts.map(\.address); var detailed = 0
+                for offset in stride(from: 0, to: addresses.count, by: 32) {
+                    try Task.checkCancellation()
+                    let remaining = 180 - Date().timeIntervalSince(start); guard remaining > 0 else { break }
+                    var next = request; next.target = addresses[offset..<min(offset + 32, addresses.count)].joined(separator: ","); next.options.discoverFirst = false
+                    let worker = NmapRunner(); self.worker = worker
+                    status = "Найдено устройств: \(hosts.count). Определение версий сервисов…"
+                    let scan = next
+                    let value = try await Task.detached { try worker.run(executable: executable, request: scan, timeout: remaining).0 }.value
+                    guard generation == token, authorized() else { return }
+                    let metadata = RecordDiscoveredHost.hosts(value)
+                    for index in hosts.indices {
+                        if let found = metadata.first(where: { $0.address == hosts[index].address }), !found.ports.isEmpty { hosts[index].ports = found.ports; hosts[index].name = found.name; detailed += 1 }
+                    }
+                }
+                status = "Найдено устройств: \(hosts.count). Версии проверены для \(detailed)." + (detailed == 0 ? " Nmap не получил ответы; базовые TCP-результаты сохранены." : "")
             } catch {
                 guard generation == token, authorized() else { return }
-                if let partial = worker.partial { hosts = RecordDiscoveredHost.hosts(partial) }
                 status = "Поиск не завершён. Доступные результаты сохранены."; self.error = error.localizedDescription
             }
         }
@@ -68,22 +94,23 @@ struct RecordDiscoveryView: View {
             }.disabled(model.running)
             HStack { Text("Порты"); TextField("Например 22,80,443,8000-8100", text: $model.ports).textFieldStyle(.roundedBorder) }.disabled(model.running)
             HStack {
-                Toggle("Определять версии сервисов", isOn: $model.versions).disabled(model.running)
+                Toggle("Определять версии сервисов через Nmap", isOn: $model.versions).disabled(model.running || model.executable == nil)
                 Spacer()
                 if model.running { ProgressView().controlSize(.small); Button("Остановить") { model.stop() } }
-                else { Button("Сканировать") { start() }.buttonStyle(.borderedProminent).disabled(model.executable == nil || model.request.validation != nil) }
+                else { Button("Сканировать") { start() }.buttonStyle(.borderedProminent).disabled(model.validation != nil || (model.versions && model.executable == nil)) }
             }
             if model.executable == nil {
-                HStack { Text("Для поиска нужен установленный Nmap."); Button("Выбрать Nmap…") { chooseExecutable() }; Link("Установка", destination: URL(string: "https://nmap.org/download.html")!) }.font(.caption)
+                HStack { Text("Базовый поиск работает без Nmap. Для версий сервисов нужен Nmap."); Button("Выбрать Nmap…") { chooseExecutable() }; Link("Установка", destination: URL(string: "https://nmap.org/download.html")!) }.font(.caption)
             }
-            if let error = model.request.validation, !model.target.isEmpty { Text(error).font(.caption).foregroundStyle(.orange) }
-            Text("Проверяются выбранные TCP-порты с этого Mac, до 4096 адресов и 3 минут. Запуск вручную; пароль и SSH-ключи не используются.").font(.caption).foregroundStyle(.secondary)
+            if let error = model.validation, !model.target.isEmpty { Text(error).font(.caption).foregroundStyle(.orange) }
+            Text("Проверяются выбранные TCP-порты с этого Mac: до 4096 адресов, 256 портов и 3 минут, до 64 одновременных проб. Ответ закрытого порта тоже подтверждает хост. Пароль и SSH-ключи не используются.").font(.caption).foregroundStyle(.secondary)
             if !model.status.isEmpty { Text(model.status).font(.caption) }
             if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).lineLimit(2) }
+            if model.networkDenied { Button("Открыть настройки локальной сети") { if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork") { NSWorkspace.shared.open(url) } } }
             Table(model.hosts, selection: $model.selected) {
                 TableColumn("Адрес", value: \.address)
                 TableColumn("Имя", value: \.name)
-                TableColumn("Открытые порты") { Text($0.ports.map(\.port).joined(separator: ", ")) }
+                TableColumn("Открытые порты") { Text($0.ports.isEmpty ? "Нет среди проверенных" : $0.ports.map(\.port).joined(separator: ", ")) }
             }
             HStack {
                 Picker("Тип записи", selection: $model.kind) { ForEach([RecordKind.ssh, .website, .web, .rdp, .vnc, .ftp, .telnet], id: \.self) { Text($0.title).tag($0) } }.frame(maxWidth: 320)

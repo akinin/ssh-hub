@@ -24,7 +24,14 @@ enum WebLoginForm {
     static let script = #"""
     if (window !== window.top || location.origin !== origin) return 'origin';
     const visible = e => e && (!e.disabled || selectors !== null && validButton(e)) && !e.readOnly && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && getComputedStyle(e).display !== 'none';
-    const roleButton = e => e instanceof HTMLElement && !e.matches('input,button,a,[href]') && !e.closest('button,a[href]') && e.getAttribute('role') === 'button';
+    const roleButton = e => {
+      if (!(e instanceof HTMLElement) || e.matches('input,button') || e.getAttribute('role') !== 'button') return false;
+      if (e instanceof HTMLAnchorElement) {
+        const href = (e.getAttribute('href') || '').toLowerCase().replace(/\s+/g,'');
+        return ['', '#', 'javascript:;', 'javascript:void(0)', 'javascript:void(0);'].includes(href) && !e.parentElement?.closest('button,a[href]');
+      }
+      return !e.matches('[href]') && !e.closest('button,a[href]');
+    };
     const validButton = e => roleButton(e) || (e instanceof HTMLButtonElement || e instanceof HTMLInputElement) && ['submit','button'].includes(e.type);
     const jsButton = e => roleButton(e) || e.type === 'button';
     const owner = e => roleButton(e) ? e.closest('form') : e.form;

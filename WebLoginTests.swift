@@ -99,6 +99,28 @@ import WebKit
         try await wait { scriptedRuntime.view.title == "Scripted success" }
         try check(scriptedReads == 1 && scriptedRuntime.view.url?.path == "/scripted-form" && scriptedRuntime.view.url?.query == nil, "JS handler called once with reactive button enablement and no native GET")
         scriptedRuntime.stop(); scriptedWindow.close()
+        var anchorReads = 0
+        let anchorSetup = WebPageModel(entry: entry(base + "/anchor-form"), config: config, setupOnly: true, credentialReader: { _,_ in anchorReads += 1; return (user, password) })
+        let anchorWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 500), styleMask: [.titled], backing: .buffered, defer: false)
+        anchorWindow.isReleasedWhenClosed = false; anchorWindow.contentView = anchorSetup.view
+        let anchorPicker = WebLoginPickerModel(web: anchorSetup, origin: URL(string: base)!)
+        anchorSetup.start(); anchorPicker.start()
+        try await wait { anchorSetup.view.url?.path == "/anchor-form" && !anchorSetup.view.isLoading }
+        for (role, selector) in [("username", "#account"), ("password", "#credential"), ("submit", "#enter-inner")] {
+            _ = try await WebLoginPickerScript.run(in: anchorSetup.view, origin: URL(string: base)!, role: role)
+            _ = try await anchorSetup.view.callAsyncJavaScript("document.querySelector(selector).dispatchEvent(new MouseEvent('pointerdown',{bubbles:true,cancelable:true}));if(role!=='submit')document.querySelector(selector).click();", arguments: ["selector": selector, "role": role], in: nil, contentWorld: .defaultClient)
+        }
+        let anchorChoice = await anchorPicker.check()
+        try check(anchorChoice == custom && anchorReads == 0 && anchorPicker.canApply, "nested ExtJS anchor text selects its disabled role=button without reading credentials")
+        let anchorUntouched = try await anchorSetup.view.callAsyncJavaScript("return [...document.querySelectorAll('input')].every(e=>e.value==='');", arguments: [:], in: nil, contentWorld: .defaultClient)
+        try check(anchorUntouched as? Bool == true, "ExtJS setup never fills fields")
+        anchorPicker.close()
+        var anchorEntry = entry(base + "/anchor-form"); anchorEntry.transport?.webLoginSelectors = anchorChoice
+        let anchorRuntime = WebPageModel(entry: anchorEntry, config: config, credentialReader: { _,_ in anchorReads += 1; return (user, password) })
+        anchorWindow.contentView = anchorRuntime.view; anchorRuntime.start()
+        try await wait { anchorRuntime.view.title == "Anchor success" }
+        try check(anchorReads == 1 && anchorRuntime.view.url?.query == nil, "ExtJS role anchor uses explicit handler after reactive enablement")
+        anchorRuntime.stop(); anchorWindow.close()
         var stepSetupReads = 0
         let stepSetup = WebPageModel(entry: entry(base + "/two"), config: config, setupOnly: true, credentialReader: { _,_ in stepSetupReads += 1; return (user, password) })
         setupWindow.contentView = stepSetup.view
@@ -221,6 +243,12 @@ import WebKit
             try check(status == expected, "second step preserves form guards " + expected)
         }
         let externalRole = #"<form id="credentials"><input id="account"><input id="credential" type="password"></form><div role="button" id="enter"><span>Войти</span></div>"#
+        for href in ["", "#", "javascript:;", "javascript:void(0)", "javascript:void(0);"] {
+            let anchor = externalRole.replacingOccurrences(of: "<div role=", with: "<a href='" + href + "' role=").replacingOccurrences(of: "</div>", with: "</a>")
+            _ = try await view.callAsyncJavaScript("document.body.innerHTML=html;", arguments: ["html": anchor], in: nil, contentWorld: .defaultClient)
+            let anchorStatus = try await WebLoginForm.run(in: view, origin: URL(string: base)!, probe: true, selectors: custom)
+            try check(anchorStatus == "ready", "safe explicit role anchor")
+        }
         for (html, expected) in [(externalRole, "ready"), (externalRole.replacingOccurrences(of: "<div role=", with: "<a href='/submit' role=").replacingOccurrences(of: "</div>", with: "</a>"), "manual"), (externalRole.replacingOccurrences(of: "<div role=", with: "<form id='other'><div role=") + "</form>", "manual"), (externalRole.replacingOccurrences(of: "id=\"credentials\"", with: "id=\"credentials\" action=\"" + other + "/submit\""), "origin"), (externalRole.replacingOccurrences(of: "</form>", with: "<input autocomplete='one-time-code'></form>"), "manual")] {
             _ = try await view.callAsyncJavaScript("document.body.innerHTML=html;", arguments: ["html": html], in: nil, contentWorld: .defaultClient)
             let result = try await WebLoginForm.run(in: view, origin: URL(string: base)!, probe: true, selectors: custom)

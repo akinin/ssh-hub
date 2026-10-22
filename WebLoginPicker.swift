@@ -11,7 +11,7 @@ enum WebLoginPickerScript {
         if (!window.__sshHubPickerEnabled) return;
         if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;
         e.preventDefault(); e.stopImmediatePropagation();
-        if (e.type === 'click' || e.type === 'pointerdown' && e.target instanceof Element && e.target.closest('button:disabled,input[type=submit]:disabled,input[type=button]:disabled')) window.__sshHubLoginPicker?.choose?.(e);
+        if (e.type === 'click' || e.type === 'pointerdown' && e.target instanceof Element && e.target.closest('button:disabled,input[type=submit]:disabled,input[type=button]:disabled,[role=button][aria-disabled=true]')) window.__sshHubLoginPicker?.choose?.(e);
       };
       for (const type of ['pointerdown','mousedown','click','submit','keydown']) window.addEventListener(type,block,true);
     })();
@@ -45,6 +45,14 @@ enum WebLoginPickerScript {
         }
         return null;
       };
+      const roleButton = e => {
+      if (!(e instanceof HTMLElement) || e.matches('input,button') || e.getAttribute('role') !== 'button') return false;
+      if (e instanceof HTMLAnchorElement) {
+        const href = (e.getAttribute('href') || '').toLowerCase().replace(/\s+/g,'');
+        return ['', '#', 'javascript:;', 'javascript:void(0)', 'javascript:void(0);'].includes(href) && !e.parentElement?.closest('button,a[href]');
+      }
+      return !e.matches('[href]') && !e.closest('button,a[href]');
+    };
       const visible = e => e?.isConnected && (!e.disabled || e.matches('button,input[type=submit],input[type=button],[role=button]')) && !e.readOnly && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && getComputedStyle(e).display !== 'none';
       state.valid = () => (state.twoStep ? (state.role==='username' || state.role==='next' ? ['username','next'] : ['password','submit']) : ['username','password','submit']).every(role=>visible(nodes[role]) && unique(selectors[role],nodes[role]));
       state.draw = () => {
@@ -60,7 +68,7 @@ enum WebLoginPickerScript {
       const choose = e => {
         block(e); const node = e.target instanceof Element ? e.target.closest('input,button,[role=button]') : null;
         const role=state.role;
-        const valid = visible(node) && (role==='password' ? node instanceof HTMLInputElement && node.type==='password' : role==='username' ? node instanceof HTMLInputElement && ['text','email','tel'].includes(node.type) : ((node instanceof HTMLButtonElement || node instanceof HTMLInputElement) && ['submit','button'].includes(node.type) || node instanceof HTMLElement && !node.matches('input,button,a,[href]') && !node.closest('button,a[href]') && node.getAttribute('role') === 'button'));
+        const valid = visible(node) && (role==='password' ? node instanceof HTMLInputElement && node.type==='password' : role==='username' ? node instanceof HTMLInputElement && ['text','email','tel'].includes(node.type) : ((node instanceof HTMLButtonElement || node instanceof HTMLInputElement) && ['submit','button'].includes(node.type) || roleButton(node)));
         if (!valid) { state.error='type'; return; }
         const selector=locator(node); if (!selector) { state.error='selector'; return; }
         if (Object.entries(nodes).some(([r,n])=>r!==role && n===node)) { state.error='duplicate'; return; }

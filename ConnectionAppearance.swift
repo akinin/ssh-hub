@@ -5,12 +5,13 @@ struct ConnectionAppearance: Codable, Equatable {
     var name = ""
     var logo: Data?
     var addresses: RecordAddressPair? = nil
+    var checkCertificate: Bool? = nil
     var actionTiles: [RecordActionStyle]? = nil
     var pinnedFields: [String]? = nil
     var reminders: [RecordReminder]? = nil
     var reminderAppearance: RecordReminderAppearance? = nil
     var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
-    var isEmpty: Bool { trimmedName.isEmpty && logo == nil && addresses == nil && (actionTiles?.isEmpty != false) && pinnedFields == nil && (reminders?.isEmpty != false) && reminderAppearance == nil }
+    var isEmpty: Bool { trimmedName.isEmpty && logo == nil && addresses == nil && checkCertificate != true && (actionTiles?.isEmpty != false) && pinnedFields == nil && (reminders?.isEmpty != false) && reminderAppearance == nil }
     func title(fallback: String) -> String { trimmedName.isEmpty ? fallback : trimmedName }
     var validation: String? {
         if name.count > 80 || name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) {

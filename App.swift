@@ -78,6 +78,7 @@ import ConsoleSupport
     let documentation = DocumentationWorkspace()
     let savedCommands = SavedCommandsWorkspace()
     let availability = AvailabilityMonitor()
+    let certificates = RecordCertificateMonitor()
     @Published var featureTags: [String: [RecordFeatureTag]] = [:]
     var materialSubscription: AnyCancellable?
     var featureTagTask: Task<Void, Never>?
@@ -203,7 +204,7 @@ import ConsoleSupport
     func setAppearance(_ value: ConnectionAppearance, for entry: SSHAlias) {
         guard value.validation == nil else { return }
         appearances = ConnectionAppearance.setting(value, for: entry.favoriteID, in: appearances)
-        persistAppearances()
+        persistAppearances(); certificates.configure(self)
     }
     private func persistAppearances() {
         if let data = try? JSONEncoder().encode(appearances) { UserDefaults.standard.set(data, forKey: "connectionAppearance.v1") }
@@ -463,7 +464,7 @@ import ConsoleSupport
             for session in ConsoleStore.shared.sessions {
                 if let latest = aliases.first(where: { $0.favoriteID == session.entry.favoriteID }), session.entry.transport?.wireGuardID != latest.transport?.wireGuardID { session.disconnect() }
             }
-            availability.configure(entries: aliases)
+            availability.configure(entries: aliases); certificates.configure(self)
             data = snapshot.data
             warnings = snapshot.warnings
             if let name { selected = aliases.first { $0.name == name }?.id }
@@ -694,6 +695,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         AppDelegate.scannerForTermination?.cancel()
+        AppDelegate.storeForTermination?.certificates.stop()
         AppDelegate.storeForTermination?.finishWorkspace()
         ConsoleStore.shared.closeAll()
         SFTPRegistry.shared.closeAll()
@@ -704,10 +706,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         TopologyModel.stopAll()
         KDBXClient.stopAll()
         let tunnels = TunnelManager.shared
-        guard tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || AppDelegate.storeForTermination?.tools.nuclei.pending == true || AppDelegate.storeForTermination?.tools.audits.pending == true || AppDelegate.scannerForTermination?.pending == true || RecordDiscoveryModel.pending else { return .terminateNow }
+        guard tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || AppDelegate.storeForTermination?.tools.nuclei.pending == true || AppDelegate.storeForTermination?.tools.audits.pending == true || AppDelegate.scannerForTermination?.pending == true || RecordDiscoveryModel.pending || AppDelegate.storeForTermination?.certificates.pending == true else { return .terminateNow }
         tunnels.stopAll()
         UpdateTermination.finishAfterCleanup(sender) {
-            tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || AppDelegate.storeForTermination?.tools.nuclei.pending == true || AppDelegate.storeForTermination?.tools.audits.pending == true || AppDelegate.scannerForTermination?.pending == true || RecordDiscoveryModel.pending
+            tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || AppDelegate.storeForTermination?.tools.nuclei.pending == true || AppDelegate.storeForTermination?.tools.audits.pending == true || AppDelegate.scannerForTermination?.pending == true || RecordDiscoveryModel.pending || AppDelegate.storeForTermination?.certificates.pending == true
         }
         return .terminateLater
     }
@@ -1199,6 +1201,8 @@ struct AliasDetail: View {
                     }
                     HStack { Text(entry.command).font(.system(.caption, design: .monospaced)).textSelection(.enabled); Spacer(); Button { store.copy(entry.command) } label: { Image(systemName: "doc.on.doc") }.help("Копировать команду SSH") }.padding(12).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
                 }
+                if entry.recordKind?.isWeb == true, store.appearance(entry).checkCertificate == true { RecordCertificateDetails(entry: entry, monitor: store.certificates) }
+                RecordTOTPCode(entry: entry, config: store.config.url)
                 Text(entry.localID == nil ? "SSH-алиас из " + entry.source.path.replacingOccurrences(of: NSHomeDirectory(), with: "~") : entry.sshAlias == nil ? "Запись хранится в SSH Hub." : "Запись связана с SSH-алиасом «" + (entry.sshAlias ?? "") + "».").font(.caption).foregroundStyle(.secondary)
             }.padding(density == .compact ? 16 : 24).frame(maxWidth: 1000, alignment: .leading).frame(maxWidth: .infinity)
         }.sheet(isPresented: $customizingTiles) {
@@ -1307,6 +1311,7 @@ struct CreateAliasView: View {
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) var dismiss
     @StateObject private var licenseFiles = LicenseFileDrafts()
+    @StateObject private var totp = RecordTOTPDraft()
     @State private var credentialEdit = RecordCredentialEdit()
     @State private var draft = AliasDraft()
     @State private var aliasEnabled = true
@@ -1344,10 +1349,10 @@ struct CreateAliasView: View {
         return entry
     }
     private var validatedDraft: AliasDraft { var value = draft; if !aliasEnabled { value.name = "connection" }; return value }
-    private var validation: String? { credentialEdit.validation(vault: store.credentialVault()) ?? (password.contains(where: { $0.isNewline || $0 == "\0" }) ? "Пароль должен занимать одну строку." : nil) ?? (!AliasTransfer.validGroup(group) ? "Проверь путь папки." : nil) ?? appearance.validation ?? validatedDraft.validation(existing: aliasEnabled ? store.aliasNameReservations().filter { $0.id != editing?.entry.id } : []) }
+    private var validation: String? { totp.validation ?? credentialEdit.validation(vault: store.credentialVault()) ?? (password.contains(where: { $0.isNewline || $0 == "\0" }) ? "Пароль должен занимать одну строку." : nil) ?? (!AliasTransfer.validGroup(group) ? "Проверь путь папки." : nil) ?? appearance.validation ?? validatedDraft.validation(existing: aliasEnabled ? store.aliasNameReservations().filter { $0.id != editing?.entry.id } : []) }
     private var preview: String { if !aliasEnabled { return "SSH-алиас будет удалён из общего конфига. Запись останется в SSH Hub и будет использовать отдельный конфиг подключения." }; return (editing ?? duplicating).flatMap { try? SSHConfig.editedPreview($0, draft: draft) } ?? draft.block }
     var body: some View {
-        RecordEditorShell(title: duplicating != nil ? "Дублирование записи" : editing == nil ? "Новая запись · SSH" : "Редактирование записи", subtitle: "SSH · остальные параметры и комментарии сохраняются", icon: editing == nil ? "plus.square" : "pencil", sections: [.general, .connection, .key, .availability, .commands, .licenses, .payments, .preview], selection: $editorSection) {
+        RecordEditorShell(title: duplicating != nil ? "Дублирование записи" : editing == nil ? "Новая запись · SSH" : "Редактирование записи", subtitle: "SSH · остальные параметры и комментарии сохраняются", icon: editing == nil ? "plus.square" : "pencil", sections: [.general, .connection, .key, .mfa, .availability, .commands, .licenses, .payments, .preview], selection: $editorSection) {
             switch editorSection {
             case .general:
                 ConnectionAppearanceFields(appearance: $appearance, fallback: draft.name)
@@ -1360,6 +1365,8 @@ struct CreateAliasView: View {
             case .connection:
                 connectionFields
             case .key: RecordSSHKeyFields(identity: $draft.identity, entry: installationEntry, password: credentialEdit.choice.isExternal ? "" : password).environmentObject(store)
+            case .mfa: RecordTOTPFields(draft: totp, entry: editing?.entry, config: store.config.url)
+            case .certificates: EmptyView()
             case .availability: RecordAvailabilityFields(entry: installationEntry != nil ? editing?.entry : nil, enabled: $monitorEnabled, interval: $monitorInterval, monitor: store.availability)
             case .commands:
                 if let entry = editing?.entry { ConsoleCommandsSettingsLink(entry: entry) }
@@ -1375,7 +1382,7 @@ struct CreateAliasView: View {
                 Button("Отмена", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
                 Button(editing == nil ? "Создать запись" : "Сохранить") { save() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(validation != nil)
             }
-        }.dismissOnOutsideClick()
+        }.dismissOnOutsideClick().onDisappear { totp.clear(); password = "" }
             .onAppear {
                 expectedData = store.data
                 let vault = store.credentialVault()
@@ -1422,9 +1429,11 @@ struct CreateAliasView: View {
         let target = credentialTarget
         var credentialChanged = false
         var previousPassword: String?
+        var undoTOTP: (() throws -> Void)?
         var bindingChange: CredentialBindingChange?
         do {
             try licenseFiles.prepare(appearance.reminders)
+            if aliasEnabled { undoTOTP = try totp.prepare(target: target, original: editing?.entry, config: store.config.url) }
             bindingChange = try store.applyCredentialEdit(credentialEdit, target: target.favoriteID)
             var replacement: String?
             var changePassword = !credentialEdit.choice.isExternal && (removePassword || (!keepPassword && canReuseSavedPassword))
@@ -1442,6 +1451,7 @@ struct CreateAliasView: View {
             if let editing, !aliasEnabled {
                 let expected = try store.localRepository.load()
                 let record = try LocalConnectionRecord.detached(from: editing, draft: draft, title: appearance.trimmedName.isEmpty ? store.title(editing.entry) : appearance.trimmedName)
+                undoTOTP = try totp.prepare(target: record.entry(config: store.config.url, privateConfig: store.localRepository.privateConfig(record.id)), original: editing.entry, config: store.config.url)
                 let change = try store.config.delete(editing)
                 do { try store.commitRecord(record, expected: expected, appearance: appearance, group: group, ssh: change, template: nil) }
                 catch {
@@ -1481,6 +1491,7 @@ struct CreateAliasView: View {
         } catch {
             if credentialChanged { try? SSHPasswordStore.set(previousPassword, for: target, config: store.config.url) }
             var message = error.localizedDescription
+            do { try undoTOTP?() } catch { message += "\nНе удалось откатить MFA: " + error.localizedDescription }
             do { try store.rollbackCredentialEdit(bindingChange) } catch { message += "\nНе удалось откатить привязку учётных данных: " + error.localizedDescription }
             self.error = message
         }

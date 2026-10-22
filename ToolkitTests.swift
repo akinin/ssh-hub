@@ -6,6 +6,7 @@ import Security
     static func rejects(_ message: String, _ work: () throws -> Void) { do { try work(); fatalError("Expected rejection: " + message) } catch {} }
     static func main() async throws {
         let args = CommandLine.arguments
+        if args.count == 6, args[1] == "--tls-snapshot" { try await certificateSnapshot(args); return }
         if args.count > 1 { try await network(args); return }
         check(ToolkitText.ports("443,80,443") == [80,443] && ToolkitText.ports("22,,80") == nil, "port sets validated")
         try IPNetworkTests.run()
@@ -17,6 +18,21 @@ import Security
         let worker = ToolkitProcess(); let task = Task { try await worker.run("/bin/sleep", ["5"]) }; try await Task.sleep(for: .milliseconds(80)); task.cancel()
         do { _ = try await task.value; fatalError("expected cancellation") } catch is CancellationError {}
         print("PASS Toolkit: IP calculator, retired library cleanup, ports validation, process exit/timeout/cancellation")
+    }
+    static func certificateSnapshot(_ args: [String]) async throws {
+        let port = Int(args[2])!, cert = SecCertificateCreateWithData(nil, try Data(contentsOf: URL(fileURLWithPath: args[3])) as CFData)!
+        let inspector = TLSInspector(); _ = try await inspector.inspect(host: "localhost", port: port)
+        check(inspector.snapshot?.trusted == false && inspector.snapshot?.warning == true && inspector.snapshot?.expires != nil && inspector.snapshot?.fingerprint.count == 64, "structured untrusted certificate, expiry and fingerprint")
+        let trusted = TLSInspector(); _ = try await trusted.inspect(host: "localhost", port: port, anchors: [cert])
+        check(trusted.snapshot?.trusted == true && trusted.snapshot?.warning == true, "trusted but expiring soon")
+        let mismatch = TLSInspector(); _ = try await mismatch.inspect(host: "127.0.0.1", port: port, anchors: [cert])
+        check(mismatch.snapshot?.trusted == false, "hostname mismatch never trusted")
+        let proxied = TLSInspector(); _ = try await proxied.inspect(host: "localhost", port: port, anchors: [cert], proxyPort: Int(args[4])!)
+        check(proxied.snapshot?.trusted == true, "SOCKS TLS preserves server identity")
+        do { _ = try await TLSInspector().inspect(host: "localhost", port: port, anchors: [cert], proxyPort: Int(args[5])!); fatalError("proxy failure must not fall back to direct") } catch {}
+        let cancel = TLSInspector(); let task = Task { try await cancel.inspect(host: "localhost", port: port, proxyPort: Int(args[5])!) }; task.cancel()
+        do { _ = try await task.value; fatalError("cancelled TLS unexpectedly succeeded") } catch {}
+        print("PASS certificate snapshot: expiry, trust/name, SOCKS route, no direct fallback and cancellation")
     }
     static func network(_ args: [String]) async throws {
         guard args.count == 8 else { fatalError("config tls-port dns-port cert.der root http-port wol-port") }

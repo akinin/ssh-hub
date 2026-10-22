@@ -101,6 +101,7 @@ struct ConnectionTreeView: NSViewRepresentable {
         weak var outline: NSOutlineView?
         private var availabilitySubscription: AnyCancellable?
         private var reminderSubscription: AnyCancellable?
+        private var certificateSubscription: AnyCancellable?
         private var roots: [TreeItem] = []
         private var lastPresentation: [String] = []
         private var updating = false
@@ -114,6 +115,7 @@ struct ConnectionTreeView: NSViewRepresentable {
             self.store = store
             super.init()
             reminderSubscription = Timer.publish(every: 60, on: .main, in: .common).autoconnect().sink { [weak self] _ in self?.refresh() }
+            certificateSubscription = store.certificates.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.refresh() } }
             availabilitySubscription = store.availability.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.refresh() } }
         }
         func refresh() {
@@ -129,6 +131,8 @@ struct ConnectionTreeView: NSViewRepresentable {
                     if let entry = node.entry {
                         presentation += [String(describing: store.appearance(entry).reminderAppearance), RecordReminderNotice.collect(store.appearance(entry).reminders).map(\.text).joined(separator: "\n")]
                         presentation += [store.featureTags[entry.favoriteID, default: []].map(\.rawValue).joined(separator: ","), entry.host, entry.user, entry.port, entry.authentication.rawValue, entry.recordKind?.rawValue ?? "ssh", entry.options.map(\.id).joined(separator: "\n"), store.appearance(entry).logo?.base64EncodedString() ?? "", String(store.availability.selected.contains(entry.favoriteID))]
+                        presentation.append(String(store.appearance(entry).checkCertificate == true))
+                        if let result = store.certificates.results[entry.favoriteID] { presentation += [result.summary, String(result.warning), String(result.checked.timeIntervalSince1970)] }
                         if let result = store.availability.results[entry.favoriteID] { presentation += [String(result.reachable), result.detail, String(result.date.timeIntervalSince1970)] }
                     } else { presentation.append(store.folderAppearance(String(node.id.dropFirst("folder:".count))).logo?.base64EncodedString() ?? "") }
                     describe(node.children); presentation.append("end:" + node.id)
@@ -265,6 +269,15 @@ struct ConnectionTreeView: NSViewRepresentable {
                 status.toolTip = store.availability.results[entry.favoriteID]?.detail ?? "Проверка…"
                 status.translatesAutoresizingMaskIntoConstraints = false
                 status.widthAnchor.constraint(equalToConstant: 7).isActive = true; status.heightAnchor.constraint(equalToConstant: 7).isActive = true
+                views.append(status)
+            }
+            if let entry = item.node.entry, store.appearance(entry).checkCertificate == true {
+                let status = NSImageView(); status.image = NSImage(systemSymbolName: "checkmark.shield", accessibilityDescription: "Сертификат TLS")
+                let result = store.certificates.results[entry.favoriteID]
+                status.contentTintColor = result.map { $0.warning ? NSColor.systemOrange : NSColor.systemGreen } ?? .secondaryLabelColor
+                status.toolTip = result.map { $0.summary + " · " + $0.checked.formatted(date: .numeric, time: .shortened) } ?? "Сертификат ещё не проверен"
+                status.setAccessibilityLabel(status.toolTip)
+                status.translatesAutoresizingMaskIntoConstraints = false; status.widthAnchor.constraint(equalToConstant: 12).isActive = true; status.heightAnchor.constraint(equalToConstant: 12).isActive = true
                 views.append(status)
             }
             let stack = NSStackView(views: views); stack.orientation = .horizontal; stack.spacing = 7; stack.alignment = .centerY

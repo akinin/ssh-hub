@@ -60,6 +60,7 @@ struct NmapRequest {
     var services = false
     var options = NmapSettings()
     var exclusions = ""
+    var discoveryPorts: String? = nil
     var settings: NmapSettings { var value = options; value.profile = profile; value.ports = ports; value.services = services; return value }
     var host: String { target.trimmingCharacters(in: .whitespacesAndNewlines) }
     var targets: [String] { host.split(separator: ",", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) } }
@@ -79,6 +80,7 @@ struct NmapRequest {
         return 1
     }
     var validation: String? {
+        if let discoveryPorts, !NmapSettings.validPorts(discoveryPorts) { return "Проверь порты обнаружения хостов." }
         guard !host.contains(where: \.isNewline), targets.count <= 32, targets.allSatisfy({ Self.targetSize($0) != nil }), targets.reduce(0, { $0 + (Self.targetSize($1) ?? 4097) }) <= 4096 else { return "Укажи до 32 IP/имён через запятую или IPv4-подсети /20–/32, суммарно до 4096 адресов." }
         let ipv6 = targets.contains { $0.contains(":") }
         guard targets.allSatisfy({ $0.contains(":") == ipv6 }) else { return "IPv4/имена и IPv6 сканируются отдельно." }
@@ -93,10 +95,10 @@ struct NmapRequest {
         if targets.first?.contains(":") == true { args += ["-6"] }
         if !exclusions.isEmpty { args += ["--exclude", exclusions.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: ",")] }
         if !settings.excludedPorts.isEmpty { args += ["--exclude-ports", settings.excludedPorts] }
-        if profile == .discovery { args += ["-sn", "-PS22,80,443"] }
+        if profile == .discovery { args += ["-sn", "-PS" + (discoveryPorts ?? "22,80,443")] }
         else {
             args += ["-sT"]
-            if settings.discoverFirst { args += ["-PS22,80,443"] } else { args += ["-Pn"] }
+            if settings.discoverFirst { args += ["-PS" + (discoveryPorts ?? "22,80,443")] } else { args += ["-Pn"] }
             switch profile { case .custom: args += ["-p", ports]; case .all: args += ["-p-"]; default: args += ["--top-ports", profile == .quick ? "100" : "1000"] }
             if settings.sequential { args += ["-r"] }
             if services { args += ["-sV", "--version-intensity", String(settings.intensity)] }
@@ -120,6 +122,7 @@ struct NmapPort: Identifiable, Equatable, Codable {
 }
 struct NmapHost: Identifiable, Equatable, Codable {
     var address = "", name = "", state = "", reason = "", details = ""
+    var response: String? = nil
     var id: String { address }
 }
 struct NmapScriptOutput: Codable {
@@ -157,10 +160,14 @@ final class NmapXML: NSObject, XMLParserDelegate {
             else { host.details += "\nMAC: " + (a["addr"] ?? "") + " " + (a["vendor"] ?? "") }
         case "hostname" where inHost: if let name = a["name"] { host.name += (host.name.isEmpty ? "" : ", ") + name }
         case "port" where inHost: port = NmapPort(address: "", port: a["portid"] ?? "", proto: a["protocol"] ?? "", state: "", service: "")
-        case "state" where port != nil: let old = port!; port = NmapPort(address: "", port: old.port, proto: old.proto, state: a["state"] ?? "", service: "", reason: a["reason"] ?? "")
+        case "state" where port != nil:
+            let old = port!; port = NmapPort(address: "", port: old.port, proto: old.proto, state: a["state"] ?? "", service: "", reason: a["reason"] ?? "")
+            if ["syn-ack", "conn-refused", "reset"].contains(a["reason"] ?? "") { host.response = a["reason"] }
         case "service" where port != nil:
             let old = port!; port = NmapPort(address: "", port: old.port, proto: old.proto, state: old.state, service: [a["name"], a["product"], a["version"], a["extrainfo"]].compactMap { $0 }.joined(separator: " "), reason: old.reason, details: "Tunnel: " + (a["tunnel"] ?? "—"))
         case "extraports" where inHost: host.details += "\nОстальные порты: \(a["count"] ?? "?") · \(a["state"] ?? "")"
+        case "extrareasons" where inHost:
+            if ["conn-refused", "reset", "syn-ack"].contains(a["reason"] ?? ""), (Int(a["count"] ?? "0") ?? 0) > 0 { host.response = a["reason"] }
         case "times" where inHost: if let srtt = a["srtt"], let value = Double(srtt), value >= 0 { host.details += String(format: "\nЗадержка: %.2f мс", value / 1000) }
         case "script":
             if scripts.count < 1000 { scripts.append(.init(address: host.address, port: port?.port ?? "", script: a["id"] ?? "NSE", output: a["output"] ?? "")) }

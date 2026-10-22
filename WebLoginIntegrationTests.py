@@ -10,7 +10,7 @@ import urllib.parse
 
 USER = "fixture@example.test"
 PASSWORD = "fixture-'\"\\</script>"
-state = {"posts": [], "basic": 0, "steps": [], "roles": [], "scripted": [], "get_leaks": 0}
+state = {"posts": [], "basic": 0, "steps": [], "roles": [], "scripted": [], "anchor": [], "get_leaks": 0}
 form = '<form action="/submit" method="post"><input name="username" autocomplete="username"><input name="password" type="password" autocomplete="current-password"><button type="submit">Войти</button></form>'
 # A DSM-like layout: input in a default-GET form, JS role button outside it,
 # a hidden password autofill field, nested arrow and delayed reactive enablement.
@@ -42,6 +42,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         route = urllib.parse.urlsplit(self.path).path
         if urllib.parse.urlsplit(self.path).query: state["get_leaks"] += 1
+        if route == "/anchor-form": return self.send('''<div role="dialog"><div class="x-form"><input id="account" name="username"><input id="credential" name="password" type="password"></div><a role="button" id="enter" href="javascript:;" aria-disabled="true" class="x-btn"><span id="enter-inner" class="x-btn-inner">Login</span></a></div><script>
+const u=document.querySelector('#account'),p=document.querySelector('#credential'),b=document.querySelector('#enter');
+for(const input of [u,p])input.addEventListener('input',()=>setTimeout(()=>b.setAttribute('aria-disabled',u.value&&p.value?'false':'true'),0));
+b.onclick=e=>{e.preventDefault();if(b.getAttribute('aria-disabled')==='true')return;fetch('/anchor-submit',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({username:u.value,password:p.value})}).then(()=>document.title='Anchor success');};
+</script>''')
         if route == "/scripted-form": return self.send('''<form id="login"><input id="account" name="username" type="email" required><input id="credential" name="password" type="password" required><button id="enter" type="submit" disabled>Вход</button></form><script>
 const form=document.querySelector('form'), button=document.querySelector('button');
 form.addEventListener('input',()=>setTimeout(()=>button.disabled=!form.checkValidity(),0));
@@ -66,6 +71,8 @@ form.addEventListener('submit',event=>{event.preventDefault();fetch('/scripted-s
         return self.send("unknown", 404)
     def do_POST(self):
         data = self.rfile.read(min(int(self.headers.get("Content-Length", "0")), 8192)).decode()
+        if self.path == '/anchor-submit':
+            state['anchor'].append(urllib.parse.parse_qs(data)); return self.send('<h1>Anchor success</h1>')
         if self.path == '/scripted-submit':
             state['scripted'].append(urllib.parse.parse_qs(data)); return self.send('<h1>Scripted success</h1>')
         if self.path == '/role-finish':
@@ -89,6 +96,7 @@ try:
     assert [x["fields"] for x in state["steps"]] == [{"username": ["fixture-setup"]}, {"username": [USER]}, {"password": [PASSWORD]}, {"username": [USER]}], "two-step payloads and cross-origin stop"
     assert state["roles"] == [{"username": [USER], "password": [PASSWORD]}], "role buttons, delayed DOM and exact synthetic credentials"
     assert state["scripted"] == [{"username": [USER], "password": [PASSWORD]}], "explicit JS form submits via handler once"
+    assert state["anchor"] == [{"username": [USER], "password": [PASSWORD]}], "ExtJS anchor button submits synthetic credentials exactly once"
     assert state["get_leaks"] == 0, "credentials never reach GET query strings"
     assert state["basic"] == 1, "single Basic authentication"
     assert len(state["posts"]) == 5, "normal, delayed, SPA, manual selectors and one failed form attempt only"
