@@ -42,6 +42,19 @@ struct RecordAddressFields: View {
             }
     }
 }
+struct RecordNoteFields: View {
+    @Binding var appearance: ConnectionAppearance
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Заметка").font(.caption).foregroundStyle(.secondary)
+            TextEditor(text: Binding(get: { appearance.note ?? "" }, set: { appearance.note = $0.isEmpty ? nil : $0 }))
+                .font(.body).scrollContentBackground(.hidden).frame(minHeight: 88, maxHeight: 140).padding(6)
+                .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.2)))
+                .accessibilityLabel("Заметка записи").accessibilityIdentifier("recordNote")
+        }
+    }
+}
 struct RecordSSHConnectionFields: View {
     @EnvironmentObject var store: AliasStore
     @Binding var host: String
@@ -315,6 +328,7 @@ struct RecordEditorView: View {
                         Menu { Button("Без папки") { group = "" }; ForEach(store.groupNames, id: \.self) { name in Button(name) { group = name } } } label: { Image(systemName: "folder") }.menuStyle(.borderlessButton).frame(width: 28)
                     }
                 }
+                RecordNoteFields(appearance: $appearance)
             case .connection:
                 if kind == .ssh || kind.hasPassword || kind.isWeb { credentialFields }
                 if kind == .ssh {

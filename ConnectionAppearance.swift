@@ -52,10 +52,12 @@ struct ConnectionAppearance: Codable, Equatable {
     var pinnedFields: [String]? = nil
     var reminders: [RecordReminder]? = nil
     var reminderAppearance: RecordReminderAppearance? = nil
+    var note: String? = nil
     var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
-    var isEmpty: Bool { trimmedName.isEmpty && logo == nil && addresses == nil && checkCertificate != true && (actionTiles?.isEmpty != false) && pinnedFields == nil && (reminders?.isEmpty != false) && reminderAppearance == nil }
+    var isEmpty: Bool { trimmedName.isEmpty && logo == nil && addresses == nil && checkCertificate != true && (actionTiles?.isEmpty != false) && pinnedFields == nil && (reminders?.isEmpty != false) && reminderAppearance == nil && note?.isEmpty != false }
     func title(fallback: String) -> String { trimmedName.isEmpty ? fallback : trimmedName }
     var validation: String? {
+        if let note, note.utf8.count > 16384 || note.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) && $0 != "\n" && $0 != "\r" && $0 != "\t" }) { return "Заметка должна быть текстом до 16 КБ без управляющих символов." }
         if name.count > 80 || name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) {
             return "Название должно занимать одну строку до 80 символов."
         }

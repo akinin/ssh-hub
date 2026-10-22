@@ -11,6 +11,7 @@
 - Linux reads bounded DMI/device-tree/WB cache sources without sourcing shell files. WB revision/short_sn/release mirror official motd sources; topology uses numeric lscpu CSV, unknown remains empty. The command test substitutes owned fixture paths and CLI only. Bulk selection buttons removed; per-field selection and replacement confirmation retained.
 - Full-width storage/ports cards use at most two internal columns when content width is at least 680pt and more than one item exists; otherwise one. Volumes remain independent, auxiliary data stays in disclosures, port metadata and raw values are unchanged.
 - Network table has exactly one row per interface, name/status/MAC and one hide control, distinct IPv4/IPv6 columns and no duplicate interface groups. At widths below 460pt, identity is above the two address cells. Unknown addresses retained; a dash means unavailable metadata, never no reachability. Summary fills available width; detailed editors/history retain their existing 1100pt limit.
+- Optional ConnectionAppearance.note is bounded plain multiline text (16KiB, no controls except CR/LF/tab). RecordNoteFields appears under General in both raw SSH and local/network editors and uses the existing outer draft Save/Cancel. Note-only metadata must not be removed by isEmpty. Old data reads nil, rename retains it; encrypted backup includes it, TransferAlias ordinary JSON intentionally omits it. Never use notes as commands or connection parameters.
 
 ## Изменения 3.17.0 (сборка 72): инвентаризация
 

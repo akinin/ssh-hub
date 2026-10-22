@@ -1362,6 +1362,7 @@ struct CreateAliasView: View {
                         Menu { Button("Без папки") { group = "" }; ForEach(store.groupNames, id: \.self) { path in Button(path) { group = path } } } label: { Image(systemName: "folder") }.menuStyle(.borderlessButton).frame(width: 28)
                     }
                 }
+                RecordNoteFields(appearance: $appearance)
             case .connection:
                 connectionFields
             case .key: RecordSSHKeyFields(identity: $draft.identity, entry: installationEntry, password: credentialEdit.choice.isExternal ? "" : password).environmentObject(store)
