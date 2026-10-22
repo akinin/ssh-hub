@@ -111,6 +111,20 @@ import Darwin
         try check(netstat.count == 2 && netstat[0].address == "::" && netstat[1].port == 67, "Linux netstat fallback excludes connected UDP peers")
         let macPorts = InventoryPresentation.ports("format=mac-netstat\ntcp46 0 0 *.22 *.* LISTEN\ntcp6 0 0 ::1.8080 *.* LISTEN\nudp4 0 0 *.5353 *.*\ntcp4 0 0 192.0.2.1.12345 192.0.2.2.443 ESTABLISHED")
         try check(macPorts.count == 3 && macPorts.last?.port == 8080 && macPorts.last?.loopback == true, "macOS numeric dot endpoints, dual-stack TCP and UDP; no outbound sessions")
+        let mixed = InventoryInterfaceInfo(name: "eth0", addresses: ["192.0.2.1", "192.0.2.1/24", "2001:db8::1/64", "fe80::1%en0/64", "unknown"])
+        try check(mixed.ipv4Addresses == ["192.0.2.1/24"] && mixed.ipv6Addresses == ["2001:db8::1/64", "fe80::1%en0/64"] && mixed.otherAddresses == ["unknown"] && mixed.addresses.count == 5, "address families split without changing raw facts or duplicating bare IP")
+        let withProcesses = InventoryPresentation.ports("format=ss\ntcp LISTEN 0 128 0.0.0.0:22 *:* users:((\"sshd\",pid=123,fd=3))\ntcp LISTEN 0 128 0.0.0.0:22 *:* users:((\"worker\",pid=456,fd=4),(\"sshd\",pid=123,fd=5))\ntcp LISTEN 0 128 [::]:443 *:* users:((\"bad\",pid=9999999999,fd=3))")
+        try check(withProcesses.count == 2 && withProcesses[0].processes == [InventorySocketProcess(name: "sshd", pid: 123), InventorySocketProcess(name: "worker", pid: 456)] && withProcesses[1].processes.isEmpty, "ss process name/PID merge by exact endpoint, deduplication and invalid PID rejection")
+        let fallbackProcesses = InventoryPresentation.ports("format=linux-netstat\ntcp 0 0 0.0.0.0:22 0.0.0.0:* LISTEN 123/sshd\nudp 0 0 0.0.0.0:67 0.0.0.0:* -")
+        try check(fallbackProcesses.first?.processes == [InventorySocketProcess(name: "sshd", pid: 123)] && fallbackProcesses.last?.processes.isEmpty == true && ports.allSatisfy { $0.processes.isEmpty }, "netstat process metadata and old/permission-limited snapshots remain compatible")
+        let macProcesses = InventoryPresentation.ports("format=mac-netstat\ntcp4 0 0 127.0.0.1.8080 *.* LISTEN\ntcp6 0 0 ::1.8080 *.* LISTEN\nudp4 0 0 *.5353 *.*\n__SSH_HUB_PORT_PROCESSES__\np123\ncfixture\nf3\nPTCP\nn127.0.0.1:8080\nf4\nPTCP\nn[::1]:8080\nf5\nn*:5353\np456\ncmDNS\nf6\nPUDP\nn*:5353\nf7\nPUDP\nn*:5353->192.0.2.1:53\np789\ncunrelated\nf8\nPTCP\nn192.0.2.1:8080")
+        try check(macProcesses.count == 4 && macProcesses.filter { $0.port == 8080 && ["127.0.0.1", "::1"].contains($0.address) }.allSatisfy { $0.processes == [InventorySocketProcess(name: "fixture", pid: 123)] } && macProcesses.first?.processes == [InventorySocketProcess(name: "mDNS", pid: 456)], "macOS lsof joins protocol/address/port, resets file state and excludes connected peers")
+        try check(InventoryCollector.linux.title == "Linux", "short Linux collector label")
+        var oldSource = InventorySnapshot(collector: .linux, facts: InventoryFields())
+        oldSource.source = "Linux / Debian / Wiren Board"
+        try check(oldSource.sourceTitle == "Linux", "legacy history displays short Linux label")
+        oldSource.source = "Custom source"
+        try check(oldSource.sourceTitle == "Custom source", "custom source retained")
         let services = InventoryPresentation.ports("format=routeros-services\n0 name=ssh port=22 proto=tcp disabled=no\n1 X name=www port=80 proto=tcp\n2 name=api port=8728 disabled=yes\n3 name=winbox port=8291 proto=tcp connection=yes\n4 name=legacy port=1234")
         try check(services.count == 2 && services[0].service == "ssh" && services[0].address == "По конфигурации" && services[1].transport == "—", "RouterOS is labelled configuration, disabled/connections excluded and missing protocol never invented")
         for invalidPorts in ["tcp LISTEN 0 0 0.0.0.0:22 *:*", "format=ss\ntcp LISTEN 0 0 invalid:22 *:*", "format=ss\ntcp LISTEN 0 0 *:65536 *:*", "format=ss\ntcp LISTEN 0 0 *:0 *:*", String(repeating: "x", count: 16385)] {
@@ -142,7 +156,52 @@ import Darwin
             let command = InventoryCollection.command(collector)
             try check(command.utf8.count < 16_384 && !command.contains("\n") && !command.contains("sudo"), "collector is bounded one-line read-only command")
         }
+        // Execute the production Linux command against owned synthetic files and CLI fixtures.
+        let linuxRoot = root.appendingPathComponent("linux-fixture")
+        let bin = linuxRoot.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        func fixture(_ path: String, _ value: String, executable: Bool = false) throws {
+            let url = linuxRoot.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(value.utf8).write(to: url)
+            if executable { try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path) }
+        }
+        try fixture("proc/device-tree/compatible", "contactless,wirenboard85\0allwinner,sun50i-t507\0")
+        try fixture("proc/device-tree/model", "Wiren Board rev. old\0")
+        try fixture("proc/meminfo", "MemTotal: 4025344 kB\n")
+        try fixture("var/run/wb_env.cache", "export WB_BOARD_REVISION=\"8.5.3\"\n")
+        try fixture("var/lib/wirenboard/short_sn.conf", "DEMO1234\n")
+        try fixture("usr/lib/wb-release", "RELEASE_NAME=\"unstable.latest\"\nSUITE='testing'\n")
+        try fixture("etc/os-release", "PRETTY_NAME=\"Debian GNU/Linux fixture\"\n")
+        try fixture("bin/lscpu", "#!/bin/sh\ncase \"$1\" in -p=SOCKET,CORE) printf '# fixture\\n0,0\\n0,1\\n0,2\\n0,3\\n';; -p=SOCKET) printf '0\\n0\\n0\\n0\\n';; *) printf 'Model name: Cortex-A53 fixture\\n';; esac\n", executable: true)
+        try fixture("bin/getconf", "#!/bin/sh\nprintf '4\\n'\n", executable: true)
+        try fixture("bin/uname", "#!/bin/sh\nprintf 'Linux fixture-kernel\\n'\n", executable: true)
+        try fixture("bin/ss", "#!/bin/sh\nprintf 'tcp LISTEN 0 128 0.0.0.0:22 *:* users:((\"sshd\",pid=123,fd=3))\\n'\n", executable: true)
+        for name in ["ip", "df", "lsblk"] { try fixture("bin/" + name, "#!/bin/sh\nexit 0\n", executable: true) }
+        var linuxCommand = InventoryCollection.command(.linux)
+        for path in ["/proc/", "/sys/", "/var/", "/usr/lib/wb-release", "/etc/os-release"] {
+            linuxCommand = linuxCommand.replacingOccurrences(of: path, with: linuxRoot.path + path)
+        }
+        let linuxProcess = Process(), linuxOutput = Pipe()
+        linuxProcess.executableURL = URL(fileURLWithPath: "/bin/sh"); linuxProcess.arguments = ["-c", linuxCommand]
+        linuxProcess.environment = ["PATH": bin.path + ":/usr/bin:/bin"]
+        linuxProcess.standardOutput = linuxOutput; linuxProcess.standardError = FileHandle.nullDevice; linuxProcess.standardInput = FileHandle.nullDevice
+        try linuxProcess.run(); let linuxData = linuxOutput.fileHandleForReading.readDataToEndOfFile(); linuxProcess.waitUntilExit()
+        let armFacts = try InventoryCollection.parse(String(decoding: linuxData, as: UTF8.self), collector: .linux).facts
+        try check(linuxProcess.terminationStatus == 0 && armFacts[.manufacturer] == "Wiren Board" && armFacts[.model] == "Wiren Board 8.5.3" && armFacts[.serial] == "DEMO1234", "production Linux command collects WB revision and serial from read-only official sources")
+        try check(armFacts[.processor].contains("Cortex-A53 fixture") && armFacts[.physicalCores] == "4" && armFacts[.logicalCores] == "4" && armFacts[.socketCount] == "1" && armFacts[.operatingSystem].contains("unstable.latest (testing)"), "ARM processor topology and release are collected without guessing")
         // Real local macOS collection reads only this test machine. No user servers or network calls.
+        let listener = socket(AF_INET, SOCK_STREAM, 0)
+        try check(listener >= 0, "owned TCP listener created")
+        defer { close(listener) }
+        var bindAddress = sockaddr_in()
+        bindAddress.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); bindAddress.sin_family = sa_family_t(AF_INET)
+        bindAddress.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let bound = withUnsafePointer(to: &bindAddress) { pointer in pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(listener, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+        try check(bound == 0 && listen(listener, 1) == 0, "owned loopback listener bound")
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        _ = withUnsafeMutablePointer(to: &bindAddress) { pointer in pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(listener, $0, &length) } }
+        let ownedPort = Int(UInt16(bigEndian: bindAddress.sin_port))
         let process = Process(), out = Pipe(), err = Pipe()
         process.executableURL = URL(fileURLWithPath: "/bin/sh"); process.arguments = ["-c", InventoryCollection.command(.macOS)]
         process.standardOutput = out; process.standardError = err; process.standardInput = FileHandle.nullDevice
@@ -150,6 +209,8 @@ import Darwin
         let local = try InventoryCollection.parse(String(decoding: localOutput, as: UTF8.self), collector: .macOS)
         try check(process.terminationStatus == 0 && local.facts[.manufacturer] == "Apple" && !local.facts[.model].isEmpty && !local.facts[.memory].isEmpty, "macOS collector runs locally and parses")
         try check(!InventoryPresentation.storage(local.facts[.storageUsage]).isEmpty, "local macOS df collection yields real volume utilization")
+        let ownedSocket = InventoryPresentation.ports(local.facts[.listeningPorts]).first { $0.port == ownedPort && $0.transport == "TCP" && $0.address == "127.0.0.1" }
+        try check(ownedSocket?.processes.contains(where: { $0.pid == Int(getpid()) && !$0.name.isEmpty }) == true, "real macOS collector maps owned loopback listener to process name and PID")
         print("Record inventory tests passed: compatibility, bounded private storage, draft/save, snapshots, explicit merge/diff, backup roundtrip, symlink/special-file rejection and local macOS collection")
     }
 }

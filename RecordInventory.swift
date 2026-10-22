@@ -157,7 +157,7 @@ struct InventoryApplyProposal {
 enum InventoryCollector: String, Codable, CaseIterable, Identifiable {
     case linux, routerOS, macOS
     var id: String { rawValue }
-    var title: String { switch self { case .linux: return "Linux / Debian / Wiren Board"; case .routerOS: return "MikroTik RouterOS"; case .macOS: return "macOS" } }
+    var title: String { switch self { case .linux: return "Linux"; case .routerOS: return "MikroTik RouterOS"; case .macOS: return "macOS" } }
 }
 
 struct InventorySnapshot: Codable, Equatable, Identifiable {
@@ -166,7 +166,7 @@ struct InventorySnapshot: Codable, Equatable, Identifiable {
     var collector: InventoryCollector
     var facts: InventoryFields
     var source: String? = nil
-    var sourceTitle: String { source ?? collector.title }
+    var sourceTitle: String { source == "Linux / Debian / Wiren Board" ? "Linux" : source ?? collector.title }
 }
 
 struct RecordInventory: Codable, Equatable {
@@ -286,6 +286,23 @@ struct InventoryInterfaceInfo: Identifiable, Equatable {
     var hiddenByDefault: Bool {
         name == "lo" || name == "lo0" || (status == "DOWN" && addresses.isEmpty)
     }
+    var ipv4Addresses: [String] { groupedAddresses(family: AF_INET) }
+    var ipv6Addresses: [String] { groupedAddresses(family: AF_INET6) }
+    var otherAddresses: [String] {
+        addresses.filter { value in
+            let literal = value.components(separatedBy: "/")[0].components(separatedBy: "%")[0]
+            var ipv4 = in_addr(), ipv6 = in6_addr()
+            return inet_pton(AF_INET, literal, &ipv4) != 1 && inet_pton(AF_INET6, literal, &ipv6) != 1
+        }
+    }
+    private func groupedAddresses(family: Int32) -> [String] {
+        addresses.filter { value in
+            let literal = value.components(separatedBy: "/")[0].components(separatedBy: "%")[0]
+            var ipv4 = in_addr(), ipv6 = in6_addr()
+            let valid = family == AF_INET ? inet_pton(AF_INET, literal, &ipv4) == 1 : inet_pton(AF_INET6, literal, &ipv6) == 1
+            return valid && (value.contains("/") || !addresses.contains { $0.hasPrefix(value + "/") })
+        }
+    }
 }
 struct InventoryDiskInfo: Identifiable, Equatable {
     var name: String
@@ -310,8 +327,13 @@ struct InventoryPortInfo: Identifiable, Equatable {
     let transport: String
     let address: String
     var service = ""
+    var processes: [InventorySocketProcess] = []
     var id: String { transport + ":" + String(port) + ":" + address + ":" + service }
     var loopback: Bool { address == "::1" || address.hasPrefix("127.") || address.hasPrefix("::ffff:127.") }
+}
+struct InventorySocketProcess: Hashable {
+    let name: String
+    let pid: Int
 }
 enum InventoryPresentation {
     // Display only: filling the preview never changes manual fields or the draft.
@@ -421,10 +443,54 @@ enum InventoryPresentation {
                 let literal = address.components(separatedBy: "%")[0]
                 var ipv4 = in_addr(), ipv6 = in6_addr()
                 guard literal == "*" || inet_pton(AF_INET, literal, &ipv4) == 1 || inet_pton(AF_INET6, literal, &ipv6) == 1 else { continue }
-                row = InventoryPortInfo(port: port, transport: tcp ? "TCP" : "UDP", address: address)
+                var socket = InventoryPortInfo(port: port, transport: tcp ? "TCP" : "UDP", address: address)
+                if format == "format=ss", let tail = line.range(of: "users:(") {
+                    let data = String(line[tail.upperBound...])
+                    if let regex = try? NSRegularExpression(pattern: #""([^"\n]{1,128})",pid=([0-9]{1,10}),fd=[0-9]+"#) {
+                        for result in regex.matches(in: data, range: NSRange(data.startIndex..., in: data)).prefix(8) {
+                            if let nameRange = Range(result.range(at: 1), in: data), let pidRange = Range(result.range(at: 2), in: data), let pid = Int(data[pidRange]), pid > 0, pid <= Int(Int32.max) {
+                                let process = InventorySocketProcess(name: String(data[nameRange]), pid: pid)
+                                if !socket.processes.contains(process) { socket.processes.append(process) }
+                            }
+                        }
+                    }
+                } else if format == "format=linux-netstat", let process = match(#"\s([0-9]{1,10})/([^\r\n]{1,128})$"#, line), let pid = Int(process[0]), pid > 0, pid <= Int(Int32.max) {
+                    socket.processes = [InventorySocketProcess(name: process[1], pid: pid)]
+                }
+                row = socket
             }
-            if let row, !rows.contains(where: { $0.id == row.id }) { rows.append(row) }
+            if let row {
+                if let index = rows.firstIndex(where: { $0.id == row.id }) {
+                    for process in row.processes where !rows[index].processes.contains(process) && rows[index].processes.count < 8 { rows[index].processes.append(process) }
+                } else { rows.append(row) }
+            }
             if rows.count == 128 { break }
+        }
+        if format == "format=mac-netstat", let start = lines.firstIndex(of: "__SSH_HUB_PORT_PROCESSES__") {
+            var pid: Int?, name = "", proto = ""
+            for line in lines.dropFirst(start + 1).prefix(512) {
+                let value = String(line.dropFirst())
+                switch line.first {
+                case "p": pid = Int(value).flatMap { $0 > 0 && $0 <= Int(Int32.max) ? $0 : nil }; name = ""; proto = ""
+                case "c": name = value.utf8.count <= 128 ? value : ""
+                case "f": proto = ""
+                case "P": proto = ["TCP", "UDP"].contains(value) ? value : ""
+                case "n":
+                    guard let pid, !name.isEmpty, !proto.isEmpty, !value.contains("->"), let pair = match(#"^(.+):([0-9]+)$"#, value), let port = Int(pair[1]) else { continue }
+                    let address = pair[0].trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+                    let process = InventorySocketProcess(name: name, pid: pid)
+                    let literal = address.components(separatedBy: "%")[0]
+                    var ipv4 = in_addr(), ipv6 = in6_addr()
+                    guard (1...65535).contains(port), address.utf8.count <= 256, literal == "*" || inet_pton(AF_INET, literal, &ipv4) == 1 || inet_pton(AF_INET6, literal, &ipv6) == 1 else { continue }
+                    if let index = rows.firstIndex(where: { $0.port == port && $0.transport == proto && $0.address == address }) {
+                        if !rows[index].processes.contains(process) && rows[index].processes.count < 8 { rows[index].processes.append(process) }
+                    } else if rows.count < 128 {
+                        // Fixed lsof queries include only TCP LISTEN and unconnected UDP endpoints.
+                        rows.append(InventoryPortInfo(port: port, transport: proto, address: address, processes: [process]))
+                    }
+                default: break
+                }
+            }
         }
         return rows.sorted { ($0.port, $0.transport, $0.address, $0.service) < ($1.port, $1.transport, $1.address, $1.service) }
     }
@@ -454,19 +520,24 @@ enum InventoryCollection {
     // Fixed, read-only commands. No paths, record names or other user text enter the remote shell.
     static func command(_ collector: InventoryCollector) -> String {
         func section(_ field: InventoryField, _ command: String) -> String { "printf '\\n" + marker(field) + "\\n'; " + command }
+        func boundedPorts(_ command: String) -> String { "(" + command + ") | awk '{ if (n+length($0)+1 > 16000) { print \"__SSH_HUB_PORTS_LIMITED__\"; exit }; print; n+=length($0)+1 }'" }
         switch collector {
         case .linux:
-            return "export LC_ALL=C; " + [
-                section(.manufacturer, "cat /sys/class/dmi/id/sys_vendor 2>/dev/null"),
-                section(.model, "if test -r /sys/class/dmi/id/product_name; then cat /sys/class/dmi/id/product_name; elif test -r /proc/device-tree/model; then tr -d '\\000' < /proc/device-tree/model; fi"),
-                section(.serial, "cat /sys/class/dmi/id/product_serial 2>/dev/null"),
+            let helpers = #"inv_value() { awk -v key="$1" ' { sub(/^export[[:space:]]+/, ""); if (index($0,key "=")==1) { sub(/^[^=]*=/, ""); gsub(/^[\042\047]|[\042\047]$/, ""); print; exit } }' "$2" 2>/dev/null | head -c 512; }; inv_first() { for inv_path in "$@"; do if test -r "$inv_path"; then inv_text=$(head -c 512 "$inv_path" 2>/dev/null | tr -d '\000'); if test -n "$inv_text"; then printf '%s\n' "$inv_text"; return; fi; fi; done; }; inv_wb=; if test -r /proc/device-tree/compatible && tr '\000' '\n' < /proc/device-tree/compatible | grep -qi wirenboard; then inv_wb=1; fi; inv_revision=$(inv_value WB_BOARD_REVISION /var/run/wb_env.cache); if test -n "$inv_revision"; then inv_wb=1; fi; "#
+            return "export LC_ALL=C; " + helpers + [
+                section(.manufacturer, #"if test -n "$inv_wb"; then printf 'Wiren Board\n'; else inv_first /sys/class/dmi/id/sys_vendor /proc/device-tree/manufacturer; fi"#),
+                section(.model, #"if test -n "$inv_wb" && test -n "$inv_revision"; then printf 'Wiren Board %s\n' "$inv_revision"; else inv_first /sys/class/dmi/id/product_name /proc/device-tree/model /sys/devices/soc0/machine; fi"#),
+                section(.serial, #"if test -n "$inv_wb"; then inv_first /var/lib/wirenboard/short_sn.conf /proc/device-tree/serial-number /sys/devices/soc0/serial_number; else inv_first /sys/class/dmi/id/product_serial /proc/device-tree/serial-number /sys/devices/soc0/serial_number; fi"#),
                 section(.assetTag, "cat /sys/class/dmi/id/chassis_asset_tag 2>/dev/null"),
-                section(.operatingSystem, "awk -F= '/^PRETTY_NAME=/{gsub(/^\"|\"$/,\"\",$2); print $2}' /etc/os-release 2>/dev/null; uname -sr"),
-                section(.processor, "awk -F: '/^(model name|Hardware|Processor)[[:space:]]*:/{sub(/^[[:space:]]*/,\"\",$2); print $2; exit}' /proc/cpuinfo 2>/dev/null; getconf _NPROCESSORS_ONLN 2>/dev/null | awk '{print \"CPU threads: \" $0}'"),
+                section(.operatingSystem, #"awk -F= '/^PRETTY_NAME=/{gsub(/^"|"$/,"",$2); print $2}' /etc/os-release 2>/dev/null; uname -sr; if test -n "$inv_wb"; then inv_release=$(inv_value RELEASE_NAME /usr/lib/wb-release); inv_suite=$(inv_value SUITE /usr/lib/wb-release); if test -n "$inv_release"; then printf 'Wiren Board release: %s' "$inv_release"; if test -n "$inv_suite"; then printf ' (%s)' "$inv_suite"; fi; printf '\n'; fi; fi"#),
+                section(.processor, #"inv_cpu=$(LC_ALL=C lscpu 2>/dev/null | awk -F: '/^Model name:/{sub(/^[[:space:]]*/,"",$2); print $2; exit}'); if test -z "$inv_cpu"; then inv_cpu=$(awk -F: '/^(model name|Hardware|Processor)[[:space:]]*:/{sub(/^[[:space:]]*/,"",$2); print $2; exit}' /proc/cpuinfo 2>/dev/null); fi; if test -n "$inv_cpu"; then printf '%s\n' "$inv_cpu"; else uname -m; fi; getconf _NPROCESSORS_ONLN 2>/dev/null | awk '{print "CPU threads: " $0}'"#),
+                section(.logicalCores, "getconf _NPROCESSORS_ONLN 2>/dev/null"),
+                section(.physicalCores, #"LC_ALL=C lscpu -p=SOCKET,CORE 2>/dev/null | awk -F, '!/^#/ && $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ {seen[$1 ":" $2]=1} END {for (x in seen) n++; if (n>0) print n}'"#),
+                section(.socketCount, #"LC_ALL=C lscpu -p=SOCKET 2>/dev/null | awk '!/^#/ && /^[0-9]+$/ {seen[$0]=1} END {for (x in seen) n++; if (n>0) print n}'"#),
                 section(.memory, "awk '/^MemTotal:/{printf \"%.0f MiB\\n\",$2/1024}' /proc/meminfo 2>/dev/null"),
                 section(.disks, "lsblk -dn -o NAME,SIZE,TYPE,MODEL 2>/dev/null | head -64"),
                 section(.storageUsage, "df -Pk 2>/dev/null | head -65"),
-                section(.listeningPorts, "if command -v ss >/dev/null 2>&1; then printf 'format=ss\\n'; ss -H -lntu 2>/dev/null | head -128; elif command -v netstat >/dev/null 2>&1; then printf 'format=linux-netstat\\n'; netstat -lntu 2>/dev/null | head -128; fi"),
+                section(.listeningPorts, boundedPorts("if command -v ss >/dev/null 2>&1; then printf 'format=ss\\n'; ss -H -lntup 2>/dev/null | head -128; elif command -v netstat >/dev/null 2>&1; then printf 'format=linux-netstat\\n'; netstat -lntup 2>/dev/null | head -128; fi")),
                 section(.interfaces, "ip -o link show 2>/dev/null | head -64; ip -o address show 2>/dev/null | head -128")
             ].joined(separator: "; ") + "; true"
         case .macOS:
@@ -479,7 +550,7 @@ enum InventoryCollection {
                 section(.memory, "/usr/sbin/sysctl -n hw.memsize | /usr/bin/awk '{printf \"%.0f MiB\\n\",$0/1048576}'"),
                 section(.disks, "/usr/sbin/diskutil list | /usr/bin/head -100"),
                 section(.storageUsage, "/bin/df -Pk 2>/dev/null | /usr/bin/head -65"),
-                section(.listeningPorts, "printf 'format=mac-netstat\\n'; /usr/sbin/netstat -an -p tcp 2>/dev/null | /usr/bin/awk '$1 ~ /^tcp/ && $6 == \"LISTEN\"' | /usr/bin/head -64; /usr/sbin/netstat -an -p udp 2>/dev/null | /usr/bin/awk '$1 ~ /^udp/ && $5 == \"*.*\"' | /usr/bin/head -64"),
+                section(.listeningPorts, boundedPorts("printf 'format=mac-netstat\\n'; /usr/sbin/netstat -an -p tcp 2>/dev/null | /usr/bin/awk '$1 ~ /^tcp/ && $6 == \"LISTEN\"' | /usr/bin/head -64; /usr/sbin/netstat -an -p udp 2>/dev/null | /usr/bin/awk '$1 ~ /^udp/ && $5 == \"*.*\"' | /usr/bin/head -64; printf '__SSH_HUB_PORT_PROCESSES__\\n'; /usr/sbin/lsof -nP -iTCP -sTCP:LISTEN -FpcfPn 2>/dev/null | /usr/bin/head -256; /usr/sbin/lsof -nP -iUDP -FpcfPn 2>/dev/null | /usr/bin/head -256")),
                 section(.interfaces, "/sbin/ifconfig | /usr/bin/awk '/^[^[:space:]]/{print} /ether /{print} /inet /{print} /inet6 /{print}' | /usr/bin/head -160")
             ].joined(separator: "; ") + "; true"
         case .routerOS:

@@ -6,7 +6,7 @@ enum TopologyCollector: String, Codable, CaseIterable, Identifiable {
     case linux, macOS, routerOS
     var id: String { rawValue }
     var title: String {
-        switch self { case .linux: return "Linux / Debian / Wiren Board"; case .macOS: return "macOS"; case .routerOS: return "MikroTik RouterOS" }
+        switch self { case .linux: return "Linux"; case .macOS: return "macOS"; case .routerOS: return "MikroTik RouterOS" }
     }
     var command: String { TopologySSH.command(self) }
 }

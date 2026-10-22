@@ -51,6 +51,7 @@ import Foundation
                 try check(snapshot.facts[.interfaces].contains("192.0.2.44/24"), "multiline network facts")
                 try check(InventoryPresentation.storage(snapshot.facts[.storageUsage]).first?.used == 665600000, "SSH storage-usage marker preserves df values")
                 try check(InventoryPresentation.ports(snapshot.facts[.listeningPorts]).map(\.port) == [22, 53], "listeners collected in the same SSH snapshot, no network scan")
+                try check(InventoryPresentation.ports(snapshot.facts[.listeningPorts]).first?.processes == [InventorySocketProcess(name: "sshd", pid: 123)], "process metadata retained over prepared SSH route")
                 var manual = InventoryFields([.model: "Keep old", .owner: "Fixture Admin"])
                 let proposal = InventoryApplyProposal(snapshot: snapshot, fields: [.model], current: manual)
                 try check(proposal.replacements.count == 1 && manual[.model] == "Keep old", "collection/review never mutates manual")
