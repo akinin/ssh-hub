@@ -451,7 +451,7 @@ struct RecordInventoryView: View {
     }
     private func interfaceList(_ rows: [InventoryInterfaceInfo], visible: Bool, width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            if width >= 620, !rows.isEmpty {
+            if width >= 460, !rows.isEmpty {
                 HStack(alignment: .firstTextBaseline, spacing: 20) {
                     Text("Интерфейс").frame(width: interfaceColumnWidth(width), alignment: .leading)
                     Text("IPv4").frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
@@ -460,7 +460,7 @@ struct RecordInventoryView: View {
                 Divider()
             }
             ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                if width >= 620 {
+                if width >= 460 {
                     HStack(alignment: .top, spacing: 20) {
                         interfaceIdentity(row, visible: visible).frame(width: interfaceColumnWidth(width), alignment: .leading)
                         networkAddressCell(row.ipv4Addresses, title: "IPv4", showsTitle: false)
@@ -479,7 +479,7 @@ struct RecordInventoryView: View {
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
-    private func interfaceColumnWidth(_ width: CGFloat) -> CGFloat { min(240, max(180, width * 0.26)) }
+    private func interfaceColumnWidth(_ width: CGFloat) -> CGFloat { min(240, max(160, width * 0.26)) }
     private func interfaceIdentity(_ row: InventoryInterfaceInfo, visible: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
