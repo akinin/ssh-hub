@@ -37,7 +37,7 @@ struct MenuCustomizationView: View {
         }.padding(20).frame(width: 600, height: 640)
     }
 }
-private struct MenuCustomizationRows: NSViewRepresentable {
+struct MenuCustomizationRows: NSViewRepresentable {
     @Binding var draft: [CustomMenuItem]
     let definitions: [CustomMenuDefinition]
     func makeCoordinator() -> Coordinator { Coordinator(self) }

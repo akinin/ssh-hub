@@ -6,6 +6,9 @@ import AppKit
     static func main() throws {
         do {
         let badges = RecordRowBadgeSettings.defaults
+        let oldBadges = badges.filter { $0.id != RecordRowBadge.mfa.id }
+        let withMFA = RecordRowBadgeSettings.decode(try JSONEncoder().encode(oldBadges))
+        check(withMFA.last?.id == RecordRowBadge.mfa.id && withMFA.last?.visible == true && Array(withMFA.dropLast()) == oldBadges, "MFA indicator migrates into existing settings without reordering them")
         check(RecordRowBadgeSettings.decode(nil) == badges, "legacy rows retain all indicators")
         var ordered = Array(badges.reversed()); ordered[0].visible = false
         check(RecordRowBadgeSettings.decode(try JSONEncoder().encode(ordered)) == ordered, "row indicator order and visibility persist")

@@ -103,6 +103,7 @@ struct ConnectionTreeView: NSViewRepresentable {
         private var availabilitySubscription: AnyCancellable?
         private var reminderSubscription: AnyCancellable?
         private var certificateSubscription: AnyCancellable?
+        private var mfaSubscription: AnyCancellable?
         private var roots: [TreeItem] = []
         private var lastPresentation: [String] = []
         private var updating = false
@@ -117,6 +118,7 @@ struct ConnectionTreeView: NSViewRepresentable {
             super.init()
             reminderSubscription = Timer.publish(every: 60, on: .main, in: .common).autoconnect().sink { [weak self] _ in self?.refresh() }
             certificateSubscription = store.certificates.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.refresh() } }
+            mfaSubscription = NotificationCenter.default.publisher(for: RecordTOTPStore.changed).sink { [weak self] _ in DispatchQueue.main.async { self?.lastPresentation = []; self?.refresh() } }
             availabilitySubscription = store.availability.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.refresh() } }
         }
         func refresh() {
@@ -283,6 +285,12 @@ struct ConnectionTreeView: NSViewRepresentable {
                 rowBadges[.certificate] = status
             }
             let settings = RecordRowBadgeSettings.decode(UserDefaults.standard.data(forKey: RecordRowBadgeSettings.key))
+            if let entry = item.node.entry, settings.contains(where: { $0.id == RecordRowBadge.mfa.id && $0.visible }), RecordTOTPStore.has(RecordTOTPStore.account(config: store.config.url, record: entry.favoriteID)) {
+                let badge = NSImageView(); badge.image = NSImage(systemSymbolName: RecordRowBadge.mfa.icon, accessibilityDescription: "MFA настроен")
+                badge.contentTintColor = .secondaryLabelColor; badge.toolTip = "MFA · TOTP настроен"; badge.setAccessibilityLabel("MFA · TOTP настроен")
+                badge.translatesAutoresizingMaskIntoConstraints = false; badge.widthAnchor.constraint(equalToConstant: 12).isActive = true; badge.heightAnchor.constraint(equalToConstant: 12).isActive = true
+                rowBadges[.mfa] = badge; collapsible.append(badge)
+            }
             views += settings.filter(\.visible).compactMap { RecordRowBadge(rawValue: $0.id).flatMap { rowBadges[$0] } }
             let stack = NSStackView(views: views); stack.orientation = .horizontal; stack.spacing = 7; stack.alignment = .centerY
             stack.setClippingResistancePriority(.defaultLow, for: .horizontal)

@@ -2,10 +2,11 @@ import Foundation
 import Darwin
 
 enum RecordRowBadge: String, CaseIterable, Identifiable {
-    case recordType, notifications, documentation, attachments, inventory, licenses, payments, availability, certificate
+    case recordType, mfa, notifications, documentation, attachments, inventory, licenses, payments, availability, certificate
     var id: String { rawValue }
     var title: String { switch self {
     case .recordType: return "Тип записи · SSH, WEB, RDP…"
+    case .mfa: return "MFA"
     case .notifications: return "Уведомления"
     case .documentation: return "Документация"
     case .attachments: return "Вложения"
@@ -17,6 +18,7 @@ enum RecordRowBadge: String, CaseIterable, Identifiable {
     } }
     var icon: String { switch self {
     case .recordType: return "tag"
+    case .mfa: return "lock.rotation"
     case .notifications: return "bell.badge"
     case .documentation: return "doc.text"
     case .attachments: return "paperclip"

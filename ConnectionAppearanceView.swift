@@ -12,18 +12,8 @@ struct RecordRowBadgesEditor: View {
         VStack(spacing: 0) {
             HubSheetHeader(title: "Значки после названия записи", subtitle: "Общий набор и порядок для списка записей", icon: "tag").padding(20)
             Divider()
-            List {
-                ForEach(items.indices, id: \.self) { index in
-                    if let kind = RecordRowBadge(rawValue: items[index].id) {
-                        HStack {
-                            Toggle(isOn: $items[index].visible) { Label(kind.title, systemImage: kind.icon) }.toggleStyle(.checkbox)
-                            Spacer()
-                            Button { items.swapAt(index, index - 1) } label: { Image(systemName: "chevron.up") }.disabled(index == 0).help("Переместить вверх").accessibilityLabel("Вверх: " + kind.title)
-                            Button { items.swapAt(index, index + 1) } label: { Image(systemName: "chevron.down") }.disabled(index == items.count - 1).help("Переместить вниз").accessibilityLabel("Вниз: " + kind.title)
-                        }.padding(.vertical, 4)
-                    }
-                }.onMove { source, destination in items.move(fromOffsets: source, toOffset: destination) }
-            }
+            Text("Перетаскивай строки за название или ручку. Флажок включает значок.").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.vertical, 12)
+            MenuCustomizationRows(draft: Binding(get: { items.map { CustomMenuItem(id: $0.id, visible: $0.visible) } }, set: { items = $0.map { RecordRowBadgeItem(id: $0.id, visible: $0.visible) } }), definitions: RecordRowBadge.allCases.map { CustomMenuDefinition($0.id, $0.title, $0.icon) }).frame(maxHeight: .infinity).padding(.horizontal, 12)
             Text("Значки появляются только при наличии соответствующих данных. Скрытие значка не отключает проверки доступности, сертификатов или напоминания.").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.vertical, 12)
             if let error { Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal, 20) }
             Divider()
@@ -36,7 +26,7 @@ struct RecordRowBadgesEditor: View {
                     if let data = try? JSONEncoder().encode(items) { UserDefaults.standard.set(data, forKey: RecordRowBadgeSettings.key); dismiss() }
                 }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
             }.padding(16)
-        }.frame(width: 570, height: 550).onAppear { expected = UserDefaults.standard.data(forKey: RecordRowBadgeSettings.key) ?? Data(); items = RecordRowBadgeSettings.decode(expected) }
+        }.frame(width: 570, height: 640).onAppear { expected = UserDefaults.standard.data(forKey: RecordRowBadgeSettings.key) ?? Data(); items = RecordRowBadgeSettings.decode(expected) }
     }
 }
 

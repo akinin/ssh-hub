@@ -4,6 +4,10 @@
 
 Нативное приложение для macOS 14+ на Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
 
+## Изменения 3.16.2 (сборка 69): MFA-индикатор и перетаскивание
+
+- Row indicators include MFA presence only, using noninteractive Keychain attribute lookup for visible rows; never load TOTP secrets/codes into the tree. TOTP write notification refreshes the tree. Indicator editor reuses the same native MenuCustomizationRows drag table and local-only drop validation as menu settings; visibility and Save/Cancel/CAS semantics remain unchanged. Existing preferences append the new MFA indicator without reordering saved items.
+
 ## Изменения 3.16.1 (сборка 68): живой MFA и значки списка
 
 - The record header shows a live TOTP capsule only while unlocked and in the same record/config/profile/auth scope. Automatic Keychain reads are noninteractive; explicit copy/retry may interact. Secrets never enter tree rows or menu titles. Copy MFA revalidates scope after Keychain access, marks clipboard concealed and clears at the exact code boundary if unchanged. TOTP write notifications invalidate visible cached tokens. Record row badge preferences are global, bounded, order/visibility only; hiding never stops checks or alters data. Preserve selection/reminder coloring when splitting license/payment badges.
