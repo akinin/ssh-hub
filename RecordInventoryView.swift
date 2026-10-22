@@ -149,9 +149,9 @@ struct RecordInventoryView: View {
                                 Button("Повторить чтение") { model.reload() }
                             } else {
                                 if !model.notice.isEmpty { Text(model.notice).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
-                                if showingHistory { history } else { manualFields(width: min(1100, geometry.size.width - (geometry.size.width >= 700 ? 196 : 0) - 32)) }
+                                if showingHistory { history } else { manualFields(width: geometry.size.width - (geometry.size.width >= 700 ? 196 : 0) - 32) }
                             }
-                        }.frame(maxWidth: 1100, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading).padding(16)
+                        }.frame(maxWidth: section == .summary && !showingHistory ? .infinity : 1100, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading).padding(16)
                     }.frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
                 }
                 if !showingHistory, let snapshot, model.loadSucceeded, !suggested.isEmpty { Divider(); applyBar(snapshot) }
@@ -313,12 +313,10 @@ struct RecordInventoryView: View {
                     Button("ОС и ПО…") { section = .software }
                 }.font(.caption).buttonStyle(.link)
             }
-            if width >= 720 {
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 12) { networkOverview(width: (width - 12) / 2); deviceOverview }
-                    VStack(alignment: .leading, spacing: 12) { storageOverview; portsOverview }
-                }
-            } else { networkOverview(width: width); storageOverview; portsOverview; deviceOverview }
+            networkOverview(width: width)
+            storageOverview(width: width)
+            portsOverview(width: width)
+            deviceOverview
         }
     }
     private var deviceOverview: some View {
@@ -346,10 +344,10 @@ struct RecordInventoryView: View {
                 Button("Редактировать сеть…") { section = .network }.font(.caption).buttonStyle(.link)
             }
     }
-    private var storageOverview: some View {
+    private func storageOverview(width: CGFloat) -> some View {
             card("Хранилище") {
                 receivedNote(.storageUsage)
-                if !preview[.storageUsage].isEmpty { structuredValue(.storageUsage, value: preview[.storageUsage]) }
+                if !preview[.storageUsage].isEmpty { structuredValue(.storageUsage, value: preview[.storageUsage], width: width - 28) }
                 else { Text("Заполненность не получена. Обнови сбор, чтобы увидеть занятое и свободное место.").font(.caption).foregroundStyle(.secondary) }
                 if !preview[.disks].isEmpty {
                     if preview[.storageUsage].isEmpty { receivedNote(.disks); structuredValue(.disks, value: preview[.disks]) }
@@ -382,14 +380,14 @@ struct RecordInventoryView: View {
             receivedNote(field)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
-    private var portsOverview: some View {
+    private func portsOverview(width: CGFloat) -> some View {
         card(preview[.listeningPorts].hasPrefix("format=routeros-services") ? "Сервисы RouterOS" : "Слушающие порты") {
             receivedNote(.listeningPorts)
             if preview[.listeningPorts].isEmpty { Text("Порты появятся после следующего сбора инвентаризации.").font(.caption).foregroundStyle(.secondary) }
             else {
                 let observed = snapshot.flatMap { $0.facts[.listeningPorts] == preview[.listeningPorts] ? $0 : nil } ?? model.record.snapshots.last { $0.facts[.listeningPorts] == preview[.listeningPorts] }
                 if let observed { Text("Последнее наблюдение: " + observed.date.formatted()).font(.caption).foregroundStyle(.secondary) }
-                structuredValue(.listeningPorts, value: preview[.listeningPorts])
+                structuredValue(.listeningPorts, value: preview[.listeningPorts], width: width - 28)
             }
             Button("Подробнее о портах…") { section = .network }.font(.caption).buttonStyle(.link)
         }
@@ -413,10 +411,10 @@ struct RecordInventoryView: View {
     @ViewBuilder private func structuredValue(_ field: InventoryField, value: String, width: CGFloat = 0) -> some View {
         if field == .interfaces, !InventoryPresentation.interfaces(value).isEmpty {
             let rows = InventoryPresentation.interfaces(value), visible = rows.filter { model.record.isInterfaceVisible($0) }, hidden = rows.filter { !model.record.isInterfaceVisible($0) }
-            interfaceGroups(visible, visible: true, width: width)
+            interfaceList(visible, visible: true, width: width)
             if !hidden.isEmpty {
                 HubDisclosureGroup("Скрытые интерфейсы · \(hidden.count)") {
-                    interfaceGroups(hidden, visible: false)
+                    interfaceList(hidden, visible: false, width: width)
                     Text("Loopback и выключенные интерфейсы без адресов скрыты по умолчанию. Исходные данные и история сохранены.").font(.caption).foregroundStyle(.secondary)
                 }.font(.caption)
             }
@@ -429,14 +427,15 @@ struct RecordInventoryView: View {
                 Text("Распознанных портов нет: список пуст или недоступен для текущего пользователя.").font(.caption).foregroundStyle(.secondary)
                 if !value.isEmpty { HubDisclosureGroup("Исходные данные портов") { Text(value).font(.caption.monospaced()).textSelection(.enabled) }.font(.caption) }
             } else {
-                ForEach(Array(rows.prefix(6))) { portRow($0) }
-                if rows.count > 6 { HubDisclosureGroup("Ещё портов · \(rows.count - 6)") { ForEach(Array(rows.dropFirst(6))) { portRow($0) } }.font(.caption) }
+                LazyVGrid(columns: contentColumns(width: width, count: rows.count), alignment: .leading, spacing: 12) { ForEach(Array(rows.prefix(6))) { portRow($0) } }
+                if rows.count > 6 { HubDisclosureGroup("Ещё портов · \(rows.count - 6)") { LazyVGrid(columns: contentColumns(width: width, count: rows.count - 6), alignment: .leading, spacing: 12) { ForEach(Array(rows.dropFirst(6))) { portRow($0) } } }.font(.caption) }
             }
         } else if field == .storageUsage, !InventoryPresentation.storage(value).isEmpty {
             let rows = InventoryPresentation.storage(value)
-            ForEach(rows.filter { !$0.auxiliary }) { InventoryStorageRow(row: $0) }
+            let primary = rows.filter { !$0.auxiliary }
+            LazyVGrid(columns: contentColumns(width: width, count: primary.count), alignment: .leading, spacing: 12) { ForEach(primary) { InventoryStorageRow(row: $0) } }
             let auxiliary = rows.filter(\.auxiliary)
-            if !auxiliary.isEmpty { HubDisclosureGroup("Служебные тома · \(auxiliary.count)") { ForEach(auxiliary) { InventoryStorageRow(row: $0) } }.font(.caption) }
+            if !auxiliary.isEmpty { HubDisclosureGroup("Служебные тома · \(auxiliary.count)") { LazyVGrid(columns: contentColumns(width: width, count: auxiliary.count), alignment: .leading, spacing: 12) { ForEach(auxiliary) { InventoryStorageRow(row: $0) } } }.font(.caption) }
         } else if field == .disks, !InventoryPresentation.disks(value).isEmpty {
             ForEach(InventoryPresentation.disks(value)) { row in
                 HStack(alignment: .top, spacing: 12) {
@@ -447,40 +446,59 @@ struct RecordInventoryView: View {
             }
         } else { Text(value).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading) }
     }
-    @ViewBuilder private func interfaceGroups(_ rows: [InventoryInterfaceInfo], visible: Bool, width: CGFloat = 0) -> some View {
-        let ipv4 = rows.filter { !$0.ipv4Addresses.isEmpty }
-        let ipv6 = rows.filter { !$0.ipv6Addresses.isEmpty }
-        let other = rows.filter { !$0.otherAddresses.isEmpty || ($0.ipv4Addresses.isEmpty && $0.ipv6Addresses.isEmpty) }
-        if width >= 360, !ipv4.isEmpty, !ipv6.isEmpty {
-            HStack(alignment: .top, spacing: 16) {
-                interfaceGroup("IPv4", rows: ipv4, visible: visible)
-                interfaceGroup("IPv6", rows: ipv6, visible: visible)
+    private func contentColumns(width: CGFloat, count: Int) -> [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: 24, alignment: .topLeading), count: width >= 680 && count > 1 ? 2 : 1)
+    }
+    private func interfaceList(_ rows: [InventoryInterfaceInfo], visible: Bool, width: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if width >= 620, !rows.isEmpty {
+                HStack(alignment: .firstTextBaseline, spacing: 20) {
+                    Text("Интерфейс").frame(width: interfaceColumnWidth(width), alignment: .leading)
+                    Text("IPv4").frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                    Text("IPv6").frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                }.font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.bottom, 8)
+                Divider()
             }
-        } else {
-            if !ipv4.isEmpty { interfaceGroup("IPv4", rows: ipv4, visible: visible) }
-            if !ipv6.isEmpty { interfaceGroup("IPv6", rows: ipv6, visible: visible) }
+            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                if width >= 620 {
+                    HStack(alignment: .top, spacing: 20) {
+                        interfaceIdentity(row, visible: visible).frame(width: interfaceColumnWidth(width), alignment: .leading)
+                        networkAddressCell(row.ipv4Addresses, title: "IPv4", showsTitle: false)
+                        networkAddressCell(row.ipv6Addresses, title: "IPv6", showsTitle: false)
+                    }.padding(.vertical, 10)
+                } else {
+                    VStack(alignment: .leading, spacing: 10) {
+                        interfaceIdentity(row, visible: visible)
+                        HStack(alignment: .top, spacing: 20) {
+                            networkAddressCell(row.ipv4Addresses, title: "IPv4", showsTitle: true)
+                            networkAddressCell(row.ipv6Addresses, title: "IPv6", showsTitle: true)
+                        }
+                    }.padding(.vertical, 10)
+                }
+                if index < rows.count - 1 { Divider() }
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private func interfaceColumnWidth(_ width: CGFloat) -> CGFloat { min(240, max(180, width * 0.26)) }
+    private func interfaceIdentity(_ row: InventoryInterfaceInfo, visible: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Image(systemName: "network").foregroundStyle(.tint)
+                Text(row.name).font(.callout.weight(.semibold)).textSelection(.enabled)
+                if !row.status.isEmpty { Text(row.status).font(.caption).foregroundStyle(row.status == "UP" ? .green : .secondary) }
+                Spacer(minLength: 4)
+                Button { model.setInterfaceVisible(row.name, !visible) } label: { Image(systemName: visible ? "eye.slash" : "eye") }
+                    .buttonStyle(.plain).foregroundStyle(.secondary).help((visible ? "Скрыть " : "Показать ") + row.name).accessibilityLabel((visible ? "Скрыть интерфейс " : "Показать интерфейс ") + row.name)
+            }
+            if !row.mac.isEmpty { Text(row.mac).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
+            if !row.otherAddresses.isEmpty { Text(row.otherAddresses.joined(separator: "\n")).font(.caption.monospaced()).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
         }
-        if !other.isEmpty { interfaceGroup("Другие интерфейсы", rows: other, visible: visible) }
     }
-    private func interfaceGroup(_ title: String, rows: [InventoryInterfaceInfo], visible: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            ForEach(rows) { row in
-                interfaceRow(row, visible: visible, addresses: title == "IPv4" ? row.ipv4Addresses : title == "IPv6" ? row.ipv6Addresses : row.otherAddresses, showMAC: title != "IPv6" || row.ipv4Addresses.isEmpty)
-            }
-        }.frame(maxWidth: .infinity, alignment: .topLeading)
-    }
-    private func interfaceRow(_ row: InventoryInterfaceInfo, visible: Bool, addresses: [String], showMAC: Bool) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "network").foregroundStyle(.tint).frame(width: 18)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack { Text(row.name).font(.callout.bold()); if !row.status.isEmpty { Text(row.status).font(.caption).foregroundStyle(row.status == "UP" ? .green : .secondary) } }
-                if !addresses.isEmpty { Text(addresses.joined(separator: "\n")).font(.callout.monospaced()).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
-                if showMAC, !row.mac.isEmpty { Text("MAC · " + row.mac).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
-            }.frame(maxWidth: .infinity, alignment: .leading)
-            Button { model.setInterfaceVisible(row.name, !visible) } label: { Image(systemName: visible ? "eye.slash" : "eye") }
-                .buttonStyle(.plain).foregroundStyle(.secondary).help((visible ? "Скрыть " : "Показать ") + row.name).accessibilityLabel((visible ? "Скрыть интерфейс " : "Показать интерфейс ") + row.name)
-        }.padding(.vertical, 4)
+    private func networkAddressCell(_ addresses: [String], title: String, showsTitle: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if showsTitle { Text(title).font(.caption).foregroundStyle(.secondary) }
+            Text(addresses.isEmpty ? "—" : addresses.joined(separator: "\n")).font(.callout.monospaced()).foregroundStyle(addresses.isEmpty ? .secondary : .primary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+        }.frame(minWidth: 0, maxWidth: .infinity, alignment: .leading).help(addresses.isEmpty ? title + ": адрес не получен" : title)
     }
     @ViewBuilder private func addressFamilies(_ row: InventoryInterfaceInfo) -> some View {
         addressLine("IPv4", values: row.ipv4Addresses)
