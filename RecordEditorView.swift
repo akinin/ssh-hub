@@ -71,18 +71,70 @@ struct RecordSSHConnectionFields: View {
     var usesExternalCredentials = false
     var changedAt: Date? = nil
     var savedPassword: (() throws -> String?)? = nil
+    var passwordEntry: SSHAlias? = nil
+    @State private var passwordCopied = false
+    @State private var copyError: String?
+    private var keyOnly: Bool { authentication == .key }
+    private var canCopy: Bool { !password.isEmpty || savedPassword != nil || (usesExternalCredentials && passwordEntry != nil) }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             RecordAddressFields(address: $host, appearance: $appearance, identifier: identifier)
             RecordFieldRow("Пользователь") { TextField("root", text: $user).accessibilityIdentifier(identifier + "User") }
-            RecordFieldRow("Вход") { SSHAuthenticationChecks(selection: $authentication) }
-            RecordFieldRow("Пароль") { PasswordEntryView(prompt: reusePassword && !removePassword ? "Сохранён · оставь пустым" : "Запросить при подключении", text: $password, changedAt: changedAt, savedPassword: reusePassword && !removePassword ? savedPassword : nil).accessibilityIdentifier(identifier + "Password").disabled(usesExternalCredentials) }
-            Toggle("Сохранить в Связке ключей macOS", isOn: $keepPassword).toggleStyle(.switch).disabled(usesExternalCredentials)
-            if reusePassword && !removePassword && !usesExternalCredentials { Button("Удалить сохранённый пароль") { removePassword = true } }
-            Text("Сохранение пароля независимо от способа входа. Пароль приватного ключа вводится отдельно.").font(.caption).foregroundStyle(.secondary)
+            RecordFieldRow("Вход") {
+                Picker("Способ входа", selection: $authentication) {
+                    Text("Пароль").tag(SSHAuthentication.password)
+                    Text("SSH-ключ").tag(SSHAuthentication.key)
+                    if authentication == .automatic || authentication == .keyAndPassword { Text(authentication.title).tag(authentication) }
+                }.pickerStyle(.segmented).accessibilityIdentifier(identifier + "Authentication")
+            }
+            RecordFieldRow("Пароль") {
+                HStack(alignment: .top, spacing: 8) {
+                    if keyOnly {
+                        LeadingSecureField(prompt: reusePassword ? "Сохранён в Связке ключей" : "Пароль не сохранён", text: $password).frame(height: 26).disabled(true)
+                    } else {
+                        PasswordEntryView(prompt: reusePassword && !removePassword ? "Сохранён · оставь пустым" : "Запросить при подключении", text: $password, changedAt: changedAt, savedPassword: reusePassword && !removePassword ? savedPassword : nil).disabled(usesExternalCredentials)
+                    }
+                    Button { copyPassword() } label: { Image(systemName: passwordCopied ? "checkmark" : "doc.on.doc").frame(width: 20, height: 20) }
+                        .buttonStyle(.bordered).frame(width: 36, height: 26).disabled(!canCopy)
+                        .help(passwordCopied ? "Пароль скопирован" : "Копировать пароль").accessibilityLabel(passwordCopied ? "Пароль скопирован" : "Копировать пароль")
+                }.accessibilityIdentifier(identifier + "Password")
+            }
+            if keyOnly {
+                Text("Пароль сохраняется для копирования и не используется для входа по SSH-ключу.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Toggle("Сохранить в Связке ключей macOS", isOn: $keepPassword).toggleStyle(.switch).disabled(usesExternalCredentials)
+                if reusePassword && !removePassword && !usesExternalCredentials { Button("Удалить сохранённый пароль") { removePassword = true } }
+            }
+            if let copyError { Text(copyError).font(.caption).foregroundStyle(.red) }
             RecordFieldRow("Порт") { TextField("22", text: $port).accessibilityIdentifier(identifier + "Port") }
             SSHJumpPicker(jump: $jump, entries: store.rawAliases.filter { $0.host != host || $0.user != user || $0.port != port })
         }.textFieldStyle(.roundedBorder)
+            .onAppear { if keyOnly { keepPassword = true; removePassword = false } }
+            .onChange(of: authentication) { _, mode in
+                if mode == .key { keepPassword = true; removePassword = false }
+                passwordCopied = false; copyError = nil
+            }
+            .onChange(of: user) { _, _ in passwordCopied = false; copyError = nil }
+    }
+    private func copyPassword() {
+        guard !AppAccess.shared.locked else { return }
+        let revision = AppAccess.shared.authorizationRevision, profile = store.profiles.active, config = store.config.url
+        do {
+            let value: String?
+            if usesExternalCredentials {
+                guard let passwordEntry else { return }
+                let prepared = try SSHPasswordStore.preparedEntry(for: passwordEntry, config: config)
+                value = try SSHPasswordStore.password(for: prepared, config: prepared.credentialConfig(fallback: config))
+            } else { value = password.isEmpty ? try savedPassword?() : password }
+            guard !AppAccess.shared.locked, AppAccess.shared.authorizationRevision == revision, store.profiles.active == profile, store.config.url == config else { return }
+            guard let value, !value.isEmpty else { copyError = "Сохранённого пароля нет"; return }
+            let board = NSPasteboard.general; board.clearContents()
+            guard board.setString("", forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")), board.setString(value, forType: .string) else { board.clearContents(); copyError = "Не удалось скопировать пароль"; return }
+            let stamp = board.changeCount
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30) { if board.changeCount == stamp { board.clearContents() } }
+            passwordCopied = true; copyError = nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { passwordCopied = false }
+        } catch { copyError = "Не удалось прочитать пароль. Проверь доступ к Связке ключей или KeePass." }
     }
 }
 struct SSHJumpPicker: View {
@@ -109,12 +161,19 @@ struct RecordSSHAliasFields: View {
     @Binding var name: String
     let existingAlias: Bool
     let identifier: String
+    var config: URL? = nil
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Toggle("SSH-алиас в конфиге", isOn: $enabled).toggleStyle(.switch).accessibilityIdentifier(identifier + "Enabled")
             if enabled {
                 TextField("Имя SSH-алиаса", text: $name, prompt: Text("my-server")).textFieldStyle(.roundedBorder).accessibilityIdentifier(identifier)
-                Text("Алиас будет сохранён в SSH-конфиг.").font(.caption).foregroundStyle(.secondary)
+                if let config {
+                    Text("Алиас будет сохранён в " + config.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    if SSHConfig.matches(name, "^[A-Za-z0-9_][A-Za-z0-9_.-]*$") {
+                        let normal = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh/config").standardizedFileURL
+                        Text("В Терминале: ssh " + (config.standardizedFileURL == normal ? "" : "-F " + SSHConfig.shellQuote(config.path) + " ") + SSHConfig.shellQuote(name)).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                    }
+                }
             } else {
                 Text(existingAlias ? "При сохранении алиас удалится из SSH-конфига. Запись и её материалы останутся в SSH Hub." : "Запись хранится в SSH Hub. SSH-алиас можно включить позже.").font(.caption).foregroundStyle(.secondary)
             }
@@ -289,8 +348,12 @@ struct RecordEditorView: View {
     }
     private var target: SSHAlias { candidate.entry(config: store.config.url, privateConfig: store.localRepository.privateConfig(candidate.id)) }
     private var savedEntry: SSHAlias? { original.flatMap { record in store.aliases.first { $0.localID == record.id } } }
+    private var keyHistoryEntry: SSHAlias? {
+        guard let entry = savedEntry, entry.host == candidate.host, entry.port == candidate.port, (entry.value("ProxyJump") ?? "") == candidate.jump else { return nil }
+        return entry
+    }
     private var installationEntry: SSHAlias? {
-        guard let entry = savedEntry, entry.host == candidate.host, entry.user == candidate.user, entry.port == candidate.port, (entry.value("ProxyJump") ?? "") == candidate.jump else { return nil }
+        guard let entry = keyHistoryEntry, entry.user == candidate.user else { return nil }
         return entry
     }
     private var reusePassword: Bool {
@@ -334,7 +397,7 @@ struct RecordEditorView: View {
                 if kind == .ssh {
                     fields
                     Divider()
-                    RecordSSHAliasFields(enabled: $createAlias, name: $aliasName, existingAlias: original?.aliasName != nil, identifier: "recordAlias")
+                    RecordSSHAliasFields(enabled: $createAlias, name: $aliasName, existingAlias: original?.aliasName != nil, identifier: "recordAlias", config: store.config.url)
 
                 } else if kind == .serial { SerialSettingsFields(settings: Binding(get: { record.serial ?? SerialSettings() }, set: { record.serial = $0 })) }
                 else if kind.isWeb { webFields }
@@ -342,7 +405,7 @@ struct RecordEditorView: View {
                 else { Text("Добавь инструкции в документации и файлы во вложениях после сохранения записи.").foregroundStyle(.secondary) }
                 if [.rdp, .vnc].contains(kind) || kind.isWeb { tunnelFields }
                 if [.ssh, .rdp, .vnc, .web, .website, .telnet, .ftp, .ftps, .webdav].contains(kind) { WireGuardProfilePicker(selected: Binding(get: { record.transport?.wireGuardID }, set: { value in var settings = record.transport ?? ConnectionSettings(); settings.wireGuardID = value; record.transport = settings }), workspace: store.wireGuardWorkspace()) }
-            case .key: RecordSSHKeyFields(identity: $record.identity, entry: installationEntry, password: usesSharedCredential ? "" : password).environmentObject(store)
+            case .key: RecordSSHKeyFields(identity: $record.identity, user: $record.user, authentication: $record.authentication, entry: installationEntry, historyEntry: keyHistoryEntry, usesExternalCredentials: usesSharedCredential, password: usesSharedCredential ? "" : password).environmentObject(store)
             case .mfa: RecordTOTPFields(draft: totp, entry: savedEntry, config: store.config.url)
             case .certificates: RecordCertificateFields(appearance: $appearance, entry: savedEntry, monitor: store.certificates)
             case .availability: availabilityFields
@@ -483,11 +546,12 @@ struct RecordEditorView: View {
     private var passwordDate: Date? { savedEntry.flatMap { SSHPasswordStore.changedAt(for: $0, config: store.config.url) } }
     private var passwordReader: (() throws -> String?)? { guard reusePassword && !removePassword, let savedEntry else { return nil }; return { try SSHPasswordStore.storedPassword(for: savedEntry, config: store.config.url) } }
     @ViewBuilder private var fields: some View {
-        RecordSSHConnectionFields(host: $record.host, appearance: $appearance, user: $record.user, port: $record.port, jump: $record.jump, authentication: $record.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: reusePassword, identifier: "record", usesExternalCredentials: usesSharedCredential, changedAt: passwordDate, savedPassword: passwordReader)
+        RecordSSHConnectionFields(host: $record.host, appearance: $appearance, user: $record.user, port: $record.port, jump: $record.jump, authentication: $record.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: reusePassword, identifier: "record", usesExternalCredentials: usesSharedCredential, changedAt: passwordDate, savedPassword: passwordReader, passwordEntry: credentialEdit.choice == credentialEdit.original ? installationEntry : nil)
     }
     private func load() {
         do {
             record = original ?? seed ?? LocalConnectionRecord(); record.kind = kind; group = initialGroup
+            if original == nil && kind == .ssh { createAlias = true; if seed == nil && template == nil && blueprint == nil { record.authentication = .key } }
             monitorInterval = store.availability.interval
             if kind.hasPassword || kind.isWeb { record.authentication = .password }
             if original == nil { record.port = kind.defaultPort; if kind.hasPassword { record.authentication = .password; record.user = kind == .ftp || kind == .ftps ? "anonymous" : "" } }
@@ -537,6 +601,9 @@ struct RecordEditorView: View {
     }
     private func save() {
         guard validation == nil else { return }
+        let keyOnly = kind == .ssh && candidate.authentication == .key
+        let keepPassword = keyOnly || self.keepPassword
+        let removePassword = !keyOnly && self.removePassword
         var stagedTemplateURLs: [URL] = []
         var recordCommitted = false
         var ssh: ConfigChange?, credentialChanged = false, previousPassword: String?

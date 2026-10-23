@@ -1344,8 +1344,12 @@ struct CreateAliasView: View {
         guard let original = editing?.entry else { return false }
         return storedPassword && original.host.caseInsensitiveCompare(credentialTarget.host) == .orderedSame && original.user == credentialTarget.user && original.port == credentialTarget.port
     }
+    private var keyHistoryEntry: SSHAlias? {
+        guard let entry = editing?.entry, entry.host == draft.trimmedHost, entry.port == draft.port, (entry.value("ProxyJump") ?? "") == draft.jump else { return nil }
+        return entry
+    }
     private var installationEntry: SSHAlias? {
-        guard let entry = editing?.entry, entry.host == draft.trimmedHost, entry.user == draft.user.trimmingCharacters(in: .whitespaces), entry.port == draft.port, (entry.value("ProxyJump") ?? "") == draft.jump else { return nil }
+        guard let entry = keyHistoryEntry, entry.user == draft.user.trimmingCharacters(in: .whitespaces) else { return nil }
         return entry
     }
     private var validatedDraft: AliasDraft { var value = draft; if !aliasEnabled { value.name = "connection" }; return value }
@@ -1365,7 +1369,7 @@ struct CreateAliasView: View {
                 RecordNoteFields(appearance: $appearance)
             case .connection:
                 connectionFields
-            case .key: RecordSSHKeyFields(identity: $draft.identity, entry: installationEntry, password: credentialEdit.choice.isExternal ? "" : password).environmentObject(store)
+            case .key: RecordSSHKeyFields(identity: $draft.identity, user: $draft.user, authentication: $draft.authentication, entry: installationEntry, historyEntry: keyHistoryEntry, usesExternalCredentials: credentialEdit.choice.isExternal, password: credentialEdit.choice.isExternal ? "" : password).environmentObject(store)
             case .mfa: RecordTOTPFields(draft: totp, entry: editing?.entry, config: store.config.url)
             case .certificates: EmptyView()
             case .availability: RecordAvailabilityFields(entry: installationEntry != nil ? editing?.entry : nil, enabled: $monitorEnabled, interval: $monitorInterval, monitor: store.availability)
@@ -1404,10 +1408,10 @@ struct CreateAliasView: View {
     private var connectionFields: some View {
         VStack(alignment: .leading, spacing: 16) {
             RecordCredentialFields(vault: store.credentialVault(), workspace: store.kdbx!, choice: $credentialEdit.choice, username: $draft.user)
-            RecordSSHConnectionFields(host: $draft.host, appearance: $appearance, user: $draft.user, port: $draft.port, jump: $draft.jump, authentication: $draft.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: canReuseSavedPassword, identifier: "alias", usesExternalCredentials: credentialEdit.choice.isExternal, changedAt: editing.map { SSHPasswordStore.changedAt(for: $0.entry, config: store.config.url) } ?? nil, savedPassword: canReuseSavedPassword ? { try SSHPasswordStore.storedPassword(for: editing!.entry, config: store.config.url) } : nil)
+            RecordSSHConnectionFields(host: $draft.host, appearance: $appearance, user: $draft.user, port: $draft.port, jump: $draft.jump, authentication: $draft.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: canReuseSavedPassword, identifier: "alias", usesExternalCredentials: credentialEdit.choice.isExternal, changedAt: editing.map { SSHPasswordStore.changedAt(for: $0.entry, config: store.config.url) } ?? nil, savedPassword: canReuseSavedPassword ? { try SSHPasswordStore.storedPassword(for: editing!.entry, config: store.config.url) } : nil, passwordEntry: credentialEdit.choice == credentialEdit.original ? installationEntry : nil)
             Divider()
             if editing != nil {
-                RecordSSHAliasFields(enabled: $aliasEnabled, name: $draft.name, existingAlias: true, identifier: "aliasName")
+                RecordSSHAliasFields(enabled: $aliasEnabled, name: $draft.name, existingAlias: true, identifier: "aliasName", config: store.config.url)
             } else {
                 TextField("Имя SSH-алиаса", text: $draft.name, prompt: Text("my-server")).textFieldStyle(.roundedBorder).accessibilityIdentifier("aliasName")
             }
@@ -1427,6 +1431,8 @@ struct CreateAliasView: View {
     }
     func save() {
         guard validation == nil else { return }
+        let keepPassword = draft.authentication == .key || self.keepPassword
+        let removePassword = draft.authentication != .key && self.removePassword
         let target = credentialTarget
         var credentialChanged = false
         var previousPassword: String?

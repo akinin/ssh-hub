@@ -98,6 +98,7 @@ final class HubTerminalView: LocalProcessTerminalView {
     private var event: SessionEvent?
     private var preflight: Task<Void, Never>?
     private let installation: PublicKeyInstallation?
+    private var installationCompleted: ((String) -> Void)?
     private var initialPassword: String?
     private let authorizationCheck: (() -> Bool)?
     func resume() {
@@ -135,8 +136,9 @@ final class HubTerminalView: LocalProcessTerminalView {
         event?.ended = Date(); event?.result = status
         if let event { SessionJournal.shared.update(event) }
     }
-    init(entry: SSHAlias, title: String, config: URL, id: UUID = UUID(), restored: Bool = false, installation: PublicKeyInstallation? = nil, password: String? = nil, authorizationCheck: (() -> Bool)? = nil) {
+    init(entry: SSHAlias, title: String, config: URL, id: UUID = UUID(), restored: Bool = false, installation: PublicKeyInstallation? = nil, password: String? = nil, authorizationCheck: (() -> Bool)? = nil, installationCompleted: ((String) -> Void)? = nil) {
         self.entry = entry; self.title = title; self.config = config; self.id = id
+        self.installationCompleted = installationCompleted
         self.installation = installation; self.initialPassword = password; self.authorizationCheck = authorizationCheck
         awaitingConnection = restored
         if restored { status = "Восстановленная вкладка · подключение по кнопке" }
@@ -207,23 +209,32 @@ final class HubTerminalView: LocalProcessTerminalView {
         let directory = entry.recordKind == .localShell && entry.transport?.workingDirectory.isEmpty == false ? entry.transport!.workingDirectory : NSHomeDirectory()
         terminal.startProcess(executable: launch.executable, args: launch.arguments,
                               environment: environment.map { "\($0.key)=\($0.value)" }, currentDirectory: directory)
-        if terminal.process.running { status = installation != nil ? "Установка ключа · \(installation!.loginUser(for: entry))@\(entry.host)" : entry.canSSH ? "SSH · \(entry.user)@\(entry.host)" : (entry.recordKind?.title ?? "Консоль") + " · " + title }
+        if terminal.process.running { status = installation != nil ? (installation!.verifyOnly ? "Проверка ключа · " : "Установка ключа · ") + "\(installation!.loginUser(for: entry))@\(entry.host)" : entry.canSSH ? "SSH · \(entry.user)@\(entry.host)" : (entry.recordKind?.title ?? "Консоль") + " · " + title }
         else { status = "Не удалось запустить подключение"; finished = true; login?.stop(); login = nil; finishEvent() }
     }
-    func disconnect() { initialPassword = nil; preflight?.cancel(); preflight = nil; guard !finished else { return }; login?.stop(); login = nil; if let view { ConsoleProcess.stop(view.process) }; finished = true; status = "Отключено пользователем"; finishEvent() }
+    func disconnect() { installationCompleted = nil; initialPassword = nil; preflight?.cancel(); preflight = nil; guard !finished else { return }; login?.stop(); login = nil; if let view { ConsoleProcess.stop(view.process) }; finished = true; status = "Отключено пользователем"; finishEvent() }
     nonisolated func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
     nonisolated func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
     nonisolated func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
     nonisolated func processTerminated(source: TerminalView, exitCode: Int32?) {
         Task { @MainActor [weak self] in
             guard let self else { return }
+            guard !self.finished else { return }
             self.login?.stop(); self.login = nil; self.finished = true
             let code = ConsoleProcess.exitCode(fromWaitStatus: exitCode)
-            if code == 0 { self.status = self.installation == nil ? "Сеанс завершён" : "Установка завершена" }
+            if let installation = self.installation, code == 0 {
+                if self.authorizationCheck?() != false, !AppAccess.shared.locked,
+                   let user = installation.confirmedUser(output: self.diagnosticTail, exitCode: code) {
+                    self.status = installation.verifyOnly ? "Ключ найден в authorized_keys · " + user : "Ключ установлен · " + user
+                    let completed = self.installationCompleted; self.installationCompleted = nil
+                    completed?(user)
+                } else { self.status = "Не удалось подтвердить результат. Сведения о ключе не сохранены." }
+            } else if code == 0 { self.status = "Сеанс завершён" }
             else if self.entry.canSSH {
                 let result = ConnectionResult.classify(status: code ?? 255, log: String(decoding: self.diagnosticTail, as: UTF8.self))
                 self.status = result.title + " · " + result.detail
             } else { self.status = (self.entry.recordKind?.title ?? "Сеанс") + " завершён · код \(code.map(String.init) ?? "—")" }
+            self.installationCompleted = nil
             self.finishEvent()
         }
     }

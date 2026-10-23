@@ -29,6 +29,7 @@ extension AliasStore {
         guard old != new else { return }
         do {
             for profile in profiles.profiles {
+                try SSHInstalledAccessRepository(config: config.url, profile: profile.id).move(from: old, to: new)
                 let copies = KDBXRecordCopyRepository(file: HubFeatureFile(feature: "KeePassCopies", config: config.url, profile: profile.id))
                 var copied = try copies.load()
                 if let value = copied.removeValue(forKey: old) { copied[new] = value; try copies.file.write(copied); if profile.id == profiles.active { keePassCopies = copied } }

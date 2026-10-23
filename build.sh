@@ -21,6 +21,8 @@ swiftc -swift-version 5 -module-cache-path "$build_dir/module-cache" SSHConfig.s
 "$build_dir/feature-tests"
 swiftc -swift-version 5 -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift PublicKeys.swift TerminalLauncher.swift RecentConnections.swift ExtendedTests.swift -o "$build_dir/extended-tests" -framework AppKit
 "$build_dir/extended-tests"
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift PublicKeys.swift HubFeatureStorage.swift SSHInstalledAccess.swift SSHInstalledAccessTests.swift -o "$build_dir/ssh-installed-access-tests" -framework AppKit
+"$build_dir/ssh-installed-access-tests"
 swiftc -swift-version 5 -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift ConnectionLogo.swift AliasTransfer.swift LocalConnections.swift ConnectionAppearanceTests.swift -o "$build_dir/appearance-tests" -framework AppKit
 "$build_dir/appearance-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift RecordTrash.swift RecordTrashTests.swift -o "$build_dir/trash-tests" -framework AppKit

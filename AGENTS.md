@@ -4,6 +4,14 @@
 
 Нативное приложение для macOS 14+ на Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
 
+## Изменения 3.18.0 (сборка 76): установленные SSH-ключи
+
+- RecordSSHConnectionFields uses a segmented key/password picker in both editors; preserve legacy automatic/combined modes until explicit change. Key-only UI has a disabled secure field and explicit copy only, preserving saved/pending password and resetting deletion/keep-off flags when switched to key. Copy is on-demand, checks auth/profile/config before/after, marks clipboard concealed and clears in 30s only if unchanged. Never reveal secrets in logs or QA screenshots; use owned synthetic passwords/configs only.
+- New SSH records default to an enabled public SSH alias, with an explicit editable name and opt-out. Existing standalone records retain their mode. Display config destination and the correct ssh/-F command; never add Includes or modify unrelated ~/.ssh/config implicitly.
+- SSHInstalledAccess receipts are private config+profile metadata, scoped to record+host+port, bounded and saved only after exit 0 plus per-attempt nonce and effective id -un. Failed/stopped/stale authorization never records success. Receipts attest dated authorized_keys presence, not sshd/root login permission. No key material or passwords in receipts; do not include them in ordinary record JSON.
+- Explicit read-only verification can recover earlier installations without mkdir/chmod/writes; refuse symlinks and ignore commented keys/key mentions in comments while handling quoted authorized_keys options. Preserve existing installation credential routing. Never test installs or checks on user servers: owned temporary HOME/shims/loopback only.
+- SSH key editors list receipts and select user+matching local private-key path in the existing draft; validate its public fingerprint, use key auth, never auto-connect. External credential bindings disable this selection. Save/Cancel and password identity guards remain. Rename transfers receipts; host/port changes do not inherit confirmation. Actual successful installation history persists independently of editor Cancel.
+
 ## Изменения 3.17.3 (сборка 75)
 
 - summaryFacts uses a shared LazyVGrid with a width-derived fixed count of flexible columns, so incomplete final rows align with preceding rows. Preserve responsive column count; do not distribute each row independently. Native wide and narrow fixtures cover nine populated hardware fields and multiline OS text.

@@ -16,8 +16,11 @@ struct PublicKeyInstallation {
     let key: String
     let method: KeyInstallationMethod
     let username: String
-    init(key: PublicSSHKey, method: KeyInstallationMethod, username: String) throws {
+    let verifyOnly: Bool
+    let confirmation = "SSH_HUB_KEY_" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+    init(key: PublicSSHKey, method: KeyInstallationMethod, username: String, verifyOnly: Bool = false) throws {
         self.key = try PublicSSHKey.validate(key.text)
+        self.verifyOnly = verifyOnly
         self.method = method; self.username = username.trimmingCharacters(in: .whitespaces)
         guard method == .current || SSHConfig.matches(self.username, "^[A-Za-z_][A-Za-z0-9_.-]{0,63}[$]?$") else {
             throw ConfigError.message("Укажи имя пользователя сервера, например root.")
@@ -25,10 +28,56 @@ struct PublicKeyInstallation {
     }
     func loginUser(for entry: SSHAlias) -> String { method == .direct ? username : entry.user }
     func reusesLoginPassword(for entry: SSHAlias) -> Bool { loginUser(for: entry) == entry.user }
-    var remoteCommand: String {
+    func confirmedUser(output: Data, exitCode: Int32?) -> String? {
+        guard exitCode == 0 else { return nil }
+        let users = String(decoding: output, as: UTF8.self).components(separatedBy: .newlines).compactMap { line -> String? in
+            let line = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard line.hasPrefix(confirmation + ":") else { return nil }
+            let user = String(line.dropFirst(confirmation.count + 1))
+            return SSHConfig.matches(user, "^[A-Za-z_][A-Za-z0-9_.-]{0,63}[$]?$") && (method == .current || user == username) ? user : nil
+        }
+        return Set(users).count == 1 ? users.first : nil
+    }
+    private var presenceCommand: String {
         let parts = key.split(whereSeparator: { $0 == " " || $0 == "\t" })
+        // authorized_keys has an optional quoted options field, then type + blob.
+        let parser = #"""
+        function token(   value,quoted,escaped,c) {
+            while (position <= length($0) && substr($0,position,1) ~ /[ \t]/) position++
+            value=""; quoted=0; escaped=0
+            while (position <= length($0)) {
+                c=substr($0,position++,1)
+                if (!quoted && !escaped && c ~ /[ \t]/) break
+                value=value c
+                if (escaped) escaped=0
+                else if (c == "\\") escaped=1
+                else if (c == "\"") quoted=!quoted
+            }
+            return value
+        }
+        /^[ \t]*#/ { next }
+        { position=1; kind=token(); if (kind != type) kind=token(); material=token(); if (kind == type && material == blob) found=1 }
+        END { exit !found }
+        """#
+        return "awk -v type=" + SSHConfig.shellQuote(String(parts[0])) + " -v blob=" + SSHConfig.shellQuote(String(parts[1])) + " " + SSHConfig.shellQuote(parser) + " \"$file\""
+    }
+    var remoteCommand: String {
         // Run as the target account (sudo sets its HOME). No guessed home path,
         // no SSH daemon changes, and no replacement of existing authorized_keys.
+        let proof = #"printf '\n%s:%s\n' "# + SSHConfig.shellQuote(confirmation) + #" "$(id -un)""#
+        if verifyOnly {
+            let script = """
+            set -eu
+            test -n "${HOME:-}" && test -d "$HOME"
+            directory="$HOME/.ssh"
+            file="$directory/authorized_keys"
+            test ! -L "$directory" && test ! -L "$file" && test -f "$file" && test -r "$file" || { printf '%s\\n' 'authorized_keys недоступен или является ссылкой.' >&2; exit 1; }
+            \(presenceCommand) || { printf '%s\\n' 'Ключ не найден или authorized_keys недоступен.' >&2; exit 1; }
+            \(proof)
+            """
+            let command = "sh -c " + SSHConfig.shellQuote(script)
+            return method == .sudo ? "sudo -H -u " + SSHConfig.shellQuote(username) + " -- " + command : command
+        }
         let script = """
         set -eu
         umask 077
@@ -42,13 +91,14 @@ struct PublicKeyInstallation {
         if test -e "$file"; then test -f "$file"; fi
         touch "$file"
         chmod 600 "$file"
-        if awk -v type=\(SSHConfig.shellQuote(String(parts[0]))) -v blob=\(SSHConfig.shellQuote(String(parts[1]))) ' { for (i = 1; i < NF; i++) if ($i == type && $(i+1) == blob) found = 1 } END { exit !found }' "$file"; then
+        if \(presenceCommand); then
             printf '%s\\n' 'Ключ уже установлен.'
         else
             if test -s "$file" && test "$(tail -c 1 "$file" | od -An -tu1 | tr -d ' ')" != 10; then printf '\\n' >> "$file"; fi
             printf '%s\\n' \(SSHConfig.shellQuote(key)) >> "$file"
             printf '%s\\n' 'Ключ установлен.'
         fi
+        \(proof)
         """
         let command = "sh -c " + SSHConfig.shellQuote(script)
         return method == .sudo ? "sudo -H -u " + SSHConfig.shellQuote(username) + " -- " + command : command
