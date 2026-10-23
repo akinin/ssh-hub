@@ -4,6 +4,11 @@
 
 Нативное приложение для macOS 14+ на Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
 
+## Изменения 3.18.1 (сборка 77): порядок полей SSH
+
+- Installed SSH access rows are full-width plain buttons sharing the same validated selection function as the user picker. Selection sets the draft user/key/auth only; external credentials disable selection. Use a subtle green fill/border and selected accessibility trait; preserve theme elsewhere and outer Save/Cancel.
+- SSH connection fields show authentication before username, then password. For local SSH records, put the existing VPN picker immediately after SSHJumpPicker and before the alias divider; other transports retain their picker position. Alias toggle is titled «SSH-алиас», with no explanatory captions below it. Keep alias Save/Cancel and runtime routing unchanged.
+
 ## Изменения 3.18.0 (сборка 76): установленные SSH-ключи
 
 - RecordSSHConnectionFields uses a segmented key/password picker in both editors; preserve legacy automatic/combined modes until explicit change. Key-only UI has a disabled secure field and explicit copy only, preserving saved/pending password and resetting deletion/keep-off flags when switched to key. Copy is on-demand, checks auth/profile/config before/after, marks clipboard concealed and clears in 30s only if unchanged. Never reveal secrets in logs or QA screenshots; use owned synthetic passwords/configs only.

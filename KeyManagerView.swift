@@ -46,11 +46,8 @@ struct RecordSSHKeyFields: View {
                     Picker("Пользователь входа", selection: Binding(get: {
                         accesses.first { $0.username == user && PublicSSHKey.identityURL(identity).path == PublicSSHKey.identityURL($0.identity).path }?.id ?? ""
                     }, set: { value in
-                        guard let access = accesses.first(where: { $0.id == value }), let historyEntry else { return }
-                        do {
-                            try access.validateLocalKey(for: historyEntry)
-                            user = access.username; identity = access.identity; authentication = .key; error = nil
-                        } catch { self.error = error.localizedDescription }
+                        guard let access = accesses.first(where: { $0.id == value }) else { return }
+                        select(access)
                     })) {
                         Text("Вручную · " + user).tag("")
                         ForEach(accesses) { access in Text(access.username + " · " + access.keyName).tag(access.id) }
@@ -59,24 +56,21 @@ struct RecordSSHKeyFields: View {
                 if usesExternalCredentials { Text("Пользователь и ключ заданы общим набором или KeePass. Для выбора установленного доступа переключись на данные записи.").font(.caption).foregroundStyle(.secondary) }
                 Text("Установленные ключи").font(.headline).padding(.top, 8)
                 ForEach(accesses) { access in
-                    HStack(alignment: .center, spacing: 12) {
-                        Image(systemName: "key.horizontal").foregroundStyle(.blue)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(access.username + " · " + access.keyName).fontWeight(.medium)
-                            Text(access.fingerprint).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                            Text("Подтверждено " + access.confirmedAt.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 0)
-                        if user == access.username && PublicSSHKey.identityURL(identity).path == PublicSSHKey.identityURL(access.identity).path { Label("Выбран", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green) }
-                    }.padding(.vertical, 6)
+                    accessRow(access)
                 }
                 Text("Наличие ключа подтверждено на указанную дату. Вход выбранным пользователем зависит также от настроек SSH-сервера. Выбор применится после сохранения записи.").font(.caption).foregroundStyle(.secondary)
                 Divider().padding(.vertical, 4)
             } else if historyEntry != nil {
                 Text("Нет сохранённых сведений об установке. Ранее добавленный ключ можно проверить на сервере.").font(.caption).foregroundStyle(.secondary)
             }
-            Button("Установить публичный ключ на сервер…", systemImage: "arrow.up.to.line") { prepare(verifyOnly: false) }.disabled(entry == nil)
-            Button("Проверить установленный ключ…", systemImage: "checkmark.shield") { prepare(verifyOnly: true) }.disabled(entry == nil)
+            Button { prepare(verifyOnly: false) } label: {
+                Label("Установить публичный ключ на сервер…", systemImage: "arrow.up.to.line")
+                    .frame(maxWidth: .infinity, minHeight: 20, alignment: .leading)
+            }.buttonStyle(.bordered).disabled(entry == nil)
+            Button { prepare(verifyOnly: true) } label: {
+                Label("Проверить установленный ключ…", systemImage: "checkmark.shield")
+                    .frame(maxWidth: .infinity, minHeight: 20, alignment: .leading)
+            }.buttonStyle(.bordered).disabled(entry == nil)
             if entry == nil { Text("Для установки ключа сначала сохрани адрес, пользователя, порт и ProxyJump записи.").font(.caption).foregroundStyle(.secondary) }
             if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
         }
@@ -91,6 +85,40 @@ struct RecordSSHKeyFields: View {
         .sheet(item: $installation) { request in
             InstallationReviewView(entry: request.entry, key: request.key, password: password, verifyOnly: request.verifyOnly).environmentObject(store)
         }
+    }
+    private func isSelected(_ access: SSHInstalledAccess) -> Bool {
+        access.username == user && PublicSSHKey.identityURL(identity).path == PublicSSHKey.identityURL(access.identity).path
+    }
+    private func select(_ access: SSHInstalledAccess) {
+        guard !usesExternalCredentials, let historyEntry else { return }
+        do {
+            try access.validateLocalKey(for: historyEntry)
+            user = access.username; identity = access.identity; authentication = .key; error = nil
+        } catch { self.error = error.localizedDescription }
+    }
+    private func accessRow(_ access: SSHInstalledAccess) -> some View {
+        let selected = isSelected(access)
+        return Button { select(access) } label: {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "key.horizontal").foregroundStyle(selected ? .green : .blue)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(access.username + " · " + access.keyName).fontWeight(.medium)
+                    Text(access.fingerprint).font(.system(.caption, design: .monospaced))
+                    Text("Подтверждено " + access.confirmedAt.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                if selected { Label("Выбран", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green) }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
+            .background(selected ? Color.green.opacity(0.09) : Color.clear, in: RoundedRectangle(cornerRadius: 9))
+            .overlay { RoundedRectangle(cornerRadius: 9).strokeBorder(selected ? Color.green.opacity(0.2) : Color.clear, lineWidth: 1) }
+            .contentShape(RoundedRectangle(cornerRadius: 9))
+        }
+        .buttonStyle(.plain)
+        .disabled(usesExternalCredentials)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityIdentifier("installedSSHAccess-" + access.username)
     }
     private func prepare(verifyOnly: Bool) {
         do {

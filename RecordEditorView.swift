@@ -79,7 +79,6 @@ struct RecordSSHConnectionFields: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             RecordAddressFields(address: $host, appearance: $appearance, identifier: identifier)
-            RecordFieldRow("Пользователь") { TextField("root", text: $user).accessibilityIdentifier(identifier + "User") }
             RecordFieldRow("Вход") {
                 Picker("Способ входа", selection: $authentication) {
                     Text("Пароль").tag(SSHAuthentication.password)
@@ -87,6 +86,7 @@ struct RecordSSHConnectionFields: View {
                     if authentication == .automatic || authentication == .keyAndPassword { Text(authentication.title).tag(authentication) }
                 }.pickerStyle(.segmented).accessibilityIdentifier(identifier + "Authentication")
             }
+            RecordFieldRow("Пользователь") { TextField("root", text: $user).accessibilityIdentifier(identifier + "User") }
             RecordFieldRow("Пароль") {
                 HStack(alignment: .top, spacing: 8) {
                     if keyOnly {
@@ -152,30 +152,19 @@ struct SSHJumpPicker: View {
                 }.labelsHidden()
             }
             if selection.wrappedValue == "manual" { RecordFieldRow("ProxyJump") { TextField("user@host:port или цепочка алиасов", text: $jump).textFieldStyle(.roundedBorder) } }
-            if !jump.trimmingCharacters(in: .whitespaces).isEmpty { Text("Шлюз использует параметры своего SSH-алиаса. Для выбора записи SSH Hub включи у неё «SSH-алиас в конфиге».").font(.caption).foregroundStyle(.secondary) }
+            if !jump.trimmingCharacters(in: .whitespaces).isEmpty { Text("Шлюз использует параметры своего SSH-алиаса. Для выбора записи SSH Hub включи у неё «SSH-алиас».").font(.caption).foregroundStyle(.secondary) }
         }
     }
 }
 struct RecordSSHAliasFields: View {
     @Binding var enabled: Bool
     @Binding var name: String
-    let existingAlias: Bool
     let identifier: String
-    var config: URL? = nil
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Toggle("SSH-алиас в конфиге", isOn: $enabled).toggleStyle(.switch).accessibilityIdentifier(identifier + "Enabled")
+            Toggle("SSH-алиас", isOn: $enabled).toggleStyle(.switch).accessibilityIdentifier(identifier + "Enabled")
             if enabled {
                 TextField("Имя SSH-алиаса", text: $name, prompt: Text("my-server")).textFieldStyle(.roundedBorder).accessibilityIdentifier(identifier)
-                if let config {
-                    Text("Алиас будет сохранён в " + config.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                    if SSHConfig.matches(name, "^[A-Za-z0-9_][A-Za-z0-9_.-]*$") {
-                        let normal = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh/config").standardizedFileURL
-                        Text("В Терминале: ssh " + (config.standardizedFileURL == normal ? "" : "-F " + SSHConfig.shellQuote(config.path) + " ") + SSHConfig.shellQuote(name)).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                    }
-                }
-            } else {
-                Text(existingAlias ? "При сохранении алиас удалится из SSH-конфига. Запись и её материалы останутся в SSH Hub." : "Запись хранится в SSH Hub. SSH-алиас можно включить позже.").font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -396,15 +385,16 @@ struct RecordEditorView: View {
                 if kind == .ssh || kind.hasPassword || kind.isWeb { credentialFields }
                 if kind == .ssh {
                     fields
+                    vpnFields
                     Divider()
-                    RecordSSHAliasFields(enabled: $createAlias, name: $aliasName, existingAlias: original?.aliasName != nil, identifier: "recordAlias", config: store.config.url)
+                    RecordSSHAliasFields(enabled: $createAlias, name: $aliasName, identifier: "recordAlias")
 
                 } else if kind == .serial { SerialSettingsFields(settings: Binding(get: { record.serial ?? SerialSettings() }, set: { record.serial = $0 })) }
                 else if kind.isWeb { webFields }
                 else if kind.isSession { transportFields }
                 else { Text("Добавь инструкции в документации и файлы во вложениях после сохранения записи.").foregroundStyle(.secondary) }
                 if [.rdp, .vnc].contains(kind) || kind.isWeb { tunnelFields }
-                if [.ssh, .rdp, .vnc, .web, .website, .telnet, .ftp, .ftps, .webdav].contains(kind) { WireGuardProfilePicker(selected: Binding(get: { record.transport?.wireGuardID }, set: { value in var settings = record.transport ?? ConnectionSettings(); settings.wireGuardID = value; record.transport = settings }), workspace: store.wireGuardWorkspace()) }
+                if [.rdp, .vnc, .web, .website, .telnet, .ftp, .ftps, .webdav].contains(kind) { vpnFields }
             case .key: RecordSSHKeyFields(identity: $record.identity, user: $record.user, authentication: $record.authentication, entry: installationEntry, historyEntry: keyHistoryEntry, usesExternalCredentials: usesSharedCredential, password: usesSharedCredential ? "" : password).environmentObject(store)
             case .mfa: RecordTOTPFields(draft: totp, entry: savedEntry, config: store.config.url)
             case .certificates: RecordCertificateFields(appearance: $appearance, entry: savedEntry, monitor: store.certificates)
@@ -524,6 +514,9 @@ struct RecordEditorView: View {
         }
         if kind == .mosh { Text("Нужен mosh на Mac и mosh-server на сервере. Вход использует SSH с проверкой ключа; затем Mosh работает по UDP.").font(.caption).foregroundStyle(.secondary) }
         if kind == .telnet || kind == .ftp { Text("Этот протокол передаёт данные без шифрования. Используй в доверенной сети.").font(.caption).foregroundStyle(.secondary) }
+    }
+    private var vpnFields: some View {
+        WireGuardProfilePicker(selected: Binding(get: { record.transport?.wireGuardID }, set: { value in var settings = record.transport ?? ConnectionSettings(); settings.wireGuardID = value; record.transport = settings }), workspace: store.wireGuardWorkspace())
     }
     private var tunnelFields: some View {
         VStack(alignment: .leading, spacing: 8) {
