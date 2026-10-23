@@ -4,6 +4,10 @@
 
 Нативное приложение для macOS 14+ на Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
 
+## Изменения 3.17.3 (сборка 75)
+
+- summaryFacts uses a shared LazyVGrid with a width-derived fixed count of flexible columns, so incomplete final rows align with preceding rows. Preserve responsive column count; do not distribute each row independently. Native wide and narrow fixtures cover nine populated hardware fields and multiline OS text.
+
 ## Изменения 3.17.2 (сборка 74)
 
 - Inventory layout: network facts/header/rows share three equal columns with 16pt spacing; visibility button is at the far right and row cells vertically centered. Pass actual capped content width to detailed structured editors and suggestions too. Optional purchaseNote is multiline private inventory metadata, independent of general notes; keep draft/save, encrypted backup and legacy empty defaults. Summary section shortcut links and visibility-reset link removed; sidebar navigation and per-interface hide/restore remain.

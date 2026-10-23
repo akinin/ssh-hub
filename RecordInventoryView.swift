@@ -359,14 +359,8 @@ struct RecordInventoryView: View {
         let populated = keys.filter { !preview[$0].isEmpty }
         if let width, !populated.isEmpty {
             let columns = max(1, min(populated.count, Int((max(0, width) + 16) / (minimumWidth + 16))))
-            let rows = (populated.count + columns - 1) / columns
-            let perRow = (populated.count + rows - 1) / rows
-            VStack(alignment: .leading, spacing: 10) {
-                ForEach(0..<rows, id: \.self) { index in
-                    HStack(alignment: .top, spacing: 16) {
-                        ForEach(Array(populated[(index * perRow)..<min(populated.count, (index + 1) * perRow)])) { summaryFact($0) }
-                    }
-                }
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16, alignment: .topLeading), count: columns), alignment: .leading, spacing: 10) {
+                ForEach(populated) { summaryFact($0) }
             }
         } else {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 16, alignment: .topLeading)], alignment: .leading, spacing: 10) { ForEach(populated) { summaryFact($0) } }
