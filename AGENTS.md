@@ -4,6 +4,10 @@
 
 Нативное приложение для macOS 14+ на Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
 
+## Изменения 3.18.2 (сборка 78): выбор ключа
+
+- SSH key fields select the draft user/key by clicking installed access rows only; remove the redundant user dropdown. Preserve validation, selected styling, external credential guards and outer Save/Cancel. The small record-header edit pencil uses bold symbol weight without changing its size or configured color.
+
 ## Изменения 3.18.1 (сборка 77): порядок полей SSH
 
 - Installed SSH access rows are full-width plain buttons sharing the same validated selection function as the user picker. Selection sets the draft user/key/auth only; external credentials disable selection. Use a subtle green fill/border and selected accessibility trait; preserve theme elsewhere and outer Save/Cancel.

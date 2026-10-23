@@ -42,17 +42,6 @@ struct RecordSSHKeyFields: View {
                 }
             }
             if !accesses.isEmpty {
-                RecordFieldRow("Пользователь") {
-                    Picker("Пользователь входа", selection: Binding(get: {
-                        accesses.first { $0.username == user && PublicSSHKey.identityURL(identity).path == PublicSSHKey.identityURL($0.identity).path }?.id ?? ""
-                    }, set: { value in
-                        guard let access = accesses.first(where: { $0.id == value }) else { return }
-                        select(access)
-                    })) {
-                        Text("Вручную · " + user).tag("")
-                        ForEach(accesses) { access in Text(access.username + " · " + access.keyName).tag(access.id) }
-                    }.disabled(usesExternalCredentials).accessibilityIdentifier("recordSSHInstalledUser")
-                }
                 if usesExternalCredentials { Text("Пользователь и ключ заданы общим набором или KeePass. Для выбора установленного доступа переключись на данные записи.").font(.caption).foregroundStyle(.secondary) }
                 Text("Установленные ключи").font(.headline).padding(.top, 8)
                 ForEach(accesses) { access in

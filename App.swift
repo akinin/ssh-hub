@@ -1277,7 +1277,7 @@ struct AliasDetail: View {
                     if let action = RecordAction(rawValue: style.id) {
                         if action == .keePass { keePassAction(style, header: true) }
                         else {
-                            Button(role: action == .delete ? .destructive : nil) { run(action) } label: { Image(systemName: action == .favorite && store.isFavorite(entry) ? "star.fill" : action.icon).foregroundStyle(action == .favorite && store.isFavorite(entry) ? .yellow : style.tint).frame(width: 28, height: 28) }
+                            Button(role: action == .delete ? .destructive : nil) { run(action) } label: { Image(systemName: action == .favorite && store.isFavorite(entry) ? "star.fill" : action.icon).fontWeight(action == .edit ? .bold : nil).foregroundStyle(action == .favorite && store.isFavorite(entry) ? .yellow : style.tint).frame(width: 28, height: 28) }
                                 .disabled(action == .check && store.checkingID != nil).help(action.title).accessibilityLabel(action.title)
                         }
                     }
