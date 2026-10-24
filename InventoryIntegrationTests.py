@@ -38,6 +38,25 @@ __SSH_HUB_INVENTORY_model__
 Loopback Machine
 __SSH_HUB_INVENTORY_operatingSystem__
 Debian fixture / synthetic inventory
+__SSH_HUB_INVENTORY_memoryModules__
+format=dmidecode
+Physical Memory Array
+Number Of Devices: 2
+
+Memory Device
+Locator: DIMM A1
+Size: 16 GB
+Manufacturer: Fixture RAM Vendor
+
+__SSH_HUB_INVENTORY_motherboard__
+Manufacturer: Fixture Board Vendor
+Product Name: Demo Board
+__SSH_HUB_INVENTORY_bios__
+Vendor: Fixture Firmware
+Version: 1.2
+__SSH_HUB_INVENTORY_disks__
+format=lsblk-pairs
+NAME="nvme0n1" SIZE="1000000000000" TYPE="disk" MODEL="Fixture SSD" SERIAL="DEMO123" REV="1.2" TRAN="nvme" ROTA="0"
 __SSH_HUB_INVENTORY_storageUsage__
 Filesystem 1024-blocks Used Available Capacity Mounted on
 /dev/demo1 1000000 650000 300000 69% /

@@ -82,6 +82,74 @@ import Darwin
         let macDisks = InventoryPresentation.disks("/dev/disk0 (internal, physical):\n   0: GUID_partition_scheme *500.3 GB disk0\n   1: Apple_APFS 500.0 GB disk0s1")
         try check(macDisks.count == 1 && macDisks[0].capacity == "500.3 GB", "macOS whole disks without invented partition data")
         try check(InventoryPresentation.disks("Storage: 1000000 bytes").count == 1, "RouterOS storage")
+        let memoryFixture = """
+        format=dmidecode
+        Physical Memory Array
+        Maximum Capacity: 64 GB
+        Error Correction Type: None
+        Number Of Devices: 4
+
+        Memory Device
+        Size: 16 GB
+        Locator: DIMM A1
+        Bank Locator: BANK 0
+        Type: DDR4
+        Form Factor: SODIMM
+        Speed: 3200 MT/s
+        Configured Memory Speed: 2667 MT/s
+        Manufacturer: Fixture Vendor
+        Part Number: DEMO-16G
+        Serial Number: DEMO1234
+        Total Width: 64 bits
+        Data Width: 64 bits
+
+        Memory Device
+        Size: 16 GB
+        Locator: DIMM A1
+        Manufacturer: To Be Filled By O.E.M.
+
+        Memory Device
+        Size: No Module Installed
+        Locator: DIMM B1
+
+        Memory Device
+        Size: Unknown
+        Locator: DIMM B2
+        """
+        let modules = InventoryPresentation.memoryModules(memoryFixture)
+        try check(modules.modules.count == 4 && modules.modules.filter(\.installed).count == 2 && modules.modules.filter(\.empty).count == 1, "DMI retains per-slot modules, duplicate locators and unknown occupancy separately")
+        try check(Set(modules.modules.map(\.id)).count == 4 && !modules.modules[3].installed && !modules.modules[3].empty, "unknown size is never a free slot; slot identities do not depend on firmware labels")
+        try check(modules.modules[0].properties.contains { $0.title == "Настроенная скорость" && $0.value == "2667 MT/s" } && modules.modules[0].properties.contains { $0.title == "Скорость модуля" && $0.value == "3200 MT/s" }, "rated and configured speeds remain distinct")
+        try check(!modules.modules[1].properties.contains { $0.title == "Производитель" } && modules.properties.contains { $0.title == "Слотов по DMI" && $0.value == "4" }, "OEM placeholders omitted, array slot count retained without inferring installed total")
+        let boardFixture = "Manufacturer: Fixture Board Vendor\nProduct Name: Demo Board\nVersion: 1.2\nSerial Number: BOARD-DEMO\nAsset Tag: Default string"
+        let biosFixture = "Vendor: Fixture Firmware\nVersion: 2.3\nRelease Date: 01/02/2026"
+        try check(InventoryPresentation.boardProperties(boardFixture, bios: false).count == 4 && InventoryPresentation.boardProperties(biosFixture, bios: true).count == 3, "board and BIOS typed properties omit default values")
+        let diskFixture = #"NAME="nvme0n1" SIZE="1000000000000" TYPE="disk" MODEL="Fixture\x20SSD\x22" VENDOR="Demo" SERIAL="SERIAL-TEST" REV="1.2" TRAN="nvme" ROTA="0""#
+        let physicalDisks = InventoryPresentation.disks("format=lsblk-pairs\n" + diskFixture + "\n" + diskFixture + #"\nNAME="nvme0n1p1" SIZE="1000" TYPE="part" MODEL="Partition"\nNAME="mmcblk0boot0" SIZE="1000" TYPE="disk" MODEL="Boot area""#.replacingOccurrences(of: #"\n"#, with: "\n"))
+        try check(physicalDisks.count == 1 && physicalDisks[0].detail == "Fixture SSD\"" && physicalDisks[0].properties.contains { $0.title == "Прошивка" && $0.value == "1.2" }, "lsblk pairs safely decode hex, retain serial/firmware and omit partitions, boot areas and duplicates")
+        try check(InventoryPresentation.disks(#"""
+        format=lsblk-pairs
+        NAME="sda" SIZE="999999999999999999999999" TYPE="disk"
+        """#).isEmpty, "disk size overflow rejected")
+        for text in [String(repeating: "x", count: 16385), "arbitrary unrecognized data"] {
+            try check(InventoryPresentation.memoryModules(text).modules.isEmpty && InventoryPresentation.boardProperties(text, bios: false).isEmpty, "unrecognized/oversized hardware text never creates invented properties")
+        }
+        let hardwareSnapshot = try InventoryCollection.parse("__SSH_HUB_INVENTORY_memoryModules__\n" + memoryFixture + "\n__SSH_HUB_INVENTORY_motherboard__\n" + boardFixture + "\n__SSH_HUB_INVENTORY_bios__\n" + biosFixture + "\n__SSH_HUB_INVENTORY_disks__\nformat=lsblk-pairs\n" + diskFixture, collector: .linux)
+        var hardwareRecord = RecordInventory(); hardwareRecord.append(hardwareSnapshot)
+        var hardwareDraft = hardwareRecord.fields; hardwareDraft.apply(hardwareSnapshot.facts, fields: [.memoryModules, .motherboard, .bios, .disks]); hardwareRecord.draft = hardwareDraft
+        try repository.write(hardwareRecord, for: "hardware")
+        try check(try repository.load("hardware") == hardwareRecord && hardwareRecord.manual.isEmpty, "new hardware facts/draft persist separately; collection never commits manual fields")
+        hardwareRecord.save(); try repository.write(hardwareRecord, for: "hardware")
+        try check(try repository.load("hardware").manual[.memoryModules] == memoryFixture, "explicit Save preserves exact collected hardware text")
+        for (marker, issue) in [("__SSH_HUB_HARDWARE_TOOL_MISSING__", InventoryHardwareIssue.memoryToolMissing), ("__SSH_HUB_HARDWARE_UNAVAILABLE__", .memoryUnavailable), ("", .memoryNotReported)] {
+            let denied = try InventoryCollection.parse("__SSH_HUB_INVENTORY_memory__\n32 GiB\n__SSH_HUB_INVENTORY_memoryModules__\n" + marker, collector: .linux)
+            try check(denied.facts[.memoryModules].isEmpty && denied.hardwareIssues == [issue], "missing tool, unavailable DMI and absent firmware data have explicit non-fact diagnostics")
+            var retained = hardwareRecord.manual; retained.apply(denied.facts, fields: [.memoryModules])
+            try check(retained[.memoryModules] == memoryFixture, "failed collection cannot replace saved module details")
+            var record = RecordInventory(); record.append(denied); try repository.write(record, for: "hardware-issue")
+            try check(try repository.load("hardware-issue") == record, "hardware diagnostics survive snapshot roundtrip")
+        }
+        try check(snapshot.hardwareIssues == nil && legacy.manual[.memoryModules].isEmpty && legacy.manual[.motherboard].isEmpty && legacy.manual[.bios].isEmpty, "legacy snapshots and cards need no migration")
         let usage = InventoryPresentation.storage("Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 1000 600 350 64% /\ntmpfs 200 1 199 1% /run\n/dev/sdb1 2000 100 1900 5% /media/Data Disk")
         try check(usage.count == 2 && usage[0].total == 1_024_000 && usage[0].used == 614_400 && usage[0].available == 358_400 && usage[0].fraction == 0.6 && usage[1].mount == "/media/Data Disk", "df KiB values preserve reserved space and paths with spaces; pseudo filesystems excluded")
         let apfs = InventoryPresentation.storage("/dev/disk3s1s1 1000 100 600 15% /\n/dev/disk3s5 1000 300 600 34% /System/Volumes/Data\n/dev/disk3s6 1000 0 600 0% /System/Volumes/VM")
@@ -180,9 +248,9 @@ import Darwin
         try fixture("bin/ss", "#!/bin/sh\nprintf 'tcp LISTEN 0 128 0.0.0.0:22 *:* users:((\"sshd\",pid=123,fd=3))\\n'\n", executable: true)
         for name in ["ip", "df", "lsblk"] { try fixture("bin/" + name, "#!/bin/sh\nexit 0\n", executable: true) }
         var linuxCommand = InventoryCollection.command(.linux)
-        for path in ["/proc/", "/sys/", "/var/", "/usr/lib/wb-release", "/etc/os-release"] {
-            linuxCommand = linuxCommand.replacingOccurrences(of: path, with: linuxRoot.path + path)
-        }
+        let fixturePaths = ["/proc/", "/sys/", "/var/", "/usr/lib/wb-release", "/etc/os-release"]
+        for (index, path) in fixturePaths.enumerated() { linuxCommand = linuxCommand.replacingOccurrences(of: path, with: "__INVENTORY_FIXTURE_PATH_\(index)__") }
+        for (index, path) in fixturePaths.enumerated() { linuxCommand = linuxCommand.replacingOccurrences(of: "__INVENTORY_FIXTURE_PATH_\(index)__", with: linuxRoot.path + path) }
         let linuxProcess = Process(), linuxOutput = Pipe()
         linuxProcess.executableURL = URL(fileURLWithPath: "/bin/sh"); linuxProcess.arguments = ["-c", linuxCommand]
         linuxProcess.environment = ["PATH": bin.path + ":/usr/bin:/bin"]
@@ -191,6 +259,32 @@ import Darwin
         let armFacts = try InventoryCollection.parse(String(decoding: linuxData, as: UTF8.self), collector: .linux).facts
         try check(linuxProcess.terminationStatus == 0 && armFacts[.manufacturer] == "Wiren Board" && armFacts[.model] == "Wiren Board 8.5.3" && armFacts[.serial] == "DEMO1234", "production Linux command collects WB revision and serial from read-only official sources")
         try check(armFacts[.processor].contains("Cortex-A53 fixture") && armFacts[.physicalCores] == "4" && armFacts[.logicalCores] == "4" && armFacts[.socketCount] == "1" && armFacts[.operatingSystem].contains("unstable.latest (testing)"), "ARM processor topology and release are collected without guessing")
+        try fixture("dmi.txt", memoryFixture)
+        try fixture("bin/dmidecode", "#!/bin/sh\ntest \"$*\" = '-t 16 -t 17' || exit 91\ncat '" + linuxRoot.appendingPathComponent("dmi.txt").path + "'\n", executable: true)
+        for (file, value) in [("board_vendor", "Fixture Board Vendor"), ("board_name", "Demo Board"), ("board_version", "1.2"), ("board_serial", "BOARD-DEMO"), ("bios_vendor", "Fixture Firmware"), ("bios_version", "2.3"), ("bios_date", "01/02/2026")] { try fixture("sys/class/dmi/id/" + file, value + "\n") }
+        try fixture("lsblk.txt", diskFixture + "\n")
+        try fixture("bin/lsblk", "#!/bin/sh\ncat '" + linuxRoot.appendingPathComponent("lsblk.txt").path + "'\n", executable: true)
+        func runLinuxFixture() throws -> InventorySnapshot {
+            let process = Process(), pipe = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh"); process.arguments = ["-c", linuxCommand]
+            process.environment = ["PATH": bin.path + ":/usr/bin:/bin"]; process.standardOutput = pipe; process.standardError = FileHandle.nullDevice
+            try process.run(); let data = pipe.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
+            try check(process.terminationStatus == 0, "fixture collector exits successfully")
+            return try InventoryCollection.parse(String(decoding: data, as: UTF8.self), collector: .linux)
+        }
+        let hardwareCollected = try runLinuxFixture()
+        try check(InventoryPresentation.memoryModules(hardwareCollected.facts[.memoryModules]).modules == modules.modules && hardwareCollected.hardwareIssues == nil, "production Linux command whitelists complete DMI records and continues collecting other facts")
+        try check(InventoryPresentation.boardProperties(hardwareCollected.facts[.motherboard], bios: false).contains { $0.value == "BOARD-DEMO" } && InventoryPresentation.boardProperties(hardwareCollected.facts[.bios], bios: true).contains { $0.value == "2.3" }, "production Linux command reads board and BIOS sysfs fields")
+        try check(InventoryPresentation.disks(hardwareCollected.facts[.disks]) == physicalDisks, "production lsblk collection retains exact disk metadata")
+        try fixture("dmi.txt", String(repeating: "Memory Device\nSize: 16 GB\nLocator: Demo slot\nManufacturer: Fixture Vendor\n\n", count: 400))
+        let limitedHardware = try runLinuxFixture()
+        try check(limitedHardware.hardwareIssues?.contains(.memoryLimited) == true && limitedHardware.facts[.memoryModules].utf8.count <= 16384 && !InventoryPresentation.memoryModules(limitedHardware.facts[.memoryModules]).modules.isEmpty && !limitedHardware.facts[.interfaces].contains("Memory Device"), "large DMI output is bounded at complete record boundaries with an explicit partial-list notice")
+        try fixture("bin/dmidecode", "#!/bin/sh\nprintf 'Memory Device\\nSize: 16 GB\\n\\n'\nexit 1\n", executable: true)
+        let deniedHardware = try runLinuxFixture()
+        try check(deniedHardware.hardwareIssues?.contains(.memoryUnavailable) == true && deniedHardware.facts[.memoryModules].isEmpty && !deniedHardware.facts[.memory].isEmpty, "failed DMI command discards partial module data while total memory and other facts remain")
+        try fixture("bin/lsblk", "#!/bin/sh\ncase \"$*\" in *-P*) exit 1;; *) printf 'sda 100G disk Fixture SSD\\n';; esac\n", executable: true)
+        let fallbackHardware = try runLinuxFixture()
+        try check(InventoryPresentation.disks(fallbackHardware.facts[.disks]).first?.detail == "Fixture SSD", "older lsblk falls back to legacy disk format")
         // Real local macOS collection reads only this test machine. No user servers or network calls.
         let listener = socket(AF_INET, SOCK_STREAM, 0)
         try check(listener >= 0, "owned TCP listener created")

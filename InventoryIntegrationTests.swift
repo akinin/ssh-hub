@@ -49,6 +49,8 @@ import Foundation
                 let snapshot = try InventoryCollection.parse(result.output, collector: .linux)
                 try check(snapshot.facts[.manufacturer] == "Fixture Vendor" && snapshot.facts[.model] == "Loopback Machine", "exact fixture facts")
                 try check(snapshot.facts[.interfaces].contains("192.0.2.44/24"), "multiline network facts")
+                try check(InventoryPresentation.memoryModules(snapshot.facts[.memoryModules]).modules.first?.values["Manufacturer"] == "Fixture RAM Vendor" && InventoryPresentation.boardProperties(snapshot.facts[.motherboard], bios: false).count == 2 && InventoryPresentation.boardProperties(snapshot.facts[.bios], bios: true).count == 2, "module, board and BIOS facts retained over the existing SSH route")
+                try check(InventoryPresentation.disks(snapshot.facts[.disks]).first?.properties.contains { $0.title == "Серийный номер" && $0.value == "DEMO123" } == true, "physical disk metadata retained over SSH")
                 try check(InventoryPresentation.storage(snapshot.facts[.storageUsage]).first?.used == 665600000, "SSH storage-usage marker preserves df values")
                 try check(InventoryPresentation.ports(snapshot.facts[.listeningPorts]).map(\.port) == [22, 53], "listeners collected in the same SSH snapshot, no network scan")
                 try check(InventoryPresentation.ports(snapshot.facts[.listeningPorts]).first?.processes == [InventorySocketProcess(name: "sshd", pid: 123)], "process metadata retained over prepared SSH route")

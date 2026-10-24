@@ -239,7 +239,7 @@ struct RecordInventoryView: View {
                         let short = group.1.filter { !$0.multiline && $0 != .processor }
                         if !short.isEmpty { LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 14, alignment: .topLeading)], alignment: .leading, spacing: 12) { ForEach(short) { fieldEditor($0) } } }
                         ForEach(group.1.filter { $0.multiline && $0 != .processor }) { field in
-                            if [.interfaces, .disks, .storageUsage, .listeningPorts].contains(field) { editableList(field, width: min(1100, width) - 28) }
+                            if [.memoryModules, .motherboard, .bios, .interfaces, .disks, .storageUsage, .listeningPorts].contains(field) { editableList(field, width: min(1100, width) - 28) }
                             else { fieldEditor(field) }
                         }
                     }
@@ -251,7 +251,7 @@ struct RecordInventoryView: View {
         switch section {
         case .summary: return [("Основные сведения", [.deviceType, .role, .assetTag]), ("Заметки", [.notes])]
         case .network: return [("Адреса и домен", [.hostName, .domain, .ipAddresses, .macAddresses]), ("Интерфейсы", [.interfaces]), ("Порты и сервисы", [.listeningPorts]), ("Виртуализация", [.virtualMachine, .hypervisor, .virtualizationType]), ("Параметры сети", [.subnet, .vlan, .gateway, .dnsServers, .firewall, .dhcpServer, .dhcpRange])]
-        case .hardware: return [("Устройство", [.manufacturer, .model, .serial]), ("Процессор и память", [.processor, .memory, .socketType, .socketCount, .physicalCores, .logicalCores]), ("Хранилище", [.storageUsage, .disks]), ("Мониторы", [.monitors])]
+        case .hardware: return [("Устройство", [.manufacturer, .model, .serial]), ("Процессор и память", [.processor, .memory, .socketType, .socketCount, .physicalCores, .logicalCores]), ("Модули памяти", [.memoryModules]), ("Материнская плата", [.motherboard]), ("BIOS", [.bios]), ("Хранилище", [.storageUsage, .disks]), ("Мониторы", [.monitors])]
         case .software: return [("Операционная система / прошивка", [.operatingSystem]), ("Программное обеспечение", [.software]), ("Лицензии", [.licenses])]
         case .location: return [("Расположение устройства", [.location, .site, .building, .room]), ("Размещение в стойке", [.rack, .rackUnit])]
         case .purchase: return [("Приобретение", [.purchaseDate, .purchaseVendor, .purchaseCost, .purchaseInvoice, .purchaseNote]), ("Гарантия", [.warrantyUntil])]
@@ -309,6 +309,13 @@ struct RecordInventoryView: View {
         VStack(alignment: .leading, spacing: 12) {
             card("Устройство и система") {
                 summaryFacts([.manufacturer, .model, .serial, .operatingSystem, .processor, .memory, .physicalCores, .logicalCores, .socketCount, .socketType, .virtualMachine, .hypervisor, .virtualizationType], width: width - 28)
+                ForEach([InventoryField.memoryModules, .motherboard, .bios].filter { !preview[$0].isEmpty || !hardwareIssues($0).isEmpty }) { field in
+                    HubDisclosureGroup(field.title) {
+                        hardwareIssueNotes(field)
+                        receivedNote(field)
+                        if !preview[field].isEmpty { structuredValue(field, value: preview[field], width: width - 28) }
+                    }.font(.callout)
+                }
             }
             networkOverview(width: width)
             storageOverview(width: width)
@@ -350,9 +357,10 @@ struct RecordInventoryView: View {
                 if !preview[.storageUsage].isEmpty { structuredValue(.storageUsage, value: preview[.storageUsage], width: width - 28) }
                 else { Text("Заполненность не получена. Обнови сбор, чтобы увидеть занятое и свободное место.").font(.caption).foregroundStyle(.secondary) }
                 if !preview[.disks].isEmpty {
-                    if preview[.storageUsage].isEmpty { receivedNote(.disks); structuredValue(.disks, value: preview[.disks]) }
-                    else { HubDisclosureGroup("Физические накопители") { receivedNote(.disks); structuredValue(.disks, value: preview[.disks]) }.font(.callout) }
+                    if preview[.storageUsage].isEmpty { receivedNote(.disks); structuredValue(.disks, value: preview[.disks], width: width - 28) }
+                    else { HubDisclosureGroup("Физические накопители") { receivedNote(.disks); structuredValue(.disks, value: preview[.disks], width: width - 28) }.font(.callout) }
                 }
+                hardwareIssueNotes(.disks)
             }
     }
     @ViewBuilder private func summaryFacts(_ keys: [InventoryField], width: CGFloat? = nil, minimumWidth: CGFloat = 180) -> some View {
@@ -391,17 +399,23 @@ struct RecordInventoryView: View {
         VStack(alignment: .leading, spacing: 12) { Text(title).font(.headline); content() }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
     }
     @ViewBuilder private func editableList(_ field: InventoryField, width: CGFloat) -> some View {
+        hardwareIssueNotes(field)
         let structured = field == .interfaces ? !InventoryPresentation.interfaces(fields[field]).isEmpty : field == .storageUsage ? !InventoryPresentation.storage(fields[field]).isEmpty : field == .listeningPorts ? !InventoryPresentation.ports(fields[field]).isEmpty : !InventoryPresentation.disks(fields[field]).isEmpty
         if !fields[field].isEmpty { structuredValue(field, value: fields[field], width: width) }
         // Keep the editor at the same structural position while parsed cards appear.
         // Switching the TextField into a disclosure mid-typing would drop its focus.
-        HubDisclosureGroup(structured ? "Редактировать исходный список" : field == .interfaces ? "Ввести список интерфейсов" : field == .storageUsage ? "Ввести сведения о заполненности" : field == .listeningPorts ? "Ввести список портов" : "Ввести список дисков") {
+        HubDisclosureGroup(structured || [.memoryModules, .motherboard, .bios].contains(field) ? "Редактировать исходные сведения" : field == .interfaces ? "Ввести список интерфейсов" : field == .storageUsage ? "Ввести сведения о заполненности" : field == .listeningPorts ? "Ввести список портов" : "Ввести список дисков") {
             fieldEditor(field, includeSuggestion: false).padding(.top, 8)
         }.font(.caption)
         factSuggestion(field, width: width)
     }
     @ViewBuilder private func structuredValue(_ field: InventoryField, value: String, width: CGFloat = 0) -> some View {
-        if field == .interfaces, !InventoryPresentation.interfaces(value).isEmpty {
+        if field == .memoryModules, !InventoryPresentation.memoryModules(value).modules.isEmpty || !InventoryPresentation.memoryModules(value).arrays.isEmpty {
+            memoryModuleList(value, width: width)
+        } else if [.motherboard, .bios].contains(field), !InventoryPresentation.boardProperties(value, bios: field == .bios).isEmpty {
+            InventoryHardwarePropertiesView(values: InventoryPresentation.boardProperties(value, bios: field == .bios))
+            Text("Сведения прошивки; в виртуальной машине могут описывать виртуальное оборудование.").font(.caption).foregroundStyle(.secondary)
+        } else if field == .interfaces, !InventoryPresentation.interfaces(value).isEmpty {
             let rows = InventoryPresentation.interfaces(value), visible = rows.filter { model.record.isInterfaceVisible($0) }, hidden = rows.filter { !model.record.isInterfaceVisible($0) }
             interfaceList(visible, visible: true, width: width)
             if !hidden.isEmpty {
@@ -428,14 +442,56 @@ struct RecordInventoryView: View {
             let auxiliary = rows.filter(\.auxiliary)
             if !auxiliary.isEmpty { HubDisclosureGroup("Служебные тома · \(auxiliary.count)") { LazyVGrid(columns: contentColumns(width: width, count: auxiliary.count), alignment: .leading, spacing: 12) { ForEach(auxiliary) { InventoryStorageRow(row: $0) } } }.font(.caption) }
         } else if field == .disks, !InventoryPresentation.disks(value).isEmpty {
-            ForEach(InventoryPresentation.disks(value)) { row in
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: "internaldrive").foregroundStyle(.tint).frame(width: 22)
-                    VStack(alignment: .leading, spacing: 5) { Text(row.name).font(.callout.bold()); if !row.detail.isEmpty { Text(row.detail).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) } }.frame(maxWidth: .infinity, alignment: .leading)
-                    Text(row.capacity).font(.callout.weight(.medium)).textSelection(.enabled)
+            let rows = InventoryPresentation.disks(value)
+            LazyVGrid(columns: contentColumns(width: width, count: rows.count), alignment: .leading, spacing: 12) {
+                ForEach(rows) { row in
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Label(row.name, systemImage: "internaldrive").font(.callout.bold()).textSelection(.enabled)
+                            Spacer(minLength: 4)
+                            Text(row.capacity).font(.callout.weight(.medium)).textSelection(.enabled)
+                        }
+                        if row.properties.isEmpty { Text(row.detail).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+                        else { InventoryHardwarePropertiesView(values: row.properties) }
+                    }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
                 }.padding(.vertical, 4)
             }
+            if value.hasPrefix("format=lsblk-pairs") { Text("Устройства типа disk по данным ОС. Виртуальные и RAID-диски могут скрывать сведения о физических накопителях.").font(.caption).foregroundStyle(.secondary) }
         } else { Text(value).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading) }
+    }
+    private func hardwareIssues(_ field: InventoryField) -> [InventoryHardwareIssue] {
+        (snapshot?.hardwareIssues ?? []).filter { issue in
+            switch field {
+            case .memoryModules: return [.memoryToolMissing, .memoryUnavailable, .memoryNotReported, .memoryLimited].contains(issue)
+            case .motherboard: return issue == .boardNotReported
+            case .bios: return issue == .biosNotReported
+            case .disks: return issue == .disksUnavailable || issue == .disksLimited
+            default: return false
+            }
+        }
+    }
+    @ViewBuilder private func hardwareIssueNotes(_ field: InventoryField) -> some View {
+        ForEach(hardwareIssues(field), id: \.rawValue) { issue in Text(issue.message).font(.caption).foregroundStyle(.secondary) }
+    }
+    private func memoryModuleList(_ value: String, width: CGFloat) -> some View {
+        let info = InventoryPresentation.memoryModules(value)
+        let filled = info.modules.filter { !$0.empty }, empty = info.modules.filter(\.empty)
+        return VStack(alignment: .leading, spacing: 12) {
+            if !info.modules.isEmpty {
+                Text("По DMI · установлено: \(info.modules.filter(\.installed).count) · свободно: \(empty.count)" + (filled.contains { !$0.installed } ? " · есть слоты с неизвестным объёмом" : "")).font(.callout.weight(.medium))
+            }
+            if !info.properties.isEmpty { InventoryHardwarePropertiesView(values: info.properties) }
+            LazyVGrid(columns: contentColumns(width: width, count: filled.count), alignment: .leading, spacing: 12) { ForEach(filled) { memoryModuleRow($0) } }
+            if !empty.isEmpty { HubDisclosureGroup("Свободные слоты · \(empty.count)") { ForEach(empty) { row in Label(row.slot, systemImage: "memorychip").font(.caption).textSelection(.enabled) } }.font(.caption) }
+            Text("Данные SMBIOS/DMI зависят от прошивки. Максимальный объём — значение DMI, не гарантия совместимости модулей.").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+    private func memoryModuleRow(_ row: InventoryMemoryModule) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(row.slot, systemImage: "memorychip").font(.callout.bold()).textSelection(.enabled)
+            if !row.installed { Text("Объём не получен").font(.caption).foregroundStyle(.secondary) }
+            InventoryHardwarePropertiesView(values: row.properties)
+        }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
     }
     private func contentColumns(width: CGFloat, count: Int) -> [GridItem] {
         Array(repeating: GridItem(.flexible(), spacing: 24, alignment: .topLeading), count: width >= 680 && count > 1 ? 2 : 1)
@@ -555,12 +611,27 @@ struct RecordInventoryView: View {
             ForEach(Array(model.record.snapshots.enumerated().reversed()), id: \.element.id) { index, snapshot in
                 card(snapshot.date.formatted()) {
                     HStack { Text(snapshot.sourceTitle).font(.caption).foregroundStyle(.secondary); Spacer(); Button("Показать в карточке") { snapshotID = snapshot.id; model.selected = Set(snapshot.facts.populated); showingHistory = false; section = .summary }.controlSize(.small) }
+                    ForEach(snapshot.hardwareIssues ?? [], id: \.rawValue) { issue in Text(issue.message).font(.caption).foregroundStyle(.secondary) }
                     let changes = snapshot.facts.changes(from: index == 0 ? InventoryFields() : model.record.snapshots[index - 1].facts)
                     if changes.isEmpty { Text("Изменений нет").font(.caption).foregroundStyle(.secondary) }
                     ForEach(changes) { change in
                         VStack(alignment: .leading, spacing: 3) { Text(change.field.title).font(.caption.bold()); if !change.previous.isEmpty { Text("Было: " + change.previous).foregroundStyle(.secondary) }; Text(change.current.isEmpty ? "В новом снимке значение не получено" : "Стало: " + change.current) }.font(.caption).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                     }
                 }
+            }
+        }
+    }
+}
+
+private struct InventoryHardwarePropertiesView: View {
+    let values: [InventoryHardwareProperty]
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 16, alignment: .topLeading)], alignment: .leading, spacing: 10) {
+            ForEach(values) { item in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.title).font(.caption).foregroundStyle(.secondary)
+                    Text(item.value).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                }.frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }

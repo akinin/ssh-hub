@@ -4,6 +4,12 @@
 
 Нативное приложение для macOS 14+ на Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
 
+## Изменения 3.19.0 (сборка 79): аппаратная инвентаризация Linux
+
+- Optional memoryModules/motherboard/bios inventory fields retain raw bounded facts, explicit draft/Save/replacement confirmation and legacy empty defaults. Snapshot hardwareIssues are bounded non-fact diagnostics; failed/unavailable collection must not replace saved fields. Preserve them in private inventory/backup and history.
+- Linux reads memory DMI types 16/17 through existing dmidecode only, no installation/sudo/SPD probing. Whitelist fields, bound complete records to 128 slots/16 arrays and 15KB, report truncation and missing tool/access/firmware data. Unknown size is never an empty slot; rated/configured speeds and array-reported maximum remain distinct. Do not infer ECC from width or classify all exposed disks as real hardware.
+- Board/BIOS read bounded sysfs strings; lsblk pairs expose whole-disk size/model/vendor/serial/revision/transport/rotation, safely decode hex without evaluating shell text, omit partitions/MMC boot areas, retain legacy format fallback. Summary uses disclosures; hardware page exposes editable structured values. No SMART tests, writes, automatic elevation or collection from user hosts in QA. Tests use owned source/CLI fixtures and loopback SSH.
+
 ## Изменения 3.18.2 (сборка 78): выбор ключа
 
 - SSH key fields select the draft user/key by clicking installed access rows only; remove the redundant user dropdown. Preserve validation, selected styling, external credential guards and outer Save/Cancel. The small record-header edit pencil uses bold symbol weight without changing its size or configured color.

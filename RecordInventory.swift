@@ -3,6 +3,7 @@ import CryptoKit
 import Darwin
 
 enum InventoryField: String, Codable, CaseIterable, Identifiable {
+    case memoryModules, motherboard, bios
     case manufacturer, model, serial, assetTag, operatingSystem, processor, memory, disks, storageUsage, interfaces, listeningPorts, location, role, owner, notes
     case deviceType, hostName, ipAddresses, macAddresses, domain, subnet, vlan, gateway, dnsServers, dhcpServer, dhcpRange, firewall, virtualMachine, hypervisor, virtualizationType
     case socketType, socketCount, physicalCores, logicalCores, monitors, software, licenses
@@ -10,6 +11,9 @@ enum InventoryField: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
+        case .memoryModules: return "Модули памяти"
+        case .motherboard: return "Материнская плата"
+        case .bios: return "BIOS"
         case .manufacturer: return "Производитель"
         case .model: return "Модель"
         case .serial: return "Серийный номер"
@@ -63,7 +67,7 @@ enum InventoryField: String, Codable, CaseIterable, Identifiable {
         case .purchaseNote: return "Примечание"
         }
     }
-    var multiline: Bool { [.disks, .storageUsage, .interfaces, .listeningPorts, .notes, .purchaseNote, .operatingSystem, .processor, .ipAddresses, .macAddresses, .monitors, .software, .licenses].contains(self) }
+    var multiline: Bool { [.memoryModules, .motherboard, .bios, .disks, .storageUsage, .interfaces, .listeningPorts, .notes, .purchaseNote, .operatingSystem, .processor, .ipAddresses, .macAddresses, .monitors, .software, .licenses].contains(self) }
 }
 
 enum InventorySection: String, CaseIterable, Identifiable {
@@ -76,7 +80,7 @@ enum InventorySection: String, CaseIterable, Identifiable {
         case .summary: return [.deviceType, .role, .assetTag, .notes]
         case .network: return [.hostName, .ipAddresses, .macAddresses, .domain, .interfaces, .listeningPorts, .virtualMachine, .hypervisor, .virtualizationType, .subnet, .vlan, .gateway, .dnsServers, .dhcpServer, .dhcpRange, .firewall]
         case .software: return [.operatingSystem, .software, .licenses]
-        case .hardware: return [.manufacturer, .model, .serial, .processor, .socketType, .socketCount, .physicalCores, .logicalCores, .memory, .monitors, .disks, .storageUsage]
+        case .hardware: return [.manufacturer, .model, .serial, .processor, .socketType, .socketCount, .physicalCores, .logicalCores, .memory, .memoryModules, .motherboard, .bios, .monitors, .disks, .storageUsage]
         case .location: return [.location, .site, .building, .room, .rack, .rackUnit]
         case .purchase: return [.purchaseDate, .purchaseVendor, .purchaseCost, .warrantyUntil, .purchaseInvoice, .purchaseNote]
         }
@@ -167,7 +171,24 @@ struct InventorySnapshot: Codable, Equatable, Identifiable {
     var collector: InventoryCollector
     var facts: InventoryFields
     var source: String? = nil
+    var hardwareIssues: [InventoryHardwareIssue]? = nil
     var sourceTitle: String { source == "Linux / Debian / Wiren Board" ? "Linux" : source ?? collector.title }
+}
+
+enum InventoryHardwareIssue: String, Codable, Hashable {
+    case memoryToolMissing, memoryUnavailable, memoryNotReported, memoryLimited, boardNotReported, biosNotReported, disksUnavailable, disksLimited
+    var message: String {
+        switch self {
+        case .memoryToolMissing: return "Модули памяти: dmidecode не установлен."
+        case .memoryUnavailable: return "Модули памяти: DMI недоступен. Могут требоваться права root; автоматического повышения прав нет."
+        case .memoryNotReported: return "Модули памяти: прошивка не предоставила сведения о слотах."
+        case .memoryLimited: return "Список модулей памяти ограничен объёмом снимка; количество показанных слотов может быть неполным."
+        case .boardNotReported: return "Материнская плата: сведения не предоставлены или недоступны текущему пользователю."
+        case .biosNotReported: return "BIOS: сведения не предоставлены или недоступны текущему пользователю."
+        case .disksUnavailable: return "Физические диски: lsblk не предоставил сведения."
+        case .disksLimited: return "Список физических дисков ограничен объёмом снимка."
+        }
+    }
 }
 
 struct RecordInventory: Codable, Equatable {
@@ -274,7 +295,7 @@ struct InventoryRepository {
         guard visibilityValid, validFields(inventory.manual), inventory.draft.map(validFields) ?? true,
               inventory.modified.map({ $0.timeIntervalSince1970.isFinite }) ?? true,
               inventory.snapshots.count <= 20, Set(inventory.snapshots.map(\.id)).count == inventory.snapshots.count,
-              inventory.snapshots.allSatisfy({ validFields($0.facts) && $0.date.timeIntervalSince1970.isFinite && ($0.source.map { $0.utf8.count <= 512 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) } ?? true) }) else { throw InventoryError.invalidData }
+              inventory.snapshots.allSatisfy({ validFields($0.facts) && $0.date.timeIntervalSince1970.isFinite && ($0.source.map { $0.utf8.count <= 512 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) } ?? true) && ($0.hardwareIssues.map { $0.count <= 8 && Set($0).count == $0.count } ?? true) }) else { throw InventoryError.invalidData }
     }
 }
 
@@ -309,7 +330,40 @@ struct InventoryDiskInfo: Identifiable, Equatable {
     var name: String
     var capacity: String
     var detail: String
+    var properties: [InventoryHardwareProperty] = []
     var id: String { name }
+}
+struct InventoryHardwareProperty: Equatable, Identifiable {
+    let title: String
+    let value: String
+    var id: String { title }
+}
+struct InventoryMemoryModule: Equatable, Identifiable {
+    let index: Int
+    let values: [String: String]
+    var id: Int { index }
+    var slot: String { InventoryPresentation.hardwareValue(values["Locator"] ?? "").isEmpty ? "Слот \(index + 1)" : values["Locator"]! }
+    // Unknown size must never be counted as an empty slot.
+    var empty: Bool { values["Size"] == "No Module Installed" }
+    var installed: Bool {
+        guard let size = values["Size"], size.range(of: #"^[0-9]+(?:\.[0-9]+)? (?:kB|MB|GB|TB|PB)$"#, options: .regularExpression) != nil,
+              let amount = size.split(separator: " ").first.flatMap({ Double($0) }) else { return false }
+        return amount.isFinite && amount > 0
+    }
+    var properties: [InventoryHardwareProperty] {
+        InventoryPresentation.hardwareProperties(values, labels: [("Size", "Объём"), ("Type", "Тип"), ("Form Factor", "Форм-фактор"), ("Configured Memory Speed", "Настроенная скорость"), ("Speed", "Скорость модуля"), ("Manufacturer", "Производитель"), ("Part Number", "Модель / Part Number"), ("Serial Number", "Серийный номер"), ("Bank Locator", "Банк"), ("Rank", "Ранги"), ("Total Width", "Полная ширина"), ("Data Width", "Ширина данных")])
+    }
+}
+struct InventoryMemoryInfo {
+    var modules: [InventoryMemoryModule] = []
+    var arrays: [[String: String]] = []
+    var properties: [InventoryHardwareProperty] {
+        arrays.enumerated().flatMap { index, values in
+            InventoryPresentation.hardwareProperties(values, labels: [("Number Of Devices", "Слотов по DMI"), ("Maximum Capacity", "Максимальный объём по DMI"), ("Error Correction Type", "Коррекция ошибок")]).map {
+                InventoryHardwareProperty(title: arrays.count > 1 ? "Массив \(index + 1) · " + $0.title : $0.title, value: $0.title == "Коррекция ошибок" && $0.value == "None" ? "Нет" : $0.value)
+            }
+        }
+    }
 }
 struct InventoryStorageInfo: Identifiable, Equatable {
     let source: String
@@ -337,6 +391,66 @@ struct InventorySocketProcess: Hashable {
     let pid: Int
 }
 enum InventoryPresentation {
+    static func hardwareValue(_ raw: String) -> String {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.utf8.count <= 512, !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+              !["unknown", "not specified", "not provided", "n/a", "to be filled by o.e.m.", "to be filled by oem", "default string"].contains(value.lowercased()) else { return "" }
+        return value
+    }
+    static func hardwareProperties(_ values: [String: String], labels: [(String, String)]) -> [InventoryHardwareProperty] {
+        labels.compactMap { key, title in
+            let value = hardwareValue(values[key] ?? "")
+            return value.isEmpty ? nil : InventoryHardwareProperty(title: title, value: value)
+        }
+    }
+    static func hardwarePairs(_ text: String) -> [String: String] {
+        guard text.utf8.count <= 16_384 else { return [:] }
+        var values: [String: String] = [:]
+        for line in text.components(separatedBy: .newlines).prefix(256) {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let key = String(line[..<colon]).trimmingCharacters(in: .whitespaces)
+            let value = hardwareValue(String(line[line.index(after: colon)...]))
+            if !value.isEmpty, values[key] == nil { values[key] = value }
+        }
+        return values
+    }
+    static func boardProperties(_ text: String, bios: Bool) -> [InventoryHardwareProperty] {
+        hardwareProperties(hardwarePairs(text), labels: bios ? [("Vendor", "Производитель"), ("Version", "Версия"), ("Release Date", "Дата выпуска")] : [("Manufacturer", "Производитель"), ("Product Name", "Модель"), ("Version", "Ревизия"), ("Serial Number", "Серийный номер"), ("Asset Tag", "Инвентарный номер")])
+    }
+    static func memoryModules(_ text: String) -> InventoryMemoryInfo {
+        guard text.utf8.count <= 16_384 else { return InventoryMemoryInfo() }
+        var result = InventoryMemoryInfo(), kind = "", values: [String: String] = [:]
+        func save() {
+            if kind == "Memory Device", !values.isEmpty, result.modules.count < 128 { result.modules.append(InventoryMemoryModule(index: result.modules.count, values: values)) }
+            if kind == "Physical Memory Array", !values.isEmpty, result.arrays.count < 16 { result.arrays.append(values) }
+        }
+        for raw in text.components(separatedBy: .newlines).prefix(4096) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line == "Memory Device" || line == "Physical Memory Array" { save(); values = [:]; kind = line }
+            else if line.isEmpty || line.hasPrefix("Handle ") { save(); values = [:]; kind = "" }
+            else if !kind.isEmpty, let colon = line.firstIndex(of: ":") {
+                let key = String(line[..<colon]), value = hardwareValue(String(line[line.index(after: colon)...]))
+                if !value.isEmpty, values[key] == nil { values[key] = value }
+            }
+        }
+        save(); return result
+    }
+    // lsblk --pairs encodes unsafe characters as hex, never shell-evaluate its output.
+    private static func diskPairs(_ line: String) -> [String: String] {
+        guard line.utf8.count <= 4096, let expression = try? NSRegularExpression(pattern: #"([A-Z0-9_]+)="([^"\\]*(?:\\x[0-9A-Fa-f]{2}[^"\\]*)*)""#) else { return [:] }
+        var values: [String: String] = [:]
+        for item in expression.matches(in: line, range: NSRange(line.startIndex..., in: line)) {
+            guard let keyRange = Range(item.range(at: 1), in: line), let valueRange = Range(item.range(at: 2), in: line) else { continue }
+            let raw = Array(line[valueRange].utf8); var bytes: [UInt8] = [], index = 0
+            while index < raw.count {
+                if raw[index] == 92, index + 3 < raw.count, raw[index + 1] == 120,
+                   let byte = UInt8(String(decoding: raw[(index + 2)...(index + 3)], as: UTF8.self), radix: 16) { bytes.append(byte); index += 4 }
+                else { bytes.append(raw[index]); index += 1 }
+            }
+            if let value = String(bytes: bytes, encoding: .utf8) { values[String(line[keyRange])] = hardwareValue(value) }
+        }
+        return values
+    }
     // Display only: filling the preview never changes manual fields or the draft.
     static func preview(current: InventoryFields, facts: InventoryFields?) -> InventoryFields {
         var values = current
@@ -374,6 +488,20 @@ enum InventoryPresentation {
     }
     static func disks(_ text: String) -> [InventoryDiskInfo] {
         guard text.utf8.count <= 16_384 else { return [] }
+        if text.hasPrefix("format=lsblk-pairs\n") {
+            var rows: [InventoryDiskInfo] = []
+            for line in text.components(separatedBy: .newlines).dropFirst().prefix(256) {
+                let values = diskPairs(line)
+                guard values["TYPE"] == "disk", let name = values["NAME"], name.range(of: #"^[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil,
+                      name.range(of: #"^mmcblk[0-9]+(?:boot[0-9]+|rpmb)$"#, options: .regularExpression) == nil,
+                      let size = values["SIZE"].flatMap(Int64.init), size > 0, !rows.contains(where: { $0.name == name }) else { continue }
+                var properties = hardwareProperties(values, labels: [("VENDOR", "Производитель"), ("MODEL", "Модель"), ("SERIAL", "Серийный номер"), ("REV", "Прошивка"), ("TRAN", "Подключение")])
+                if values["ROTA"] == "0" || values["ROTA"] == "1" { properties.append(InventoryHardwareProperty(title: "Вращающийся носитель", value: values["ROTA"] == "1" ? "Да" : "Нет")) }
+                rows.append(InventoryDiskInfo(name: name, capacity: ByteCountFormatter.string(fromByteCount: size, countStyle: .file), detail: values["MODEL"] ?? "", properties: properties))
+                if rows.count == 128 { break }
+            }
+            return rows
+        }
         var rows: [InventoryDiskInfo] = [], macDisk: (String, String)?
         for raw in text.split(separator: "\n").prefix(256) {
             let line = String(raw).trimmingCharacters(in: .whitespaces)
@@ -524,6 +652,10 @@ enum InventoryCollection {
         func boundedPorts(_ command: String) -> String { "(" + command + ") | awk '{ if (n+length($0)+1 > 16000) { print \"__SSH_HUB_PORTS_LIMITED__\"; exit }; print; n+=length($0)+1 }'" }
         switch collector {
         case .linux:
+            let memoryModules = #"inv_dmi=$(command -v dmidecode 2>/dev/null); if test -z "$inv_dmi"; then for inv_bin in /usr/sbin/dmidecode /sbin/dmidecode; do if test -x "$inv_bin"; then inv_dmi=$inv_bin; break; fi; done; fi; if test -n "$inv_dmi"; then printf 'format=dmidecode\n'; ("$inv_dmi" -t 16 -t 17 2>/dev/null; if test $? -ne 0; then printf '\n__SSH_HUB_HARDWARE_UNAVAILABLE__\n'; fi) | awk 'function flush() { if (length(buf)>0 && !limited) { if (n+length(buf)+1>15000) { print "__SSH_HUB_HARDWARE_LIMITED__"; limited=1 } else { printf "%s\n",buf; n+=length(buf)+1 } }; buf="" } { sub(/^[ \t]+/, ""); if ($0=="__SSH_HUB_HARDWARE_UNAVAILABLE__") { flush(); print; next }; if ($0=="Memory Device" || $0=="Physical Memory Array") { flush(); if (($0=="Memory Device" && ++devices>128) || ($0=="Physical Memory Array" && ++arrays>16)) { if (!limited) print "__SSH_HUB_HARDWARE_LIMITED__"; limited=1 }; if (!limited) buf=$0 "\n"; next }; if ($0=="" || $0 ~ /^Handle /) { flush(); next }; if (buf!="" && $0 ~ /^(Size|Locator|Bank Locator|Type|Form Factor|Speed|Configured Memory Speed|Manufacturer|Part Number|Serial Number|Rank|Total Width|Data Width|Number Of Devices|Maximum Capacity|Error Correction Type): /) { if (length($0)<=512) buf=buf $0 "\n" } } END { flush() }'; else printf '__SSH_HUB_HARDWARE_TOOL_MISSING__\n'; fi"#
+            let board = #"for inv_pair in 'Manufacturer board_vendor' 'Product_Name board_name' 'Version board_version' 'Serial_Number board_serial' 'Asset_Tag board_asset_tag'; do inv_key=${inv_pair%% *}; inv_file=${inv_pair#* }; inv_text=$(inv_first "/sys/class/dmi/id/$inv_file"); if test -n "$inv_text"; then printf '%s: %s\n' "$(printf '%s' "$inv_key" | tr '_' ' ')" "$inv_text"; fi; done"#
+            let bios = #"for inv_pair in 'Vendor bios_vendor' 'Version bios_version' 'Release_Date bios_date'; do inv_key=${inv_pair%% *}; inv_file=${inv_pair#* }; inv_text=$(inv_first "/sys/class/dmi/id/$inv_file"); if test -n "$inv_text"; then printf '%s: %s\n' "$(printf '%s' "$inv_key" | tr '_' ' ')" "$inv_text"; fi; done"#
+            let physicalDisks = #"inv_disks=$(lsblk -dn -b -P -o NAME,SIZE,TYPE,MODEL,VENDOR,SERIAL,REV,TRAN,ROTA 2>/dev/null | awk '{if(n+length($0)+1>15000 || NR>128) {print "__SSH_HUB_HARDWARE_LIMITED__"; exit}; print; n+=length($0)+1}'); if test -n "$inv_disks"; then printf 'format=lsblk-pairs\n%s\n' "$inv_disks"; else lsblk -dn -o NAME,SIZE,TYPE,MODEL 2>/dev/null | head -64; fi"#
             let helpers = #"inv_value() { awk -v key="$1" ' { sub(/^export[[:space:]]+/, ""); if (index($0,key "=")==1) { sub(/^[^=]*=/, ""); gsub(/^[\042\047]|[\042\047]$/, ""); print; exit } }' "$2" 2>/dev/null | head -c 512; }; inv_first() { for inv_path in "$@"; do if test -r "$inv_path"; then inv_text=$(head -c 512 "$inv_path" 2>/dev/null | tr -d '\000'); if test -n "$inv_text"; then printf '%s\n' "$inv_text"; return; fi; fi; done; }; inv_wb=; if test -r /proc/device-tree/compatible && tr '\000' '\n' < /proc/device-tree/compatible | grep -qi wirenboard; then inv_wb=1; fi; inv_revision=$(inv_value WB_BOARD_REVISION /var/run/wb_env.cache); if test -n "$inv_revision"; then inv_wb=1; fi; "#
             return "export LC_ALL=C; " + helpers + [
                 section(.manufacturer, #"if test -n "$inv_wb"; then printf 'Wiren Board\n'; else inv_first /sys/class/dmi/id/sys_vendor /proc/device-tree/manufacturer; fi"#),
@@ -536,7 +668,10 @@ enum InventoryCollection {
                 section(.physicalCores, #"LC_ALL=C lscpu -p=SOCKET,CORE 2>/dev/null | awk -F, '!/^#/ && $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ {seen[$1 ":" $2]=1} END {for (x in seen) n++; if (n>0) print n}'"#),
                 section(.socketCount, #"LC_ALL=C lscpu -p=SOCKET 2>/dev/null | awk '!/^#/ && /^[0-9]+$/ {seen[$0]=1} END {for (x in seen) n++; if (n>0) print n}'"#),
                 section(.memory, "awk '/^MemTotal:/{printf \"%.0f MiB\\n\",$2/1024}' /proc/meminfo 2>/dev/null"),
-                section(.disks, "lsblk -dn -o NAME,SIZE,TYPE,MODEL 2>/dev/null | head -64"),
+                section(.memoryModules, memoryModules),
+                section(.motherboard, board),
+                section(.bios, bios),
+                section(.disks, physicalDisks),
                 section(.storageUsage, "df -Pk 2>/dev/null | head -65"),
                 section(.listeningPorts, boundedPorts("if command -v ss >/dev/null 2>&1; then printf 'format=ss\\n'; ss -H -lntup 2>/dev/null | head -128; elif command -v netstat >/dev/null 2>&1; then printf 'format=linux-netstat\\n'; netstat -lntup 2>/dev/null | head -128; fi")),
                 section(.interfaces, "ip -o link show 2>/dev/null | head -64; ip -o address show 2>/dev/null | head -128")
@@ -572,7 +707,7 @@ enum InventoryCollection {
     }
     static func parse(_ output: String, collector: InventoryCollector, date: Date = Date()) throws -> InventorySnapshot {
         guard output.utf8.count <= 262_144 else { throw InventoryError.invalidData }
-        var facts = InventoryFields(), current: InventoryField?, lines: [String] = []
+        var facts = InventoryFields(), current: InventoryField?, lines: [String] = [], seen = Set<InventoryField>()
         func save() {
             guard let current else { return }
             let value = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -582,14 +717,34 @@ enum InventoryCollection {
         let clean = output.replacingOccurrences(of: "\u{001B}\\[[0-?]*[ -/]*[@-~]", with: "", options: .regularExpression)
         for line in clean.components(separatedBy: .newlines) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if let field = InventoryField.allCases.first(where: { marker($0) == trimmed }) { save(); current = field; lines = [] }
+            if let field = InventoryField.allCases.first(where: { marker($0) == trimmed }) { save(); current = field; lines = []; seen.insert(field) }
             else if current != nil {
                 lines.append(String(line.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) || $0 == "\t" }))
             }
         }
         save()
+        var hardwareIssues: [InventoryHardwareIssue] = []
+        if collector == .linux {
+            if seen.contains(.memoryModules) {
+                let raw = facts[.memoryModules]
+                if raw.contains("__SSH_HUB_HARDWARE_TOOL_MISSING__") { hardwareIssues.append(.memoryToolMissing); facts[.memoryModules] = "" }
+                else if raw.contains("__SSH_HUB_HARDWARE_UNAVAILABLE__") { hardwareIssues.append(.memoryUnavailable); facts[.memoryModules] = "" }
+                else {
+                    if raw.contains("__SSH_HUB_HARDWARE_LIMITED__") { hardwareIssues.append(.memoryLimited) }
+                    let memory = InventoryPresentation.memoryModules(raw)
+                    if memory.modules.isEmpty && memory.arrays.isEmpty { hardwareIssues.append(.memoryNotReported); facts[.memoryModules] = "" }
+                }
+            }
+            for (field, issue) in [(InventoryField.motherboard, InventoryHardwareIssue.boardNotReported), (.bios, .biosNotReported)] where seen.contains(field) {
+                if InventoryPresentation.boardProperties(facts[field], bios: field == .bios).isEmpty { hardwareIssues.append(issue); facts[field] = "" }
+            }
+            if seen.contains(.disks) {
+                if facts[.disks].contains("__SSH_HUB_HARDWARE_LIMITED__") { hardwareIssues.append(.disksLimited) }
+                if InventoryPresentation.disks(facts[.disks]).isEmpty { hardwareIssues.append(.disksUnavailable); facts[.disks] = "" }
+            }
+        }
         guard !facts.isEmpty else { throw InventoryError.noFacts }
-        let snapshot = InventorySnapshot(date: date, collector: collector, facts: facts)
+        let snapshot = InventorySnapshot(date: date, collector: collector, facts: facts, hardwareIssues: hardwareIssues.isEmpty ? nil : hardwareIssues)
         var inventory = RecordInventory(); inventory.append(snapshot); try InventoryRepository.validate(inventory)
         return snapshot
     }
