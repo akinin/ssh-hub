@@ -12,6 +12,9 @@ __pycache__/
 .ssh/
 *.pem
 *.key
+*.p12
+*.pfx
+*.keychain-db
 id_ed25519*
 id_rsa*
 config.backup-*

@@ -1,6 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 cd "${0:A:h}"
+zsh ./sign-app.sh --check
 build_dir="${1:-build}"
 mkdir -p "$build_dir/module-cache"
 build_dir="${build_dir:A}"
@@ -206,7 +207,7 @@ swiftc -module-cache-path "$build_dir/module-cache" Icon.swift -o "$build_dir/ma
 "$build_dir/make-icon" "$build_dir/AppIcon.iconset"
 iconutil -c icns "$build_dir/AppIcon.iconset" -o "$app_dir/Contents/Resources/AppIcon.icns"
 xattr -cr "$app_dir"
-codesign --force --deep --sign - "$app_dir"
+zsh ./sign-app.sh "$app_dir"
 update_zip="$build_dir/update-check.zip"
 ditto -c -k --keepParent --norsrc --noextattr "$app_dir" "$update_zip"
 "$build_dir/update-tests" "$update_zip"

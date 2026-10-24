@@ -4,6 +4,14 @@
 
 Нативное приложение для macOS 14+ на Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
 
+## Постоянная локальная подпись
+
+Версия 3.19.2, сборка 81. Release assets must include the public SSHHub-CodeSigning.cer and its second-Mac instructions; first migration from ad-hoc needs explicit code-signing trust on other Macs before updater validation. Never include a private key or PKCS#12 in assets/source archives.
+
+- build.sh and package-dmg.sh use sign-app.sh with the public certificate fingerprint pinned in signing-identity.sha1. Sign contained helpers before the app, keep identifiers stable, verify the leaf certificate and deep/strict integrity. Missing/untrusted identity must stop before building, never silently fall back to ad-hoc. SSH_HUB_SIGN_IDENTITY=- is explicit development opt-in only; do not publish it as the stable signed build.
+- Signing/SSHHub-CodeSigning.cer is public only. Private signing key stays in the build Mac login Keychain; never commit/export it automatically or widen credential ACLs. Self-signed code trust is user-level and code-signing-only, not SSL/system-wide trust or Developer ID/notarization. Other Macs need explicit trust of this public certificate. Existing passwords may need one-time reauthorization when migrating from ad-hoc. Keep Keychain namespaces and app bundle ID unchanged.
+- SigningContinuityTests.py uses only two owned changed test apps and an owned temporary keychain, restores the search list and deletes the fixture. Verify actual noninteractive cross-build read and rejection for same-ID ad-hoc; never test against user passwords. See Signing/README.md for backup and second-Mac instructions.
+
 ## Изменения 3.19.1 (сборка 80): SMART дисков
 
 - Linux explicit inventory collection reads smartctl --json=g -i -H -A (-l ssd for ATA/SCSI) with -n standby,3, no tests/enable/settings/sudo/installation. Use only validated whole sd/hd/nvme names from lsblk, no scan-open/RAID probing/eval, at most 8 targets, timeout -k 1 2 per device and bounded whitelisted gron output. Missing smartctl/timeout is a diagnostic; never call real disks or user hosts in QA.
@@ -369,7 +377,7 @@ zsh package-dmg.sh /private/tmp/ssh-hub-build /private/tmp/ssh-hub-dist --skip-b
 
 Для встроенного обновления релиз должен быть стабильным Latest с тегом `vX.Y.Z` и файлом `SSH-Hub-macOS.zip`, содержащим `SSH Hub.app`. SHA-256 берётся из метаданных asset GitHub; отсутствие digest должно блокировать установку. Не добавляйте токены в клиент, не разрешайте другие источники или произвольные shell-команды. Проверки `UpdateTests.swift` запускаются сборкой; `UpdateIntegrationTests.py` проверяет helper на временных копиях без запуска UI.
 
-При выпуске обновляйте обе версии в `Info.plist`, README и собирайте согласованные приложение, DMG и архив исходников. Установку в `/Applications` выполняйте, когда пользователь её запросил, с возможностью восстановления предыдущей сборки. Не утверждайте, что приложение подписано Developer ID или нотарифицировано: текущая сборка использует локальную ad-hoc подпись.
+При выпуске обновляйте обе версии в `Info.plist`, README и собирайте согласованные приложение, DMG и архив исходников. Установку в `/Applications` выполняйте, когда пользователь её запросил, с возможностью восстановления предыдущей сборки. Не утверждайте, что приложение подписано Developer ID или нотарифицировано: новые сборки используют постоянный локальный самоподписанный сертификат; опубликованные ранее ad-hoc архивы не меняются автоматически.
 
 ## Рабочая область
 
