@@ -6,6 +6,8 @@
 
 ## Постоянная локальная подпись
 
+Версия 3.19.3, сборка 82: установка встроенного публичного сертификата из приложения. Bootstrap from a version without the button can require manual DMG installation before using the button; never bypass updater code verification or Gatekeeper to bootstrap trust.
+
 - SigningCertificateSettings appears in Settings → Updates and the updater sheet. Only explicit confirmed install may call /usr/bin/security add-trusted-cert, user login Keychain, codeSign policy only, no shell/admin/system/SSL trust. Bundle the public DER resource in build.sh, pin its SHA-256 before staging in an owned 0700 directory with 0600 file, bound loading/output/time and clean up after the process drains. Never accept arbitrary imported/downloaded certificates. Passwords stay in OS dialogs. Verify actual code-sign trust after command exit; nonzero/unconfirmed/cancelled operations must not report success unless trust actually exists. Recheck on activation. Quit cancels the owned job and includes it in pending drain. Unit/native QA must use injected fake installation only; never change real user trust/Keychain ACLs during tests.
 
 Версия 3.19.2, сборка 81. Release assets must include the public SSHHub-CodeSigning.cer and its second-Mac instructions; first migration from ad-hoc needs explicit code-signing trust on other Macs before updater validation. Never include a private key or PKCS#12 in assets/source archives.
