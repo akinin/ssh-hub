@@ -4,6 +4,12 @@
 
 Нативное приложение для macOS 14+ на Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
 
+## Изменения 3.19.1 (сборка 80): SMART дисков
+
+- Linux explicit inventory collection reads smartctl --json=g -i -H -A (-l ssd for ATA/SCSI) with -n standby,3, no tests/enable/settings/sudo/installation. Use only validated whole sd/hd/nvme names from lsblk, no scan-open/RAID probing/eval, at most 8 targets, timeout -k 1 2 per device and bounded whitelisted gron output. Missing smartctl/timeout is a diagnostic; never call real disks or user hosts in QA.
+- Normalize fixed JSON assignments as typed compact diskSMART facts (16KiB), ignoring raw attributes/messages/argv. Nonzero smartctl exit bits can indicate failing health: retain health/warning readings, reject open/CLI failures and timeouts, skip reported sleep/unsupported/disabled. No SMART 0 values invented. Percentage used comes from NVMe/SCSI, valid ATA SSD statistics, or explicitly labelled smartctl estimate; never guess vendor raw/normalized semantics. Values over 100% remain visible.
+- Snapshot smartDiagnostics are optional bounded non-fact text, independent of saved metrics. All-failed queries cannot overwrite earlier manual readings. Render SMART as dated per-device cards with their own model/serial, not a name-only join onto potentially older saved disk metadata. Preserve field review, explicit Save/replacement confirmation, history and legacy decoding. Tests use fake CLI responses and the owned loopback SSH fixture.
+
 ## Изменения 3.19.0 (сборка 79): аппаратная инвентаризация Linux
 
 - Optional memoryModules/motherboard/bios inventory fields retain raw bounded facts, explicit draft/Save/replacement confirmation and legacy empty defaults. Snapshot hardwareIssues are bounded non-fact diagnostics; failed/unavailable collection must not replace saved fields. Preserve them in private inventory/backup and history.

@@ -239,7 +239,7 @@ struct RecordInventoryView: View {
                         let short = group.1.filter { !$0.multiline && $0 != .processor }
                         if !short.isEmpty { LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 14, alignment: .topLeading)], alignment: .leading, spacing: 12) { ForEach(short) { fieldEditor($0) } } }
                         ForEach(group.1.filter { $0.multiline && $0 != .processor }) { field in
-                            if [.memoryModules, .motherboard, .bios, .interfaces, .disks, .storageUsage, .listeningPorts].contains(field) { editableList(field, width: min(1100, width) - 28) }
+                            if [.diskSMART, .memoryModules, .motherboard, .bios, .interfaces, .disks, .storageUsage, .listeningPorts].contains(field) { editableList(field, width: min(1100, width) - 28) }
                             else { fieldEditor(field) }
                         }
                     }
@@ -251,7 +251,7 @@ struct RecordInventoryView: View {
         switch section {
         case .summary: return [("Основные сведения", [.deviceType, .role, .assetTag]), ("Заметки", [.notes])]
         case .network: return [("Адреса и домен", [.hostName, .domain, .ipAddresses, .macAddresses]), ("Интерфейсы", [.interfaces]), ("Порты и сервисы", [.listeningPorts]), ("Виртуализация", [.virtualMachine, .hypervisor, .virtualizationType]), ("Параметры сети", [.subnet, .vlan, .gateway, .dnsServers, .firewall, .dhcpServer, .dhcpRange])]
-        case .hardware: return [("Устройство", [.manufacturer, .model, .serial]), ("Процессор и память", [.processor, .memory, .socketType, .socketCount, .physicalCores, .logicalCores]), ("Модули памяти", [.memoryModules]), ("Материнская плата", [.motherboard]), ("BIOS", [.bios]), ("Хранилище", [.storageUsage, .disks]), ("Мониторы", [.monitors])]
+        case .hardware: return [("Устройство", [.manufacturer, .model, .serial]), ("Процессор и память", [.processor, .memory, .socketType, .socketCount, .physicalCores, .logicalCores]), ("Модули памяти", [.memoryModules]), ("Материнская плата", [.motherboard]), ("BIOS", [.bios]), ("Хранилище", [.storageUsage, .disks]), ("SMART дисков", [.diskSMART]), ("Мониторы", [.monitors])]
         case .software: return [("Операционная система / прошивка", [.operatingSystem]), ("Программное обеспечение", [.software]), ("Лицензии", [.licenses])]
         case .location: return [("Расположение устройства", [.location, .site, .building, .room]), ("Размещение в стойке", [.rack, .rackUnit])]
         case .purchase: return [("Приобретение", [.purchaseDate, .purchaseVendor, .purchaseCost, .purchaseInvoice, .purchaseNote]), ("Гарантия", [.warrantyUntil])]
@@ -319,8 +319,23 @@ struct RecordInventoryView: View {
             }
             networkOverview(width: width)
             storageOverview(width: width)
+            smartOverview(width: width)
             portsOverview(width: width)
             deviceOverview
+        }
+    }
+    @ViewBuilder private func smartOverview(width: CGFloat) -> some View {
+        let received = snapshot?.facts[.diskSMART] ?? ""
+        let value = received.isEmpty ? fields[.diskSMART] : received
+        if !value.isEmpty || !(snapshot?.smartDiagnostics ?? []).isEmpty {
+            card("SMART дисков") {
+                hardwareIssueNotes(.diskSMART)
+                if !value.isEmpty {
+                    if received.isEmpty, !(snapshot?.smartDiagnostics ?? []).isEmpty { Text("Ранее сохранённые показатели").font(.caption).foregroundStyle(.secondary) }
+                    else if value != fields[.diskSMART] { Text("Получено · не сохранено").font(.caption2).foregroundStyle(.secondary) }
+                    structuredValue(.diskSMART, value: value, width: width - 28)
+                }
+            }
         }
     }
     private var deviceOverview: some View {
@@ -404,13 +419,19 @@ struct RecordInventoryView: View {
         if !fields[field].isEmpty { structuredValue(field, value: fields[field], width: width) }
         // Keep the editor at the same structural position while parsed cards appear.
         // Switching the TextField into a disclosure mid-typing would drop its focus.
-        HubDisclosureGroup(structured || [.memoryModules, .motherboard, .bios].contains(field) ? "Редактировать исходные сведения" : field == .interfaces ? "Ввести список интерфейсов" : field == .storageUsage ? "Ввести сведения о заполненности" : field == .listeningPorts ? "Ввести список портов" : "Ввести список дисков") {
+        HubDisclosureGroup(structured || [.diskSMART, .memoryModules, .motherboard, .bios].contains(field) ? "Редактировать исходные сведения" : field == .interfaces ? "Ввести список интерфейсов" : field == .storageUsage ? "Ввести сведения о заполненности" : field == .listeningPorts ? "Ввести список портов" : "Ввести список дисков") {
             fieldEditor(field, includeSuggestion: false).padding(.top, 8)
         }.font(.caption)
         factSuggestion(field, width: width)
     }
     @ViewBuilder private func structuredValue(_ field: InventoryField, value: String, width: CGFloat = 0) -> some View {
-        if field == .memoryModules, !InventoryPresentation.memoryModules(value).modules.isEmpty || !InventoryPresentation.memoryModules(value).arrays.isEmpty {
+        if field == .diskSMART, !InventorySMART.readings(value).isEmpty {
+            let rows = InventorySMART.readings(value)
+            let observed = snapshot.flatMap { $0.facts[.diskSMART] == value ? $0 : nil } ?? model.record.snapshots.last { $0.facts[.diskSMART] == value }
+            if let observed { Text("Наблюдение: " + observed.date.formatted()).font(.caption).foregroundStyle(.secondary) }
+            LazyVGrid(columns: contentColumns(width: width, count: rows.count), alignment: .leading, spacing: 12) { ForEach(rows) { InventorySMARTCard(row: $0) } }
+            Text("Износ — доля использованного ресурса по данным накопителя; значение может превышать 100%. Отсутствие показателя не означает нулевой износ.").font(.caption).foregroundStyle(.secondary)
+        } else if field == .memoryModules, !InventoryPresentation.memoryModules(value).modules.isEmpty || !InventoryPresentation.memoryModules(value).arrays.isEmpty {
             memoryModuleList(value, width: width)
         } else if [.motherboard, .bios].contains(field), !InventoryPresentation.boardProperties(value, bios: field == .bios).isEmpty {
             InventoryHardwarePropertiesView(values: InventoryPresentation.boardProperties(value, bios: field == .bios))
@@ -472,6 +493,9 @@ struct RecordInventoryView: View {
     }
     @ViewBuilder private func hardwareIssueNotes(_ field: InventoryField) -> some View {
         ForEach(hardwareIssues(field), id: \.rawValue) { issue in Text(issue.message).font(.caption).foregroundStyle(.secondary) }
+        if field == .diskSMART {
+            ForEach(Array((snapshot?.smartDiagnostics ?? []).enumerated()), id: \.offset) { _, text in Text("Текущий сбор · " + text).font(.caption).foregroundStyle(.secondary) }
+        }
     }
     private func memoryModuleList(_ value: String, width: CGFloat) -> some View {
         let info = InventoryPresentation.memoryModules(value)
@@ -612,6 +636,7 @@ struct RecordInventoryView: View {
                 card(snapshot.date.formatted()) {
                     HStack { Text(snapshot.sourceTitle).font(.caption).foregroundStyle(.secondary); Spacer(); Button("Показать в карточке") { snapshotID = snapshot.id; model.selected = Set(snapshot.facts.populated); showingHistory = false; section = .summary }.controlSize(.small) }
                     ForEach(snapshot.hardwareIssues ?? [], id: \.rawValue) { issue in Text(issue.message).font(.caption).foregroundStyle(.secondary) }
+                    ForEach(Array((snapshot.smartDiagnostics ?? []).enumerated()), id: \.offset) { _, text in Text(text).font(.caption).foregroundStyle(.secondary) }
                     let changes = snapshot.facts.changes(from: index == 0 ? InventoryFields() : model.record.snapshots[index - 1].facts)
                     if changes.isEmpty { Text("Изменений нет").font(.caption).foregroundStyle(.secondary) }
                     ForEach(changes) { change in
@@ -620,6 +645,28 @@ struct RecordInventoryView: View {
                 }
             }
         }
+    }
+}
+
+private struct InventorySMARTCard: View {
+    let row: InventorySMARTReading
+    private var tint: Color { switch row.health { case .passed: return .green; case .failed: return .red; case .warning: return .orange; case .unknown: return .secondary } }
+    private var properties: [InventoryHardwareProperty] {
+        [InventoryHardwareProperty(title: "Температура", value: row.temperature.map { $0.formatted(.number.precision(.fractionLength(0...1))) + " °C" } ?? "Нет данных"),
+         InventoryHardwareProperty(title: "Наработка", value: row.hours.map { $0.formatted() + " ч" } ?? "Нет данных"),
+         InventoryHardwareProperty(title: "Износ SSD", value: row.usedPercent.map { String($0) + "% ресурса использовано" } ?? "Нет данных")]
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(row.device, systemImage: "internaldrive").font(.callout.bold()).textSelection(.enabled)
+            if !row.model.isEmpty { Text(row.model).font(.callout).textSelection(.enabled) }
+            if !row.serial.isEmpty { Text("S/N · " + row.serial).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+            Label(row.health.title, systemImage: row.health == .passed ? "checkmark.shield" : row.health == .unknown ? "questionmark.circle" : "exclamationmark.triangle").font(.callout.weight(.medium)).foregroundStyle(tint)
+            InventoryHardwarePropertiesView(values: properties)
+            if let source = row.wearSource { Text("Износ · " + source.title).font(.caption).foregroundStyle(.secondary) }
+            if let used = row.usedPercent, used >= 100 { Label("Показатель износа достиг 100% и более.", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange) }
+            if row.partial { Text("Часть показателей SMART недоступна.").font(.caption).foregroundStyle(.orange) }
+        }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 

@@ -150,6 +150,52 @@ import Darwin
             try check(try repository.load("hardware-issue") == record, "hardware diagnostics survive snapshot roundtrip")
         }
         try check(snapshot.hardwareIssues == nil && legacy.manual[.memoryModules].isEmpty && legacy.manual[.motherboard].isEmpty && legacy.manual[.bios].isEmpty, "legacy snapshots and cards need no migration")
+        func smartFrame(_ device: String = "nvme0n1", _ assignments: [String: String], status: Int = 0) -> String {
+            "device=" + device + "\n" + assignments.sorted { $0.key < $1.key }.map { "json." + $0.key + " = " + $0.value + ";" }.joined(separator: "\n") + "\nexit=\(status)\nend\n"
+        }
+        let nvmeSMART = ["device.name": #""/dev/nvme0n1""#, "device.protocol": #""NVMe""#, "model_name": #""Fixture NVMe""#, "serial_number": #""SMART-DEMO-123""#, "smart_status.passed": "true", "temperature.current": "37", "power_on_time.hours": "1234", "nvme_smart_health_information_log.critical_warning": "0", "nvme_smart_health_information_log.percentage_used": "12"]
+        let goodSMART = InventorySMART.parseTransport("format=smartctl-gron-v1\n" + smartFrame("nvme0n1", nvmeSMART))
+        try check(goodSMART.diagnostics.isEmpty && goodSMART.readings.count == 1 && goodSMART.readings[0].health == .passed && goodSMART.readings[0].temperature == 37 && goodSMART.readings[0].hours == 1234 && goodSMART.readings[0].usedPercent == 12 && goodSMART.readings[0].wearSource == .nvme, "SMART gron decodes device identity, explicit health, Celsius, hours and NVMe percentage used")
+        var alarmSMART = nvmeSMART; alarmSMART["smart_status.passed"] = "false"; alarmSMART["nvme_smart_health_information_log.percentage_used"] = "125"
+        let failedSMART = InventorySMART.parseTransport("format=smartctl-gron-v1\n" + smartFrame("nvme0n1", alarmSMART, status: 8))
+        try check(failedSMART.readings.first?.health == .failed && failedSMART.readings.first?.usedPercent == 125, "nonzero SMART failure bits retain data; wear above 100 percent is not clamped")
+        alarmSMART["smart_status.passed"] = "true"; alarmSMART["nvme_smart_health_information_log.critical_warning"] = "2"
+        try check(InventorySMART.parseTransport("format=smartctl-gron-v1\n" + smartFrame("nvme0n1", alarmSMART)).readings.first?.health == .warning, "NVMe critical warnings override a passed flag")
+        for status in [16, 32, 64, 128] {
+            try check(InventorySMART.parseTransport("format=smartctl-gron-v1\n" + smartFrame("nvme0n1", nvmeSMART, status: status)).readings.first?.health == .warning, "SMART attribute/log bits are warnings, not transport failures")
+        }
+        var ataSMART = ["device.name": #""/dev/sda""#, "device.protocol": #""ATA""#, "smart_status.passed": "true", "temperature.current": "30", "power_on_time.hours": "20000", "ata_device_statistics.pages[0].number": "7", "ata_device_statistics.pages[0].table[0].name": #""Percentage Used Endurance Indicator""#, "ata_device_statistics.pages[0].table[0].value": "9", "ata_device_statistics.pages[0].table[0].flags.valid": "true"]
+        try check(InventorySMART.parseTransport("format=smartctl-gron-v1\n" + smartFrame("sda", ataSMART)).readings.first?.wearSource == .ataStatistics, "ATA standard SSD statistics page decodes only an explicitly valid endurance indicator")
+        ataSMART["ata_device_statistics.pages[0].table[0].flags.valid"] = "false"
+        ataSMART["ata_smart_attributes.table[0].id"] = "202"; ataSMART["ata_smart_attributes.table[0].value"] = "98"; ataSMART["ata_smart_attributes.table[0].raw.value"] = "9"
+        try check(InventorySMART.parseTransport("format=smartctl-gron-v1\n" + smartFrame("sda", ataSMART)).readings.first?.usedPercent == nil, "invalid statistics and ambiguous vendor ATA IDs never invent SSD wear")
+        ataSMART["scsi_percentage_used_endurance_indicator"] = "4"
+        try check(InventorySMART.parseTransport("format=smartctl-gron-v1\n" + smartFrame("sda", ataSMART)).readings.first?.wearSource == .scsi, "SCSI percentage-used indicator is recognized")
+        ataSMART["scsi_percentage_used_endurance_indicator"] = nil; ataSMART["endurance_used.current_percent"] = "3"
+        try check(InventorySMART.parseTransport("format=smartctl-gron-v1\n" + smartFrame("sda", ataSMART)).readings.first?.wearSource == .smartctlEstimate, "generic smartctl estimate is explicitly labelled")
+        var invalidSMART = nvmeSMART
+        for (key, value) in [("temperature.current", "300"), ("power_on_time.hours", "-1"), ("nvme_smart_health_information_log.percentage_used", "true"), ("smart_status.passed", "1")] { invalidSMART[key] = value }
+        try check(InventorySMART.parseTransport("format=smartctl-gron-v1\n" + smartFrame("nvme0n1", invalidSMART)).readings.isEmpty, "wrong JSON types and out-of-range metrics cannot imply healthy/zero values")
+        for status in [1, 2, 124, 137] {
+            try check(InventorySMART.parseTransport("format=smartctl-gron-v1\n" + smartFrame("nvme0n1", nvmeSMART, status: status)).readings.isEmpty, "command/open failure, deadline and killed queries never become successful readings")
+        }
+        for (key, value) in [("power_mode.name", #""STANDBY""#), ("smart_support.available", "false"), ("smart_support.enabled", "false"), ("device.name", #""/dev/sdb""#)] {
+            var unavailable = nvmeSMART; unavailable[key] = value
+            let result = InventorySMART.parseTransport("format=smartctl-gron-v1\n" + smartFrame("nvme0n1", unavailable))
+            try check(result.readings.isEmpty && !result.diagnostics.isEmpty, "sleeping, unsupported, disabled and mismatched SMART replies are explicit diagnostics")
+        }
+        let rawSMART = "format=smartctl-gron-v1\n" + smartFrame("nvme0n1", nvmeSMART)
+        let smartSnapshot = try InventoryCollection.parse("__SSH_HUB_INVENTORY_memory__\n32 GiB\n__SSH_HUB_INVENTORY_diskSMART__\n" + rawSMART, collector: .linux)
+        try check(InventorySMART.readings(smartSnapshot.facts[.diskSMART]) == goodSMART.readings && smartSnapshot.smartDiagnostics == nil, "transport is normalized to bounded typed metrics before snapshot persistence")
+        var smartRecord = RecordInventory(); smartRecord.append(smartSnapshot); smartRecord.manual[.diskSMART] = smartSnapshot.facts[.diskSMART]
+        try repository.write(smartRecord, for: "smart")
+        try check(try repository.load("smart") == smartRecord && legacy.manual[.diskSMART].isEmpty && snapshot.smartDiagnostics == nil, "SMART and legacy snapshots survive private inventory/archive roundtrip")
+        for marker in ["tool-missing", "timeout-missing", "no-devices"] {
+            let unavailable = try InventoryCollection.parse("__SSH_HUB_INVENTORY_memory__\n32 GiB\n__SSH_HUB_INVENTORY_diskSMART__\nformat=smartctl-gron-v1\n" + marker, collector: .linux)
+            var retained = smartRecord.manual; retained.apply(unavailable.facts, fields: [.diskSMART])
+            try check(unavailable.facts[.diskSMART].isEmpty && unavailable.smartDiagnostics?.count == 1 && retained == smartRecord.manual, "missing SMART facilities produce non-fact diagnostics and cannot overwrite prior metrics")
+        }
+        try check(InventorySMART.parseTransport("format=smartctl-gron-v1\ndevice=sda\njson.smart_status.passed = true;\n").readings.isEmpty && InventorySMART.readings(String(repeating: "x", count: 16385)).isEmpty, "unfinished/oversized SMART payloads are rejected")
         let usage = InventoryPresentation.storage("Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 1000 600 350 64% /\ntmpfs 200 1 199 1% /run\n/dev/sdb1 2000 100 1900 5% /media/Data Disk")
         try check(usage.count == 2 && usage[0].total == 1_024_000 && usage[0].used == 614_400 && usage[0].available == 358_400 && usage[0].fraction == 0.6 && usage[1].mount == "/media/Data Disk", "df KiB values preserve reserved space and paths with spaces; pseudo filesystems excluded")
         let apfs = InventoryPresentation.storage("/dev/disk3s1s1 1000 100 600 15% /\n/dev/disk3s5 1000 300 600 34% /System/Volumes/Data\n/dev/disk3s6 1000 0 600 0% /System/Volumes/VM")
@@ -285,6 +331,25 @@ import Darwin
         try fixture("bin/lsblk", "#!/bin/sh\ncase \"$*\" in *-P*) exit 1;; *) printf 'sda 100G disk Fixture SSD\\n';; esac\n", executable: true)
         let fallbackHardware = try runLinuxFixture()
         try check(InventoryPresentation.disks(fallbackHardware.facts[.disks]).first?.detail == "Fixture SSD", "older lsblk falls back to legacy disk format")
+        try fixture("smart.txt", smartFrame("nvme0n1", nvmeSMART).components(separatedBy: .newlines).filter { $0.hasPrefix("json.") }.joined(separator: "\n") + "\njson.smartctl.argv[0] = \"DO-NOT-COLLECT\";\n")
+        try fixture("bin/timeout", "#!/bin/sh\ntest \"$1\" = '-k' || exit 91\nshift 3\nexec \"$@\"\n", executable: true)
+        try fixture("bin/smartctl", "#!/bin/sh\ntest \"$*\" = '--json=g -i -H -A -n standby,3 /dev/nvme0n1' || exit 91\ncat '" + linuxRoot.appendingPathComponent("smart.txt").path + "'\n", executable: true)
+        try fixture("bin/lsblk", "#!/bin/sh\ncase \"$*\" in *NAME,TYPE*) printf 'nvme0n1 disk\\nnvme0n1p1 part\\nloop0 loop\\nmmcblk0 disk\\nsda;touch_injected disk\\n';; *) cat '" + linuxRoot.appendingPathComponent("lsblk.txt").path + "';; esac\n", executable: true)
+        let smartCollected = try runLinuxFixture()
+        try check(InventorySMART.readings(smartCollected.facts[.diskSMART]) == goodSMART.readings && smartCollected.smartDiagnostics == nil && !smartCollected.facts[.diskSMART].contains("DO-NOT-COLLECT"), "production collector queries only safe whole-disk targets with fixed read-only flags, filters private/nonmetric JSON fields and normalizes readings")
+        try fixture("bin/timeout", "#!/bin/sh\nexit 124\n", executable: true)
+        let smartTimedOut = try runLinuxFixture()
+        try check(smartTimedOut.facts[.diskSMART].isEmpty && smartTimedOut.smartDiagnostics?.count == 1 && !smartTimedOut.facts[.memory].isEmpty, "one disk timeout preserves the rest of the inventory snapshot")
+        try fixture("sata-smart.txt", smartFrame("sda", ataSMART).components(separatedBy: .newlines).filter { $0.hasPrefix("json.") }.joined(separator: "\n") + "\n")
+        try fixture("bin/timeout", "#!/bin/sh\nshift 3\nexec \"$@\"\n", executable: true)
+        try fixture("bin/smartctl", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + linuxRoot.appendingPathComponent("smart-calls.txt").path + "'\ncase \"$*\" in '--json=g -i -H -A -l ssd -n standby,3 /dev/sda') cat '" + linuxRoot.appendingPathComponent("sata-smart.txt").path + "'; exit 8;; '--json=g -i -H -A -n standby,3 /dev/nvme'*) cat '" + linuxRoot.appendingPathComponent("smart.txt").path + "';; *) exit 91;; esac\n", executable: true)
+        try fixture("bin/lsblk", "#!/bin/sh\ncase \"$*\" in *NAME,TYPE*) printf 'nvme0n1 disk\\nsda disk\\n';; *) cat '" + linuxRoot.appendingPathComponent("lsblk.txt").path + "';; esac\n", executable: true)
+        let mixedSMART = try runLinuxFixture()
+        try check(InventorySMART.readings(mixedSMART.facts[.diskSMART]).count == 2 && InventorySMART.readings(mixedSMART.facts[.diskSMART]).last?.health == .failed, "production ATA query reads SSD statistics without tests and preserves a failing disk despite nonzero exit")
+        try fixture("smart-calls.txt", "")
+        try fixture("bin/lsblk", "#!/bin/sh\ncase \"$*\" in *NAME,TYPE*) printf 'nvme0n1 disk\\nnvme1n1 disk\\nnvme2n1 disk\\nnvme3n1 disk\\nnvme4n1 disk\\nnvme5n1 disk\\nnvme6n1 disk\\nnvme7n1 disk\\nnvme8n1 disk\\n';; *) cat '" + linuxRoot.appendingPathComponent("lsblk.txt").path + "';; esac\n", executable: true)
+        let limitedSMART = try runLinuxFixture()
+        try check(try String(contentsOf: linuxRoot.appendingPathComponent("smart-calls.txt"), encoding: .utf8).split(separator: "\n").count == 8 && limitedSMART.smartDiagnostics?.contains(where: { $0.contains("первыми 8") }) == true && limitedSMART.facts[.diskSMART].utf8.count <= 16384, "production SMART work is capped at eight safe devices with an explicit limit note")
         // Real local macOS collection reads only this test machine. No user servers or network calls.
         let listener = socket(AF_INET, SOCK_STREAM, 0)
         try check(listener >= 0, "owned TCP listener created")

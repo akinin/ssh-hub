@@ -57,6 +57,19 @@ Version: 1.2
 __SSH_HUB_INVENTORY_disks__
 format=lsblk-pairs
 NAME="nvme0n1" SIZE="1000000000000" TYPE="disk" MODEL="Fixture SSD" SERIAL="DEMO123" REV="1.2" TRAN="nvme" ROTA="0"
+__SSH_HUB_INVENTORY_diskSMART__
+format=smartctl-gron-v1
+device=nvme0n1
+json.device.name = "/dev/nvme0n1";
+json.device.protocol = "NVMe";
+json.model_name = "Fixture SSD";
+json.serial_number = "DEMO123";
+json.smart_status.passed = true;
+json.temperature.current = 39;
+json.power_on_time.hours = 1234;
+json.nvme_smart_health_information_log.percentage_used = 12;
+exit=0
+end
 __SSH_HUB_INVENTORY_storageUsage__
 Filesystem 1024-blocks Used Available Capacity Mounted on
 /dev/demo1 1000000 650000 300000 69% /

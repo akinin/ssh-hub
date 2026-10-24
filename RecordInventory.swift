@@ -1,9 +1,10 @@
 import Foundation
 import CryptoKit
 import Darwin
+import CoreFoundation
 
 enum InventoryField: String, Codable, CaseIterable, Identifiable {
-    case memoryModules, motherboard, bios
+    case memoryModules, motherboard, bios, diskSMART
     case manufacturer, model, serial, assetTag, operatingSystem, processor, memory, disks, storageUsage, interfaces, listeningPorts, location, role, owner, notes
     case deviceType, hostName, ipAddresses, macAddresses, domain, subnet, vlan, gateway, dnsServers, dhcpServer, dhcpRange, firewall, virtualMachine, hypervisor, virtualizationType
     case socketType, socketCount, physicalCores, logicalCores, monitors, software, licenses
@@ -14,6 +15,7 @@ enum InventoryField: String, Codable, CaseIterable, Identifiable {
         case .memoryModules: return "Модули памяти"
         case .motherboard: return "Материнская плата"
         case .bios: return "BIOS"
+        case .diskSMART: return "SMART дисков"
         case .manufacturer: return "Производитель"
         case .model: return "Модель"
         case .serial: return "Серийный номер"
@@ -67,7 +69,7 @@ enum InventoryField: String, Codable, CaseIterable, Identifiable {
         case .purchaseNote: return "Примечание"
         }
     }
-    var multiline: Bool { [.memoryModules, .motherboard, .bios, .disks, .storageUsage, .interfaces, .listeningPorts, .notes, .purchaseNote, .operatingSystem, .processor, .ipAddresses, .macAddresses, .monitors, .software, .licenses].contains(self) }
+    var multiline: Bool { [.diskSMART, .memoryModules, .motherboard, .bios, .disks, .storageUsage, .interfaces, .listeningPorts, .notes, .purchaseNote, .operatingSystem, .processor, .ipAddresses, .macAddresses, .monitors, .software, .licenses].contains(self) }
 }
 
 enum InventorySection: String, CaseIterable, Identifiable {
@@ -80,7 +82,7 @@ enum InventorySection: String, CaseIterable, Identifiable {
         case .summary: return [.deviceType, .role, .assetTag, .notes]
         case .network: return [.hostName, .ipAddresses, .macAddresses, .domain, .interfaces, .listeningPorts, .virtualMachine, .hypervisor, .virtualizationType, .subnet, .vlan, .gateway, .dnsServers, .dhcpServer, .dhcpRange, .firewall]
         case .software: return [.operatingSystem, .software, .licenses]
-        case .hardware: return [.manufacturer, .model, .serial, .processor, .socketType, .socketCount, .physicalCores, .logicalCores, .memory, .memoryModules, .motherboard, .bios, .monitors, .disks, .storageUsage]
+        case .hardware: return [.manufacturer, .model, .serial, .processor, .socketType, .socketCount, .physicalCores, .logicalCores, .memory, .memoryModules, .motherboard, .bios, .monitors, .disks, .storageUsage, .diskSMART]
         case .location: return [.location, .site, .building, .room, .rack, .rackUnit]
         case .purchase: return [.purchaseDate, .purchaseVendor, .purchaseCost, .warrantyUntil, .purchaseInvoice, .purchaseNote]
         }
@@ -172,6 +174,7 @@ struct InventorySnapshot: Codable, Equatable, Identifiable {
     var facts: InventoryFields
     var source: String? = nil
     var hardwareIssues: [InventoryHardwareIssue]? = nil
+    var smartDiagnostics: [String]? = nil
     var sourceTitle: String { source == "Linux / Debian / Wiren Board" ? "Linux" : source ?? collector.title }
 }
 
@@ -295,7 +298,7 @@ struct InventoryRepository {
         guard visibilityValid, validFields(inventory.manual), inventory.draft.map(validFields) ?? true,
               inventory.modified.map({ $0.timeIntervalSince1970.isFinite }) ?? true,
               inventory.snapshots.count <= 20, Set(inventory.snapshots.map(\.id)).count == inventory.snapshots.count,
-              inventory.snapshots.allSatisfy({ validFields($0.facts) && $0.date.timeIntervalSince1970.isFinite && ($0.source.map { $0.utf8.count <= 512 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) } ?? true) && ($0.hardwareIssues.map { $0.count <= 8 && Set($0).count == $0.count } ?? true) }) else { throw InventoryError.invalidData }
+              inventory.snapshots.allSatisfy({ validFields($0.facts) && $0.date.timeIntervalSince1970.isFinite && ($0.source.map { $0.utf8.count <= 512 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) } ?? true) && ($0.hardwareIssues.map { $0.count <= 8 && Set($0).count == $0.count } ?? true) && ($0.smartDiagnostics.map { $0.count <= 12 && $0.allSatisfy { !$0.isEmpty && $0.utf8.count <= 512 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) } } ?? true) }) else { throw InventoryError.invalidData }
     }
 }
 
@@ -365,6 +368,116 @@ struct InventoryMemoryInfo {
         }
     }
 }
+enum InventorySMARTHealth: String, Codable {
+    case passed, failed, warning, unknown
+    var title: String {
+        switch self { case .passed: return "SMART: статус OK"; case .failed: return "SMART сообщает о сбое"; case .warning: return "Есть предупреждения SMART"; case .unknown: return "Состояние не получено" }
+    }
+}
+enum InventorySMARTWearSource: String, Codable {
+    case nvme, scsi, ataStatistics, smartctlEstimate
+    var title: String {
+        switch self { case .nvme: return "NVMe Percentage Used"; case .scsi: return "SCSI Endurance Indicator"; case .ataStatistics: return "ATA Device Statistics"; case .smartctlEstimate: return "Оценка smartctl" }
+    }
+}
+struct InventorySMARTReading: Codable, Equatable, Identifiable {
+    let device: String
+    var model = ""
+    var serial = ""
+    var protocolName = ""
+    var health = InventorySMARTHealth.unknown
+    var temperature: Double?
+    var hours: Int64?
+    var usedPercent: Int?
+    var wearSource: InventorySMARTWearSource?
+    var partial = false
+    var id: String { device }
+    var valid: Bool {
+        InventorySMART.validDevice(device) && [model, serial, protocolName].allSatisfy { $0.utf8.count <= 256 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }
+        && (temperature.map { $0.isFinite && (-100...200).contains($0) } ?? true)
+        && (hours.map { (0...1_000_000_000).contains($0) } ?? true)
+        && (usedPercent.map { (0...255).contains($0) && wearSource != nil } ?? (wearSource == nil))
+        && (health != .unknown || temperature != nil || hours != nil || usedPercent != nil)
+    }
+}
+enum InventorySMART {
+    static func validDevice(_ name: String) -> Bool { name.utf8.count <= 64 && name.range(of: #"^(?:sd[a-z]+|hd[a-z]+|nvme[0-9]+n[0-9]+)$"#, options: .regularExpression) != nil }
+    // gron is a documented smartctl JSON output format. Keep a fixed whitelist,
+    // not full attributes/messages/argv, and never evaluate its assignments.
+    static let command = #"inv_smart=$(command -v smartctl 2>/dev/null); if test -z "$inv_smart"; then for inv_bin in /usr/sbin/smartctl /sbin/smartctl; do if test -x "$inv_bin"; then inv_smart=$inv_bin; break; fi; done; fi; printf 'format=smartctl-gron-v1\n'; if test -z "$inv_smart"; then printf 'tool-missing\n'; elif ! command -v timeout >/dev/null 2>&1; then printf 'timeout-missing\n'; else inv_targets=$(lsblk -dn -o NAME,TYPE 2>/dev/null | awk '$2=="disk" && length($1)<=64 && $1 ~ /^(sd[a-z]+|hd[a-z]+|nvme[0-9]+n[0-9]+)$/ {if (++n<=9) print $1}'); if test -z "$inv_targets"; then printf 'no-devices\n'; else inv_count=0; for inv_device in $inv_targets; do inv_count=$((inv_count+1)); if test "$inv_count" -gt 8; then printf 'limited\n'; break; fi; printf 'device=%s\n' "$inv_device"; (case "$inv_device" in nvme*) timeout -k 1 2 "$inv_smart" --json=g -i -H -A -n standby,3 "/dev/$inv_device" 2>/dev/null;; *) timeout -k 1 2 "$inv_smart" --json=g -i -H -A -l ssd -n standby,3 "/dev/$inv_device" 2>/dev/null;; esac; printf 'exit=%s\n' "$?") | awk '/^exit=[0-9]+$/ {print; next} /^json\.(smartctl\.exit_status|device\.(name|protocol)|model_name|serial_number|smart_support\.(available|enabled)|smart_status\.passed|power_mode\.name|temperature\.current|power_on_time\.hours|endurance_used\.current_percent|nvme_smart_health_information_log\.(critical_warning|percentage_used)|scsi_percentage_used_endurance_indicator|ata_device_statistics\.pages\[[0-9]+\]\.(number|table\[[0-9]+\]\.(name|value|flags\.valid))) = / {if(n+length($0)+1<=1500) {print; n+=length($0)+1} else if(!limited) {print "device-limited"; limited=1}}'; printf 'end\n'; done; fi; fi"#
+    static func readings(_ text: String) -> [InventorySMARTReading] {
+        guard text.utf8.count <= 16_384, let data = text.data(using: .utf8), let rows = try? JSONDecoder().decode([InventorySMARTReading].self, from: data), rows.count <= 8,
+              Set(rows.map(\.device)).count == rows.count, rows.allSatisfy(\.valid) else { return [] }
+        return rows
+    }
+    static func parseTransport(_ text: String) -> (readings: [InventorySMARTReading], diagnostics: [String]) {
+        guard text.utf8.count <= 16_384, text.hasPrefix("format=smartctl-gron-v1\n") else { return ([], ["SMART: формат ответа smartctl не распознан."]) }
+        var rows: [InventorySMARTReading] = [], diagnostics: [String] = [], device: String?, values: [String: Any] = [:], status: Int?, partial = false, attempts = 0
+        for line in text.components(separatedBy: .newlines).prefix(512) {
+            if line == "tool-missing" { diagnostics.append("SMART: smartctl не установлен.") }
+            else if line == "timeout-missing" { diagnostics.append("SMART: утилита timeout недоступна; запросы дисков пропущены.") }
+            else if line == "no-devices" { diagnostics.append("SMART: доступные SATA/SCSI/NVMe-диски не найдены.") }
+            else if line == "limited" { diagnostics.append("SMART: список ограничен первыми 8 устройствами и объёмом снимка.") }
+            else if line.hasPrefix("device=") {
+                attempts += 1; let name = String(line.dropFirst(7)); device = validDevice(name) && attempts <= 8 ? name : nil
+                values = [:]; status = nil; partial = false
+            } else if line == "device-limited" { partial = true }
+            else if line.hasPrefix("exit=") { status = Int(line.dropFirst(5)).flatMap { (0...255).contains($0) ? $0 : nil } }
+            else if line == "end", let name = device {
+                if let status {
+                    let result = reading(name, values: values, status: status, partial: partial)
+                    if let row = result.0, !rows.contains(where: { $0.device == name }) { rows.append(row) }
+                    if let message = result.1 { diagnostics.append(name + ": " + message) }
+                } else { diagnostics.append(name + ": SMART не завершён; частичные данные не приняты.") }
+                device = nil
+            } else if device != nil, line.hasPrefix("json."), line.hasSuffix(";"), line.utf8.count <= 1024, let range = line.range(of: " = ") {
+                let key = String(line[line.index(line.startIndex, offsetBy: 5)..<range.lowerBound])
+                let raw = String(line[range.upperBound..<line.index(before: line.endIndex)])
+                if values.count < 48, values[key] == nil, let data = raw.data(using: .utf8), let value = try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed) { values[key] = value }
+            }
+        }
+        if let device { diagnostics.append(device + ": SMART не завершён; частичные данные не приняты.") }
+        return (rows, Array(diagnostics.prefix(12)))
+    }
+    private static func reading(_ name: String, values: [String: Any], status: Int, partial: Bool) -> (InventorySMARTReading?, String?) {
+        func string(_ key: String) -> String { (values[key] as? String).map { String(InventoryPresentation.hardwareValue($0).prefix(256)) } ?? "" }
+        func bool(_ key: String) -> Bool? {
+            guard let value = values[key] as? NSNumber, CFGetTypeID(value) == CFBooleanGetTypeID() else { return nil }; return value.boolValue
+        }
+        func number(_ key: String, range: ClosedRange<Double>, integral: Bool = false) -> Double? {
+            guard let value = values[key] as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID(), value.doubleValue.isFinite, range.contains(value.doubleValue), !integral || value.doubleValue.rounded() == value.doubleValue else { return nil }; return value.doubleValue
+        }
+        if ["SLEEP", "STANDBY"].contains(string("power_mode.name")) { return (nil, "диск спит; запрос SMART пропущен.") }
+        if status == 124 || status == 137 { return (nil, "SMART не завершён за отведённое время или процесс прерван.") }
+        if bool("smart_support.available") == false { return (nil, "SMART не поддерживается устройством или контроллером.") }
+        if bool("smart_support.enabled") == false { return (nil, "SMART выключен; настройки диска не изменялись.") }
+        guard status & 3 == 0 else { return (nil, "SMART недоступен. Проверь версию smartctl, права и поддержку контроллера.") }
+        let returnedDevice = string("device.name")
+        guard returnedDevice.isEmpty || returnedDevice == "/dev/" + name else { return (nil, "идентификатор устройства в ответе SMART не совпал.") }
+        var row = InventorySMARTReading(device: name, model: string("model_name"), serial: string("serial_number"), protocolName: string("device.protocol"))
+        let critical = number("nvme_smart_health_information_log.critical_warning", range: 0...255, integral: true) ?? 0
+        if bool("smart_status.passed") == false || status & 8 != 0 { row.health = .failed }
+        else if critical != 0 || status & 0xf0 != 0 { row.health = .warning }
+        else if bool("smart_status.passed") == true { row.health = .passed }
+        row.temperature = number("temperature.current", range: -100...200)
+        row.hours = number("power_on_time.hours", range: 0...1_000_000_000, integral: true).map(Int64.init)
+        if let used = number("nvme_smart_health_information_log.percentage_used", range: 0...255, integral: true) { row.usedPercent = Int(used); row.wearSource = .nvme }
+        else if let used = number("scsi_percentage_used_endurance_indicator", range: 0...255, integral: true) { row.usedPercent = Int(used); row.wearSource = .scsi }
+        else {
+            for page in 0..<8 where number("ata_device_statistics.pages[\(page)].number", range: 7...7, integral: true) != nil {
+                for item in 0..<8 {
+                    let key = "ata_device_statistics.pages[\(page)].table[\(item)]"
+                    if string(key + ".name") == "Percentage Used Endurance Indicator", bool(key + ".flags.valid") == true, let used = number(key + ".value", range: 0...255, integral: true) { row.usedPercent = Int(used); row.wearSource = .ataStatistics; break }
+                }
+                if row.usedPercent != nil { break }
+            }
+            if row.usedPercent == nil, let used = number("endurance_used.current_percent", range: 0...255, integral: true) { row.usedPercent = Int(used); row.wearSource = .smartctlEstimate }
+        }
+        row.partial = partial || status & 4 != 0
+        return row.valid ? (row, nil) : (nil, "SMART не предоставил распознанных показателей.")
+    }
+}
+
 struct InventoryStorageInfo: Identifiable, Equatable {
     let source: String
     let mount: String
@@ -674,7 +787,8 @@ enum InventoryCollection {
                 section(.disks, physicalDisks),
                 section(.storageUsage, "df -Pk 2>/dev/null | head -65"),
                 section(.listeningPorts, boundedPorts("if command -v ss >/dev/null 2>&1; then printf 'format=ss\\n'; ss -H -lntup 2>/dev/null | head -128; elif command -v netstat >/dev/null 2>&1; then printf 'format=linux-netstat\\n'; netstat -lntup 2>/dev/null | head -128; fi")),
-                section(.interfaces, "ip -o link show 2>/dev/null | head -64; ip -o address show 2>/dev/null | head -128")
+                section(.interfaces, "ip -o link show 2>/dev/null | head -64; ip -o address show 2>/dev/null | head -128"),
+                section(.diskSMART, InventorySMART.command)
             ].joined(separator: "; ") + "; true"
         case .macOS:
             return "export LC_ALL=C; " + [
@@ -723,8 +837,16 @@ enum InventoryCollection {
             }
         }
         save()
-        var hardwareIssues: [InventoryHardwareIssue] = []
+        var hardwareIssues: [InventoryHardwareIssue] = [], smartDiagnostics: [String] = []
         if collector == .linux {
+            if seen.contains(.diskSMART) {
+                let result = InventorySMART.parseTransport(facts[.diskSMART]); smartDiagnostics = result.diagnostics
+                if result.readings.isEmpty { facts[.diskSMART] = "" }
+                else {
+                    let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+                    facts[.diskSMART] = String(decoding: try encoder.encode(result.readings), as: UTF8.self)
+                }
+            }
             if seen.contains(.memoryModules) {
                 let raw = facts[.memoryModules]
                 if raw.contains("__SSH_HUB_HARDWARE_TOOL_MISSING__") { hardwareIssues.append(.memoryToolMissing); facts[.memoryModules] = "" }
@@ -744,7 +866,7 @@ enum InventoryCollection {
             }
         }
         guard !facts.isEmpty else { throw InventoryError.noFacts }
-        let snapshot = InventorySnapshot(date: date, collector: collector, facts: facts, hardwareIssues: hardwareIssues.isEmpty ? nil : hardwareIssues)
+        let snapshot = InventorySnapshot(date: date, collector: collector, facts: facts, hardwareIssues: hardwareIssues.isEmpty ? nil : hardwareIssues, smartDiagnostics: smartDiagnostics.isEmpty ? nil : smartDiagnostics)
         var inventory = RecordInventory(); inventory.append(snapshot); try InventoryRepository.validate(inventory)
         return snapshot
     }
