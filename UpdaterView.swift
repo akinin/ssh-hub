@@ -47,6 +47,7 @@ import AppKit
     func cancel() { task?.cancel() }
     func install() {
         guard !busy, let update = available else { return }
+        guard !SigningCertificateModel.shared.busy else { error = "Дождись завершения установки сертификата."; return }
         let destination = Bundle.main.bundleURL.standardizedFileURL
         let directory = destination.deletingLastPathComponent()
         guard directory.path == "/Applications" || directory.path == NSHomeDirectory() + "/Applications",
@@ -83,6 +84,7 @@ import AppKit
 }
 struct AppUpdateView: View {
     @ObservedObject var updater = AppUpdater.shared
+    @ObservedObject private var signingCertificate = SigningCertificateModel.shared
     @Environment(\.dismiss) private var dismiss
     @State private var confirming = false
     var body: some View {
@@ -95,17 +97,19 @@ struct AppUpdateView: View {
                 Link("Открыть релиз " + update.version.string, destination: update.releaseURL)
             }
             if let error = updater.error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
+            Divider()
+            SigningCertificateSettings().disabled(updater.busy)
             Text("Проверяется стабильный релиз akinin/ssh-hub. Перед заменой проверяются SHA-256 и подпись приложения. Записи и настройки сохраняются.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 Button("Проверить снова") { updater.check() }.disabled(updater.busy)
                 Spacer()
                 if updater.busy { Button("Отменить") { updater.cancel() } }
                 else {
-                    Button("Закрыть") { dismiss() }.keyboardShortcut(.cancelAction)
-                    if updater.available != nil { Button("Скачать и установить") { confirming = true }.buttonStyle(.borderedProminent) }
+                    Button("Закрыть") { dismiss() }.keyboardShortcut(.cancelAction).disabled(signingCertificate.busy)
+                    if updater.available != nil { Button("Скачать и установить") { confirming = true }.buttonStyle(.borderedProminent).disabled(signingCertificate.busy) }
                 }
             }
-        }.padding(24).frame(width: 560).interactiveDismissDisabled(updater.busy).dismissOnOutsideClick(enabled: !updater.busy)
+        }.padding(24).frame(width: 560).interactiveDismissDisabled(updater.busy || signingCertificate.busy).dismissOnOutsideClick(enabled: !updater.busy && !signingCertificate.busy)
             .confirmationDialog("Установить обновление и перезапустить SSH Hub?", isPresented: $confirming, titleVisibility: .visible) {
                 Button("Установить и перезапустить") { updater.install() }
                 Button("Отмена", role: .cancel) {}

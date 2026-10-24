@@ -90,6 +90,8 @@ python3 SecurityIntelIntegrationTests.py "$build_dir/security-assessment-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift ConfigChanges.swift ConnectionAppearance.swift AliasTransfer.swift LocalConnections.swift Nmap.swift TransportTests.swift -o "$build_dir/transport-tests"
 "$build_dir/transport-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" ReleaseUpdate.swift UpdateTests.swift -o "$build_dir/update-tests"
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" SSHConfig.swift CommandTask.swift SigningCertificate.swift SigningCertificateTests.swift -o "$build_dir/signing-certificate-tests" -framework Security
+"$build_dir/signing-certificate-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" UpdateTermination.swift UpdateTerminationTests.swift -framework AppKit -o "$build_dir/update-quit-tests"
 "$build_dir/update-quit-tests"
 "$build_dir/update-quit-tests" --later
@@ -203,6 +205,7 @@ ditto --norsrc --noextattr "$bin_dir/SwiftTerm_SwiftTerm.bundle" "$app_dir/Conte
 cp Vendor/SwiftTerm/LICENSE "$app_dir/Contents/Resources/SwiftTerm-LICENSE.txt"
 
 cp Info.plist "$app_dir/Contents/Info.plist"
+cp Signing/SSHHub-CodeSigning.cer "$app_dir/Contents/Resources/SSHHub-CodeSigning.cer"
 swiftc -module-cache-path "$build_dir/module-cache" Icon.swift -o "$build_dir/make-icon" -framework AppKit
 "$build_dir/make-icon" "$build_dir/AppIcon.iconset"
 iconutil -c icns "$build_dir/AppIcon.iconset" -o "$app_dir/Contents/Resources/AppIcon.icns"

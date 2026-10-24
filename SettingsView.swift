@@ -20,6 +20,7 @@ struct AppSettingsView: View {
     @AppStorage("startInMenuBar") private var startInMenuBar = false
     @AppStorage("checkUpdatesOnLaunch.v1") private var checkUpdates = true
     @ObservedObject private var updater = AppUpdater.shared
+    @ObservedObject private var signingCertificate = SigningCertificateModel.shared
     @State private var loginEnabled = false
     @State private var requiresApproval = false
     @State private var error: String?
@@ -114,6 +115,7 @@ struct AppSettingsView: View {
                                 }
                                 Text("GitHub Releases · проверка не чаще раза в сутки, установка по нажатию.").font(.caption).foregroundStyle(.secondary)
                             }
+                            Section { SigningCertificateSettings() }
                         case .transfer:
                             Section {
                                 Button("Резервное копирование с паролем…") { dismiss(); DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { store.showingBackup = true } }
@@ -133,9 +135,9 @@ struct AppSettingsView: View {
             HStack {
                 if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
                 Spacer()
-                Button("Готово") { dismiss() }.keyboardShortcut(.defaultAction)
+                Button("Готово") { dismiss() }.keyboardShortcut(.defaultAction).disabled(signingCertificate.busy)
             }.padding(16)
-        }.frame(width: 820, height: 600).dismissOnOutsideClick()
+        }.frame(width: 820, height: 600).interactiveDismissDisabled(signingCertificate.busy).dismissOnOutsideClick(enabled: !signingCertificate.busy)
             .sheet(isPresented: $showingActionTiles) { GlobalRecordActionsEditor() }
             .sheet(isPresented: $showingRowBadges) { RecordRowBadgesEditor() }
             .sheet(item: $customizingMenu) { MenuCustomizationView(surface: $0) }
