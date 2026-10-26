@@ -53,9 +53,15 @@ jobs:
           ditto -x -k --norsrc --noextattr "$RUNNER_TEMP/payload/SSH-Hub-macOS.zip" "$RUNNER_TEMP/payload"
       - name: Trust the public certificate on this disposable runner only
         shell: bash
+        timeout-minutes: 1
         run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTIONS" == true && "$RUNNER_ENVIRONMENT" == github-hosted ]]
           security create-keychain -p fixture-only "$RUNNER_TEMP/ssh-hub-ci.keychain-db"
-          security add-trusted-cert -r trustRoot -p codeSign -k "$RUNNER_TEMP/ssh-hub-ci.keychain-db" Signing/SSHHub-CodeSigning.cer
+          security unlock-keychain -p fixture-only "$RUNNER_TEMP/ssh-hub-ci.keychain-db"
+          # Administrator-domain code-sign trust avoids an unavailable interactive
+          # user-domain authorization prompt. This is a fresh disposable runner.
+          sudo /usr/bin/security add-trusted-cert -d -r trustRoot -p codeSign -k "$RUNNER_TEMP/ssh-hub-ci.keychain-db" Signing/SSHHub-CodeSigning.cer
       - name: Validate both slices and execute natively
         run: python3 UniversalBuildTests.py "$RUNNER_TEMP/payload/SSH Hub.app" --smoke
       - name: Native defaults, first-launch offer and updater tests
@@ -76,5 +82,5 @@ jobs:
       - name: Remove owned CI trust and keychain
         if: always()
         run: |
-          security remove-trusted-cert Signing/SSHHub-CodeSigning.cer || true
+          sudo /usr/bin/security remove-trusted-cert -d Signing/SSHHub-CodeSigning.cer || true
           security delete-keychain "$RUNNER_TEMP/ssh-hub-ci.keychain-db" || true
