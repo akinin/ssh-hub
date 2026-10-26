@@ -1,6 +1,6 @@
 #!/bin/zsh
 set -euo pipefail
-cd "${0:A:h}"
+cd "${0:A:h:h}"
 build_dir="${1:-build}"
 mkdir -p "$build_dir"
 build_dir="${build_dir:A}"

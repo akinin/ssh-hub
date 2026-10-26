@@ -1,8 +1,8 @@
 #!/bin/zsh
 # Only the public certificate fingerprint is stored in the repository.
 set -euo pipefail
-script_dir="${0:A:h}"
-identity="${SSH_HUB_SIGN_IDENTITY:-$(<"$script_dir/signing-identity.sha1")}"
+repo_root="${0:A:h:h}"
+identity="${SSH_HUB_SIGN_IDENTITY:-$(<"$repo_root/Signing/signing-identity.sha1")}"
 identity="${identity:u}"
 
 fail() { print -u2 -- "$*"; exit 1; }
@@ -20,7 +20,7 @@ if [[ "${1:-}" == '--verify' ]]; then
     verify_only=true
     shift
 fi
-[[ $# == 1 ]] || fail 'Использование: zsh sign-app.sh [--verify] /путь/SSH\ Hub.app | --check'
+[[ $# == 1 ]] || fail 'Использование: zsh Scripts/sign-app.sh [--verify] /путь/SSH\ Hub.app | --check'
 app_dir="${1:A}"
 [[ -d "$app_dir" && ! -L "$1" ]] || fail 'Нужен обычный каталог приложения.'
 plist="$app_dir/Contents/Info.plist"

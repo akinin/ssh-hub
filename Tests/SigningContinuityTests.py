@@ -90,7 +90,7 @@ with tempfile.TemporaryDirectory(prefix="ssh-hub-signing-test-", dir="/private/t
         }))
         run("xcrun", "swiftc", *defines, str(source), "-framework", "Security",
             "-o", str(macos / "SSHHub"))
-        run("zsh", "sign-app.sh", str(app))
+        run("zsh", "Scripts/sign-app.sh", str(app))
         apps.append(app)
     first, second = apps
     requirement = run("codesign", "-d", "-r-", str(first)).stdout.split("designated => ")[1]
@@ -104,16 +104,16 @@ with tempfile.TemporaryDirectory(prefix="ssh-hub-signing-test-", dir="/private/t
         run(first_binary, "create", str(keychain))
         run(second_binary, "read", str(keychain))
         # Same bundle ID without the signer must not gain access.
-        run("zsh", "sign-app.sh", str(second), env={**os.environ, "SSH_HUB_SIGN_IDENTITY": "-"})
+        run("zsh", "Scripts/sign-app.sh", str(second), env={**os.environ, "SSH_HUB_SIGN_IDENTITY": "-"})
         run(second_binary, "denied", str(keychain))
     finally:
         if keychain.exists():
             run(first_binary, "cleanup", str(keychain))
-    missing = run("zsh", "sign-app.sh", "--check", ok=False,
+    missing = run("zsh", "Scripts/sign-app.sh", "--check", ok=False,
                   env={**os.environ, "SSH_HUB_SIGN_IDENTITY": "0" * 40})
     assert missing.returncode != 0 and "ad-hoc автоматически не используется" in missing.stdout
     # Altering sealed content must be rejected before packaging.
     (first / "Contents/Info.plist").write_bytes((second / "Contents/Info.plist").read_bytes())
-    assert run("zsh", "sign-app.sh", "--verify", str(first), ok=False).returncode != 0
+    assert run("zsh", "Scripts/sign-app.sh", "--verify", str(first), ok=False).returncode != 0
     print("Signing continuity: changed builds share a requirement; Keychain read needs no UI; "
           "ad-hoc access, missing identity and tampered bundle rejected.")

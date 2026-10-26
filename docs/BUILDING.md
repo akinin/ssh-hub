@@ -20,12 +20,12 @@ SwiftTerm и изменённая keepass-rs включены в `Vendor/`, Go-�
 
 ## Подпись
 
-Для релизной сборки нужен сертификат с приватным ключом, чей публичный отпечаток закреплён в `signing-identity.sha1`. Приватный ключ в репозиторий не входит. Отсутствие сертификата останавливает сборку; автоматического перехода на ad-hoc нет.
+Для релизной сборки нужен сертификат с приватным ключом, чей публичный отпечаток закреплён в `Signing/signing-identity.sha1`. Приватный ключ в репозиторий не входит. Отсутствие сертификата останавливает сборку; автоматического перехода на ad-hoc нет.
 
 Для собственной локальной разработки можно явно выбрать ad-hoc:
 
 ```sh
-SSH_HUB_SIGN_IDENTITY=- zsh build.sh /private/tmp/ssh-hub-dev
+SSH_HUB_SIGN_IDENTITY=- zsh Scripts/build.sh /private/tmp/ssh-hub-dev
 ```
 
 Такую сборку не следует публиковать как официальный подписанный релиз. Устройство подписи и установка публичного сертификата описаны в [Signing/README.md](../Signing/README.md).
@@ -33,11 +33,11 @@ SSH_HUB_SIGN_IDENTITY=- zsh build.sh /private/tmp/ssh-hub-dev
 ## Универсальная сборка
 
 ```sh
-zsh build.sh /private/tmp/ssh-hub-build
-zsh package-dmg.sh /private/tmp/ssh-hub-build /private/tmp/ssh-hub-dist --skip-build
+zsh Scripts/build.sh /private/tmp/ssh-hub-build
+zsh Scripts/package-dmg.sh /private/tmp/ssh-hub-build /private/tmp/ssh-hub-dist --skip-build
 ```
 
-`build.sh` запускает проверки, собирает приложение и помощники для обеих архитектур, объединяет `arm64` и `x86_64`, затем подписывает комплект. Результат: `/private/tmp/ssh-hub-build/SSH Hub.app`. `package-dmg.sh` проверяет подпись и архитектуры перед упаковкой DMG.
+`Scripts/build.sh` запускает проверки, собирает приложение и помощники для обеих архитектур, объединяет `arm64` и `x86_64`, затем подписывает комплект. Результат: `/private/tmp/ssh-hub-build/SSH Hub.app`. `Scripts/package-dmg.sh` проверяет подпись и архитектуры перед упаковкой DMG.
 
 Для SwiftPM используется `--build-system native`; этот флаг нужен и при ручном повторении команд из скрипта. Минимальная целевая версия — macOS 14. Если установлен SDK macOS 26.5, скрипт предпочитает его SDK из `xcrun`.
 
@@ -48,7 +48,7 @@ zsh package-dmg.sh /private/tmp/ssh-hub-build /private/tmp/ssh-hub-dist --skip-b
 Пример короткой проверки без доступа к пользовательским данным:
 
 ```sh
-swiftc -parse-as-library -swift-version 5 ApplicationDefaults.swift Tests/ApplicationDefaultsTests.swift -o /private/tmp/ssh-hub-defaults-tests
+swiftc -parse-as-library -swift-version 5 Sources/SSHHub/ApplicationDefaults.swift Tests/ApplicationDefaultsTests.swift -o /private/tmp/ssh-hub-defaults-tests
 /private/tmp/ssh-hub-defaults-tests
 ```
 
@@ -66,4 +66,4 @@ python3 Tests/UniversalBuildTests.py '/private/tmp/ssh-hub-build/SSH Hub.app'
 
 Публикуемый комплект содержит универсальные ZIP и DMG, архив исходников точного тега, публичный `SSHHub-CodeSigning.cer`, инструкцию `SIGNING-SETUP-RU.md` и `SHA256SUMS`. Встроенное обновление ожидает стабильный Latest с тегом `vX.Y.Z` и файлом `SSH-Hub-macOS.zip`, содержащим `SSH Hub.app`.
 
-Сборки, кэши, тестовые результаты и пользовательские данные не добавляются в Git. Готовые приложения размещаются в Releases. При подготовке новой версии обновляются версия и номер сборки в `Info.plist`, а описание изменений помещается в релиз. README остаётся описанием приложения.
+Сборки, кэши, тестовые результаты и пользовательские данные не добавляются в Git. Готовые приложения размещаются в Releases. При подготовке новой версии обновляются версия и номер сборки в `Resources/Info.plist`, а описание изменений помещается в релиз. README остаётся описанием приложения.

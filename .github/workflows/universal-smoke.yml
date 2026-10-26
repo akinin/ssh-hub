@@ -68,11 +68,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          swiftc -parse-as-library -swift-version 5 ApplicationDefaults.swift Tests/ApplicationDefaultsTests.swift -o "$RUNNER_TEMP/defaults-tests"
+          swiftc -parse-as-library -swift-version 5 Sources/SSHHub/ApplicationDefaults.swift Tests/ApplicationDefaultsTests.swift -o "$RUNNER_TEMP/defaults-tests"
           "$RUNNER_TEMP/defaults-tests"
-          swiftc -parse-as-library -swift-version 5 SSHConfig.swift CommandTask.swift SigningCertificate.swift Tests/SigningCertificateTests.swift -o "$RUNNER_TEMP/certificate-tests" -framework Security
+          swiftc -parse-as-library -swift-version 5 Sources/SSHHub/SSHConfig.swift Sources/SSHHub/CommandTask.swift Sources/SSHHub/SigningCertificate.swift Tests/SigningCertificateTests.swift -o "$RUNNER_TEMP/certificate-tests" -framework Security
           "$RUNNER_TEMP/certificate-tests"
-          swiftc -parse-as-library -swift-version 5 ReleaseUpdate.swift Tests/UpdateTests.swift -o "$RUNNER_TEMP/update-tests"
+          swiftc -parse-as-library -swift-version 5 Sources/SSHHub/ReleaseUpdate.swift Tests/UpdateTests.swift -o "$RUNNER_TEMP/update-tests"
           "$RUNNER_TEMP/update-tests" "$RUNNER_TEMP/payload/SSH-Hub-macOS.zip"
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:

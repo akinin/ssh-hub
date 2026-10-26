@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Merge the already-tested native build with a separately compiled second slice.
 set -euo pipefail
-cd "${0:A:h}"
+cd "${0:A:h:h}"
 if command -v rustup >/dev/null 2>&1; then
     rust_cargo="$(rustup which cargo)"
     export PATH="${rust_cargo:h}:$PATH"
@@ -27,13 +27,13 @@ cp "$bin_dir/SSHHub" "$slice/SSHHub"
 export CARGO_TARGET_DIR="$build_dir/kdbx-target"
 cargo build --locked --release --target "$rust_target" --manifest-path KDBXHelper/Cargo.toml
 cp "$CARGO_TARGET_DIR/$rust_target/release/ssh-hub-kdbx" "$slice/SSHKDBX"
-SSH_HUB_ARCH="$other" zsh build-rdp.sh "${SSH_HUB_RDP_CACHE:-$build_dir/rdp}" "$slice/SSHRDP" "$sdk"
-clang -arch "$other" -mmacosx-version-min=14.0 -isysroot "$sdk" -O2 TelnetHelper.c -o "$slice/SSHTelnet"
+SSH_HUB_ARCH="$other" zsh Scripts/build-rdp.sh "${SSH_HUB_RDP_CACHE:-$build_dir/rdp}" "$slice/SSHRDP" "$sdk"
+clang -arch "$other" -mmacosx-version-min=14.0 -isysroot "$sdk" -O2 Helpers/TelnetHelper.c -o "$slice/SSHTelnet"
 common=(-swift-version 5 -O -sdk "$sdk" -target "$other-apple-macosx14.0" -module-cache-path "$build_dir/module-cache")
-swiftc -parse-as-library "${common[@]}" ReleaseUpdate.swift UpdateHelper.swift -o "$slice/SSHUpdate"
-swiftc -parse-as-library "${common[@]}" SSHConfig.swift SerialHelper.swift -o "$slice/SSHSerial"
-swiftc "${common[@]}" Askpass.swift -o "$slice/SSHAskpass"
-swiftc -parse-as-library "${common[@]}" LoginAskpass.swift -o "$slice/SSHLoginAskpass"
+swiftc -parse-as-library "${common[@]}" Sources/SSHHub/ReleaseUpdate.swift Helpers/UpdateHelper.swift -o "$slice/SSHUpdate"
+swiftc -parse-as-library "${common[@]}" Sources/SSHHub/SSHConfig.swift Helpers/SerialHelper.swift -o "$slice/SSHSerial"
+swiftc "${common[@]}" Helpers/Askpass.swift -o "$slice/SSHAskpass"
+swiftc -parse-as-library "${common[@]}" Helpers/LoginAskpass.swift -o "$slice/SSHLoginAskpass"
 for binary in "$app/Contents/MacOS/"*(N); do
     if lipo "$binary" -verify_arch arm64 2>/dev/null && lipo "$binary" -verify_arch x86_64 2>/dev/null; then continue; fi
     lipo "$binary" -verify_arch "$native"

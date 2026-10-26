@@ -34,12 +34,12 @@ security add-trusted-cert -r trustRoot -p codeSign -k "$HOME/Library/Keychains/l
 
 ### Сборка и сохранение ключа
 
-`build.sh` проверяет наличие действующей доверенной identity по публичному SHA-1 из `signing-identity.sha1` ещё до сборки. `sign-app.sh` подписывает помощники, затем приложение, и проверяет их сертификаты и целостность. `package-dmg.sh`, включая `--skip-build`, проверяет ту же подпись. При недоступном сертификате нет автоматического перехода на ad-hoc.
+`Scripts/build.sh` проверяет наличие действующей доверенной identity по публичному SHA-1 из `Signing/signing-identity.sha1` ещё до сборки. `Scripts/sign-app.sh` подписывает помощники, затем приложение, и проверяет их сертификаты и целостность. `Scripts/package-dmg.sh`, включая `--skip-build`, проверяет ту же подпись. При недоступном сертификате нет автоматического перехода на ad-hoc.
 
 ```sh
-zsh sign-app.sh --check
-zsh build.sh /private/tmp/ssh-hub-build
-zsh sign-app.sh --verify '/private/tmp/ssh-hub-build/SSH Hub.app'
+zsh Scripts/sign-app.sh --check
+zsh Scripts/build.sh /private/tmp/ssh-hub-build
+zsh Scripts/sign-app.sh --verify '/private/tmp/ssh-hub-build/SSH Hub.app'
 python3 Tests/SigningContinuityTests.py
 ```
 
@@ -48,7 +48,7 @@ python3 Tests/SigningContinuityTests.py
 Для разработки без приватного ключа разрешён только явный выбор:
 
 ```sh
-SSH_HUB_SIGN_IDENTITY=- zsh build.sh /private/tmp/ssh-hub-dev
+SSH_HUB_SIGN_IDENTITY=- zsh Scripts/build.sh /private/tmp/ssh-hub-dev
 ```
 
 Такие сборки снова имеют меняющуюся ad-hoc идентичность; не подменяй ими постоянные релизы. Переопределение на другой сертификат допускается через `SSH_HUB_SIGN_IDENTITY` с его полным SHA-1 и означает смену идентичности.
