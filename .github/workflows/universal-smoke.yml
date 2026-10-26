@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Draft release to validate before publishing
+        description: Published prerelease candidate to validate before marking stable
         required: true
         type: string
       source_ref:
@@ -22,19 +22,21 @@ jobs:
       matrix:
         runner: [macos-15-intel, macos-15]
     env:
-      GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ inputs.release_tag }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ inputs.source_ref }}
           persist-credentials: false
-      - name: Download and verify draft payload
+      - name: Download and verify candidate payload
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          # The REST tag endpoint excludes drafts even for the release owner.
+          # Use a published prerelease so the token needs read access only.
           release_id=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)
           [[ "$release_id" =~ ^[0-9]+$ ]]
           gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > "$RUNNER_TEMP/release.json"
