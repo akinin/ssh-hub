@@ -2,7 +2,14 @@
 
 ## Проект
 
-Нативное приложение для macOS 14+ на Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
+Нативное приложение для macOS 14+ на Intel и Apple Silicon: записи SSH, Serial, веб-ссылки, документация, вложения, SFTP, ключи, туннели и Nmap. Интерфейс и пользовательская документация — на русском языке. Используйте термин «запись» для объекта приложения; «SSH-алиас» — только для блока `Host` в SSH-конфиге.
+
+## Изменения 3.20.0 (сборка 83)
+
+- Releases are universal: arm64 and x86_64 in all nine Mach-O files, including Swift/C/Rust/Go helpers and statically linked RDP/OpenSSL. Build native tests once, compile the second slice with build-universal.sh, merge before codesign. Architecture caches must be separate. Prefer the rustup toolchain consistently so cross stdlibs match rustc; both Apple targets are needed. Keep min macOS 14, no Homebrew/build-path runtime dependencies. UniversalBuildTests.py checks every nested Mach-O and both signatures; package-dmg.sh invokes it. Update validation selects the running process architecture and checks helpers too; never weaken signature/digest checks.
+- SigningCertificateOffer runs only after application authorization, validates the bundled certificate and offers only when untrusted. A per-fingerprint local preference remembers a dismissed offer; no automatic trust writes. Reuse the confirmed manual installation, show truthful success, defer automatic updates and menu-bar hiding while the offer is visible. Tests inject readers/evaluators/installers and owned preference suites, never real trust changes.
+- ApplicationDefaults contains an allowlisted presentation-only baseline (compact density, global action styles, row badge order, toolbar/context menu). Register missing defaults before constructing views, never migrate/overwrite persistent choices. Reset controls return the same baseline. Never copy profiles/connection appearances, addresses, passwords, verifier, history, certificate exceptions, machine window IDs or file paths from installed preferences into source/defaults.
+- universal-smoke.yml is manual, read-only contents permission, pinned checkout, standard public hosted macOS Intel/ARM runners. Verify draft asset digests before extraction, trust only the pinned public certificate on the disposable runner, run helper/empty-config native smoke plus defaults/offer/updater tests and remove owned trust/keychain. --smoke must refuse non-GitHub-hosted environments. Do not claim native Intel execution until that job has actually passed.
 
 ## Постоянная локальная подпись
 

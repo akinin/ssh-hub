@@ -46,6 +46,16 @@ struct AvailableUpdate {
     }
 }
 enum UpdateTransport {
+    static var runningArchitecture: String {
+        #if arch(x86_64)
+        return "x86_64"
+        #else
+        return "arm64"
+        #endif
+    }
+    static func supports(_ architectures: String, running: String) -> Bool {
+        ["arm64", "x86_64"].contains(running) && architectures.split(whereSeparator: { $0.isWhitespace }).contains(Substring(running))
+    }
     static let bundleID = "com.olshaniki.ssh-aliases"
     static let latest = URL(string: "https://api.github.com/repos/akinin/ssh-hub/releases/latest")!
     static func latestRelease(installed: String) async throws -> AvailableUpdate? {
@@ -98,7 +108,15 @@ enum UpdateTransport {
         guard currentOS.compare(minimum, options: .numeric) != .orderedAscending else { throw UpdateError("Для обновления требуется macOS \(minimum) или новее.") }
         let executable = app.appendingPathComponent("Contents/MacOS/SSHHub")
         guard FileManager.default.isExecutableFile(atPath: executable.path),
-              try command("/usr/bin/lipo", ["-archs", executable.path]).split(whereSeparator: { $0.isWhitespace }).contains("arm64") else { throw UpdateError("Обновление не подходит для Apple Silicon.") }
+              supports(try command("/usr/bin/lipo", ["-archs", executable.path]), running: runningArchitecture) else { throw UpdateError("Обновление не подходит для архитектуры этого Mac (\(runningArchitecture)).") }
+        let binaries = try FileManager.default.contentsOfDirectory(at: executable.deletingLastPathComponent(), includingPropertiesForKeys: nil, options: .skipsHiddenFiles)
+        guard !binaries.isEmpty, binaries.count <= 32 else { throw UpdateError("Некорректный набор исполняемых файлов обновления.") }
+        for binary in binaries {
+            guard FileManager.default.isExecutableFile(atPath: binary.path),
+                  supports(try command("/usr/bin/lipo", ["-archs", binary.path]), running: runningArchitecture) else {
+                throw UpdateError("Помощник \(binary.lastPathComponent) не подходит для архитектуры этого Mac (\(runningArchitecture)).")
+            }
+        }
         _ = try command("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path])
     }
     static func extract(_ archive: URL, root: URL, version: String) throws -> URL {

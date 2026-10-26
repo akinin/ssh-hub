@@ -24,7 +24,7 @@ struct MenuCustomizationView: View {
                 .font(.caption).foregroundStyle(.secondary)
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
             HStack {
-                Button("По умолчанию") { draft = surface.defaults; error = nil }
+                Button("По умолчанию") { draft = CustomMenuLayout.items(ApplicationDefaults.values[surface.key] as? Data ?? Data(), for: surface); error = nil }
                 if surface != .toolbar { Button("Разделитель", systemImage: "plus") { draft.append(.init(id: "divider:" + UUID().uuidString)) }.disabled(draft.count >= 64) }
                 Spacer()
                 Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction)

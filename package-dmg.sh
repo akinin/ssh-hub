@@ -10,6 +10,7 @@ if [[ "${3:-}" != "--skip-build" ]]; then
     zsh build.sh "$build_dir"
 fi
 zsh ./sign-app.sh --verify "$build_dir/SSH Hub.app"
+python3 UniversalBuildTests.py "$build_dir/SSH Hub.app"
 stage_dir="$(mktemp -d /private/tmp/ssh-aliases-dmg.XXXXXX)"
 trap 'rm -rf "$stage_dir"' EXIT
 ditto --norsrc --noextattr "$build_dir/SSH Hub.app" "$stage_dir/SSH Hub.app"

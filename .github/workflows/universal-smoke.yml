@@ -1,0 +1,75 @@
+name: Universal macOS smoke
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Draft release to validate before publishing
+        required: true
+        type: string
+      source_ref:
+        description: Exact source commit for the candidate
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  native:
+    name: Native ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15-intel, macos-15]
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+      - name: Download and verify draft payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/release.json"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern SSH-Hub-macOS.zip --pattern SSHHub-CodeSigning.cer --dir "$RUNNER_TEMP/payload"
+          python3 - <<'PY'
+          import json,pathlib,hashlib,os
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])
+          assets={a['name']:a for a in json.loads((root/'release.json').read_text())['assets']}
+          for name in ['SSH-Hub-macOS.zip','SSHHub-CodeSigning.cer']:
+              data=(root/'payload'/name).read_bytes()
+              assert assets[name]['digest']=='sha256:'+hashlib.sha256(data).hexdigest()
+          assert (root/'payload/SSHHub-CodeSigning.cer').read_bytes()==pathlib.Path('Signing/SSHHub-CodeSigning.cer').read_bytes()
+          PY
+          ditto -x -k --norsrc --noextattr "$RUNNER_TEMP/payload/SSH-Hub-macOS.zip" "$RUNNER_TEMP/payload"
+      - name: Trust the public certificate on this disposable runner only
+        shell: bash
+        run: |
+          security create-keychain -p fixture-only "$RUNNER_TEMP/ssh-hub-ci.keychain-db"
+          security add-trusted-cert -r trustRoot -p codeSign -k "$RUNNER_TEMP/ssh-hub-ci.keychain-db" Signing/SSHHub-CodeSigning.cer
+      - name: Validate both slices and execute natively
+        run: python3 UniversalBuildTests.py "$RUNNER_TEMP/payload/SSH Hub.app" --smoke
+      - name: Native defaults, first-launch offer and updater tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -parse-as-library -swift-version 5 ApplicationDefaults.swift ApplicationDefaultsTests.swift -o "$RUNNER_TEMP/defaults-tests"
+          "$RUNNER_TEMP/defaults-tests"
+          swiftc -parse-as-library -swift-version 5 SSHConfig.swift CommandTask.swift SigningCertificate.swift SigningCertificateTests.swift -o "$RUNNER_TEMP/certificate-tests" -framework Security
+          "$RUNNER_TEMP/certificate-tests"
+          swiftc -parse-as-library -swift-version 5 ReleaseUpdate.swift UpdateTests.swift -o "$RUNNER_TEMP/update-tests"
+          "$RUNNER_TEMP/update-tests" "$RUNNER_TEMP/payload/SSH-Hub-macOS.zip"
+      - name: Native WireGuard loopback integration
+        shell: bash
+        run: |
+          cd WireGuardHelper
+          SSH_HUB_WG_HELPER="$RUNNER_TEMP/payload/SSH Hub.app/Contents/MacOS/SSHWG" GOTOOLCHAIN=local go test -mod=vendor -count=1 -timeout=120s ./...
+      - name: Remove owned CI trust and keychain
+        if: always()
+        run: |
+          security remove-trusted-cert Signing/SSHHub-CodeSigning.cer || true
+          security delete-keychain "$RUNNER_TEMP/ssh-hub-ci.keychain-db" || true

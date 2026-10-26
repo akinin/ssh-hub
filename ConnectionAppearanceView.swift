@@ -18,7 +18,7 @@ struct RecordRowBadgesEditor: View {
             if let error { Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal, 20) }
             Divider()
             HStack {
-                Button("По умолчанию") { items = RecordRowBadgeSettings.defaults }
+                Button("По умолчанию") { items = RecordRowBadgeSettings.decode(ApplicationDefaults.values[RecordRowBadgeSettings.key] as? Data) }
                 Spacer()
                 Button("Отмена", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Сохранить") {

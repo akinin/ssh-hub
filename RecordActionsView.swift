@@ -27,8 +27,8 @@ struct RecordActionsEditor: View {
             RecordActionRows(draft: $draft)
             HStack {
                 Button(entry == nil ? "По умолчанию" : "Использовать общие") {
-                    draft = entry.map { RecordAction.layout(nil, global: inherited, entry: $0) } ?? RecordAction.catalog(nil)
-                    resetSnapshot = draft
+                    draft = entry.map { RecordAction.layout(nil, global: inherited, entry: $0) } ?? RecordAction.catalog(RecordActionDefaults.decode(ApplicationDefaults.values[RecordActionDefaults.key] as? Data))
+                    resetSnapshot = entry == nil ? nil : draft
                 }
                 RecordActionAddMenu(draft: $draft)
                 Spacer()
@@ -304,7 +304,7 @@ struct RecordTileCustomizationView: View {
             HStack {
                 Button(scope == .record ? "Использовать общие" : "По умолчанию") {
                     if scope == .record { recordDraft = RecordAction.layout(nil, global: globalDraft, entry: entry); recordReset = recordDraft; recordTouched = true }
-                    else { globalDraft = RecordAction.catalog(nil); globalReset = globalDraft; globalTouched = true }
+                    else { globalDraft = RecordAction.catalog(RecordActionDefaults.decode(ApplicationDefaults.values[RecordActionDefaults.key] as? Data)); globalReset = nil; globalTouched = true }
                 }
                 RecordActionAddMenu(draft: draft)
                 Spacer()

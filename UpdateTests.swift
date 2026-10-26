@@ -5,6 +5,12 @@ import CryptoKit
     static func check(_ value: Bool) { precondition(value) }
     static func reject(_ body: () throws -> Void) { do { try body(); fatalError("unsafe input accepted") } catch {} }
     static func main() async throws {
+        check(UpdateTransport.supports("arm64 x86_64", running: "arm64"))
+        check(UpdateTransport.supports("x86_64 arm64\n", running: "x86_64"))
+        check(!UpdateTransport.supports("arm64", running: "x86_64"))
+        check(!UpdateTransport.supports("x86_64", running: "arm64"))
+        check(!UpdateTransport.supports("arm64e", running: "arm64"))
+        check(!UpdateTransport.supports("arm64 x86_64", running: "unknown"))
         check(ReleaseVersion("v2.10.0")! > ReleaseVersion("2.9.99")!)
         check(ReleaseVersion("2.4.0")! == ReleaseVersion("v2.4.0")!)
         for text in ["2.4", "2.4.0-beta", "1.0.0;id", "-1.0.0", "9999999.0.0"] { check(ReleaseVersion(text) == nil) }

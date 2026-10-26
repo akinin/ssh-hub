@@ -601,7 +601,7 @@ import ConsoleSupport
     @ObservedObject private var access = AppAccess.shared
     @ObservedObject private var updater = AppUpdater.shared
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    init() { NSApplication.shared.setActivationPolicy(.regular) }
+    init() { ApplicationDefaults.register(); NSApplication.shared.setActivationPolicy(.regular) }
     var body: some Scene {
         Window("SSH Hub", id: "main") {
             Group {
@@ -803,6 +803,7 @@ struct StatusMenu: View {
 struct MainView: View {
     @ObservedObject private var access = AppAccess.shared
     @ObservedObject private var updater = AppUpdater.shared
+    @ObservedObject private var certificateOffer = SigningCertificateOffer.shared
     @EnvironmentObject var store: AliasStore
     @Environment(\.openWindow) private var openWindow
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
@@ -1075,6 +1076,7 @@ struct MainView: View {
         .sheet(item: $store.duplicatingAlias) { snapshot in CreateAliasView(duplicating: snapshot, existing: store.aliases).environmentObject(store) }
         .sheet(isPresented: $store.generatingKey) { GenerateKeyView(directory: store.config.sshDirectory) }
         .sheet(isPresented: $updater.presented) { AppUpdateView() }
+        .sheet(isPresented: $certificateOffer.presented, onDismiss: { certificateOffer.complete(); updater.checkAutomatically(); store.applyLaunchPreference() }) { SigningCertificateOfferView() }
         .sheet(isPresented: $store.showingProfiles) { ProfilesView().environmentObject(store) }
         .sheet(item: $store.editingTab) { TabCustomizationView(target: $0).environmentObject(store) }
         .sheet(isPresented: $store.showingPalette) { ActionPalette().environmentObject(store) }
@@ -1098,13 +1100,14 @@ struct MainView: View {
         .sheet(item: $store.groupingAlias) { GroupAssignmentView(entry: $0).environmentObject(store) }
         .sheet(item: $store.importReview) { ImportReviewView(review: $0, existing: store.aliases).environmentObject(store) }
         .onAppear {
-            updater.checkAutomatically()
+            certificateOffer.consider()
+            if !certificateOffer.presented { updater.checkAutomatically() }
             AppDelegate.storeForTermination = store
             AppDelegate.scannerForTermination = store.scanner
             QuickAccessController.shared.configure(store: store) {
                 openWindow(id: "main"); NSApplication.shared.activate(ignoringOtherApps: true)
             }
-            store.applyLaunchPreference()
+            if !certificateOffer.presented { store.applyLaunchPreference() }
             if !handledLaunchAction {
                 handledLaunchAction = true
                 if let action = IntegrationAction.launchAction(arguments: CommandLine.arguments) { presentIntegration(action) }

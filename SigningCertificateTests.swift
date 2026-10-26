@@ -20,6 +20,21 @@ private final class FixtureState: @unchecked Sendable {
     }
     @MainActor static func main() async throws {
         let data = try Data(contentsOf: URL(fileURLWithPath: "Signing/SSHHub-CodeSigning.cer"))
+        let offerSuite = "SSHHubCertificateOfferTests-" + UUID().uuidString
+        let offerDefaults = UserDefaults(suiteName: offerSuite)!
+        defer { offerDefaults.removePersistentDomain(forName: offerSuite) }
+        let offer = SigningCertificateOffer(defaults: offerDefaults, read: { data }, evaluate: { _ in false })
+        offer.consider(); precondition(offer.presented)
+        precondition(offerDefaults.object(forKey: SigningCertificateOffer.key) == nil)
+        offer.complete(); precondition(!offer.presented)
+        let laterLaunch = SigningCertificateOffer(defaults: offerDefaults, read: { data }, evaluate: { _ in false })
+        laterLaunch.consider(); precondition(!laterLaunch.presented)
+        offerDefaults.removeObject(forKey: SigningCertificateOffer.key)
+        let alreadyTrusted = SigningCertificateOffer(defaults: offerDefaults, read: { data }, evaluate: { _ in true })
+        alreadyTrusted.consider(); precondition(!alreadyTrusted.presented)
+        precondition(offerDefaults.object(forKey: SigningCertificateOffer.key) == nil)
+        let missing = SigningCertificateOffer(defaults: offerDefaults, read: { Data() }, evaluate: { _ in preconditionFailure() })
+        missing.consider(); precondition(!missing.presented)
         _ = try AppSigningCertificate.validate(data)
         var changed = data; changed[100] ^= 1
         for invalid in [Data(), changed, Data(repeating: 0, count: 65_537)] {

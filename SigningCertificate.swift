@@ -120,3 +120,29 @@ final class SigningCertificateInstallation: @unchecked Sendable {
     }
     func cancel() { task?.cancel(); installation?.cancel() }
 }
+
+// A launch offer only; trust is still changed exclusively by the confirmed button.
+@MainActor final class SigningCertificateOffer: ObservableObject {
+    static let shared = SigningCertificateOffer()
+    static let key = "signingCertificate.launchOffer." + AppSigningCertificate.fingerprint
+    @Published var presented = false
+    private let defaults: UserDefaults
+    private let read: () throws -> Data
+    private let evaluate: (Data) -> Bool
+    private var attempted = false
+    private var offered = false
+    init(defaults: UserDefaults = .standard, read: @escaping () throws -> Data = AppSigningCertificate.bundled,
+         evaluate: @escaping (Data) -> Bool = AppSigningCertificate.trusted) {
+        self.defaults = defaults; self.read = read; self.evaluate = evaluate
+    }
+    func consider() {
+        guard !attempted else { return }
+        attempted = true
+        guard !defaults.bool(forKey: Self.key), let data = try? AppSigningCertificate.validate(read()), !evaluate(data) else { return }
+        offered = true; presented = true
+    }
+    func complete() {
+        if offered { defaults.set(true, forKey: Self.key) }
+        presented = false
+    }
+}

@@ -34,3 +34,21 @@ struct SigningCertificateSettings: View {
         }
     }
 }
+
+struct SigningCertificateOfferView: View {
+    @ObservedObject var model = SigningCertificateModel.shared
+    @ObservedObject var offer = SigningCertificateOffer.shared
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Label("Настройка SSH Hub", systemImage: "checkmark.shield").font(.title2.bold())
+            Text(model.trusted ? "Сертификат приложения настроен на этом Mac." : "На этом Mac ещё не настроен сертификат приложения.").foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            SigningCertificateSettings(model: model)
+            Text("Это можно сделать позже в «Настройки → Обновления».").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button(model.trusted ? "Продолжить" : "Позже") { offer.complete() }
+                    .keyboardShortcut(.cancelAction).disabled(model.busy)
+            }
+        }.padding(24).frame(width: 500).interactiveDismissDisabled(model.busy)
+    }
+}
