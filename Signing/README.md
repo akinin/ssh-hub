@@ -40,7 +40,7 @@ security add-trusted-cert -r trustRoot -p codeSign -k "$HOME/Library/Keychains/l
 zsh sign-app.sh --check
 zsh build.sh /private/tmp/ssh-hub-build
 zsh sign-app.sh --verify '/private/tmp/ssh-hub-build/SSH Hub.app'
-python3 SigningContinuityTests.py
+python3 Tests/SigningContinuityTests.py
 ```
 
 Последняя проверка использует два разных временных приложения и отдельную временную Связку ключей с синтетическим паролем. Проверяются чтение без диалога после пересборки, отказ для ad-hoc с тем же bundle ID, повреждённая сборка и отсутствие сертификата. Пользовательские пароли не читаются.

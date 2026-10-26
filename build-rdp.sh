@@ -37,7 +37,7 @@ if [[ ! -f "$cache_dir/freerdp-3.32.2/CMakeLists.txt" ]]; then tar -xzf "$source
 "$cmake_bin" --build "$cache_dir/build" -j6 --target freerdp-client freerdp-server
 compile_bridge() {
 local -a extra_sources extra_libraries
-if [[ "$1" == RDPHelper.c ]]; then extra_sources=(RDPChannels.c); else extra_sources=(RDPFixtureChannels.c); extra_libraries=("$cache_dir/build/server/common/libfreerdp-server3.a"); fi
+if [[ "$1" == RDPHelper.c ]]; then extra_sources=(RDPChannels.c); else extra_sources=(Tests/RDPFixtureChannels.c); extra_libraries=("$cache_dir/build/server/common/libfreerdp-server3.a"); fi
 clang -arch "$architecture" -mmacosx-version-min=14.0 -isysroot "$sdk" -O2 -Wno-deprecated-declarations \
   -I"$cache_dir/freerdp-3.32.2/include" -I"$cache_dir/freerdp-3.32.2/winpr/include" \
   -I"$cache_dir/build/include" -I"$cache_dir/build/winpr/include" \
@@ -46,6 +46,6 @@ clang -arch "$architecture" -mmacosx-version-min=14.0 -isysroot "$sdk" -O2 -Wno-
   -lz -liconv -framework Foundation -framework Security -framework CoreServices -o "$2"
 }
 compile_bridge RDPHelper.c "$output"
-if [[ -n "${4:-}" ]]; then compile_bridge RDPFixture.c "${4:A}"; fi
+if [[ -n "${4:-}" ]]; then compile_bridge Tests/RDPFixture.c "${4:A}"; fi
 # No runtime dependency on Homebrew or a build-machine path.
 if otool -L "$output" | tail -n +2 | rg '/opt/homebrew|/usr/local|/private/tmp'; then print -u2 'Непереносимая зависимость RDP'; exit 1; fi

@@ -141,5 +141,5 @@ def main(binary):
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        raise SystemExit("Usage: python3 TopologySSHIntegrationTests.py /path/to/topology-ssh-integration-tests")
+        raise SystemExit("Usage: python3 Tests/TopologySSHIntegrationTests.py /path/to/topology-ssh-integration-tests")
     main(pathlib.Path(sys.argv[1]).resolve())

@@ -193,7 +193,7 @@ def run(binary, server, provider, mode, tls=False):
 
 def main():
     if len(sys.argv) != 2:
-        raise SystemExit('Usage: TopologyRouterAPIIntegrationTests.py /path/to/topology-router-api-tests (compiled -DTOPOLOGY_UNIFI_TEST)')
+        raise SystemExit('Usage: Tests/TopologyRouterAPIIntegrationTests.py /path/to/topology-router-api-tests (compiled -DTOPOLOGY_UNIFI_TEST)')
     binary = pathlib.Path(sys.argv[1]).resolve()
     servers, threads = [], []
     try:

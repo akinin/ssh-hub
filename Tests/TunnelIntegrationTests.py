@@ -188,4 +188,4 @@ if __name__ == '__main__':
     elif len(sys.argv) == 2:
         main(pathlib.Path(sys.argv[1]).resolve())
     else:
-        raise SystemExit('Usage: python3 TunnelIntegrationTests.py /path/to/tunnel-tests')
+        raise SystemExit('Usage: python3 Tests/TunnelIntegrationTests.py /path/to/tunnel-tests')

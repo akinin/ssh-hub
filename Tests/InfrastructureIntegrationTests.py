@@ -246,7 +246,7 @@ print(responses[command])
             raise RuntimeError("; ".join(Fixture.failures))
         if any(path.startswith(("/api/users/", "/api2/json/access/")) for path in Fixture.requests):
             raise RuntimeError("unexpected credential endpoint")
-        print("InfrastructureIntegrationTests.py: passed")
+        print("Tests/InfrastructureIntegrationTests.py: passed")
     finally:
         if tls_server:
             tls_server.shutdown()

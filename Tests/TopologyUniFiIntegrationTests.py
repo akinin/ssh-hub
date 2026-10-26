@@ -181,7 +181,7 @@ def run(binary, server, mode, tls=False):
 
 def main():
     if len(sys.argv) != 2:
-        raise SystemExit('Usage: TopologyUniFiIntegrationTests.py /path/to/topology-unifi-tests (compiled with -DTOPOLOGY_UNIFI_TEST)')
+        raise SystemExit('Usage: Tests/TopologyUniFiIntegrationTests.py /path/to/topology-unifi-tests (compiled with -DTOPOLOGY_UNIFI_TEST)')
     binary = pathlib.Path(sys.argv[1]).resolve()
     servers = []
     threads = []

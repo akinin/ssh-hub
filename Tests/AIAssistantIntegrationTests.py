@@ -137,7 +137,7 @@ def main():
             subprocess.run([sys.argv[1], f"http://127.0.0.1:{http.server_port}", f"https://127.0.0.1:{tls.server_port}"], check=True, timeout=20)
             if Fixture.failures:
                 raise RuntimeError("; ".join(Fixture.failures))
-            print("AIAssistantIntegrationTests.py: passed (no live API calls)")
+            print("Tests/AIAssistantIntegrationTests.py: passed (no live API calls)")
     finally:
         if tls:
             tls.shutdown()

@@ -6,7 +6,7 @@ import plistlib
 import subprocess
 import tempfile
 
-ROOT = pathlib.Path(__file__).resolve().parent
+ROOT = pathlib.Path(__file__).resolve().parent.parent
 SOURCE = r'''
 import Foundation
 import Security

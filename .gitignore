@@ -20,3 +20,23 @@ id_rsa*
 config.backup-*
 
 KDBXHelper/target/
+
+# Local tooling and generated test/build data.
+.swiftpm/
+.cache/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.app/
+*.xcresult/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.orig
+*.rej
+.env
+.env.*
+!.env.example

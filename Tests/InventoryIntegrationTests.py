@@ -161,5 +161,5 @@ def main(binary):
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        raise SystemExit("Usage: python3 InventoryIntegrationTests.py /path/to/inventory-integration-tests")
+        raise SystemExit("Usage: python3 Tests/InventoryIntegrationTests.py /path/to/inventory-integration-tests")
     main(pathlib.Path(sys.argv[1]).resolve())
