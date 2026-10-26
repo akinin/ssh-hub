@@ -74,6 +74,10 @@ jobs:
           "$RUNNER_TEMP/certificate-tests"
           swiftc -parse-as-library -swift-version 5 ReleaseUpdate.swift UpdateTests.swift -o "$RUNNER_TEMP/update-tests"
           "$RUNNER_TEMP/update-tests" "$RUNNER_TEMP/payload/SSH-Hub-macOS.zip"
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.27.3'
+          cache: false
       - name: Native WireGuard loopback integration
         shell: bash
         run: |
@@ -81,6 +85,22 @@ jobs:
           SSH_HUB_WG_HELPER="$RUNNER_TEMP/payload/SSH Hub.app/Contents/MacOS/SSHWG" GOTOOLCHAIN=local go test -mod=vendor -count=1 -timeout=120s ./...
       - name: Remove owned CI trust and keychain
         if: always()
+        timeout-minutes: 1
         run: |
-          sudo /usr/bin/security remove-trusted-cert -d Signing/SSHHub-CodeSigning.cer || true
-          security delete-keychain "$RUNNER_TEMP/ssh-hub-ci.keychain-db" || true
+          python3 - <<'PY'
+          import os,pathlib,subprocess
+          assert os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('RUNNER_ENVIRONMENT')=='github-hosted'
+          keychain=pathlib.Path(os.environ['RUNNER_TEMP'])/'ssh-hub-ci.keychain-db'
+          for command in [
+              ['sudo','-n','/usr/bin/security','remove-trusted-cert','-d','Signing/SSHHub-CodeSigning.cer'],
+              ['/usr/bin/security','delete-keychain',str(keychain)],
+          ]:
+              try:
+                  result=subprocess.run(command,timeout=10)
+                  if result.returncode: print('CI cleanup returned',result.returncode,'for',command[-2:])
+              except subprocess.TimeoutExpired:
+                  print('CI cleanup authorization timed out; the disposable hosted VM is destroyed after this job.')
+          for suffix in ['', '-shm', '-wal']:
+              try: pathlib.Path(str(keychain)+suffix).unlink()
+              except FileNotFoundError: pass
+          PY
