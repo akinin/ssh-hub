@@ -11,6 +11,7 @@ import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument('app', type=pathlib.Path)
+parser.add_argument('--notarized', action='store_true', help='Require an offline notarization ticket and Gatekeeper acceptance')
 parser.add_argument('--smoke', action='store_true', help='Run owned helpers and an empty-config app on a disposable CI runner only')
 args = parser.parse_args()
 app = args.app.resolve()
@@ -20,8 +21,9 @@ assert {p.name for p in macos.iterdir()} == expected
 info = plistlib.loads((app/'Contents/Info.plist').read_bytes())
 assert info['CFBundleIdentifier'] == 'com.olshaniki.ssh-aliases'
 assert info['LSMinimumSystemVersion'] == '14.0'
-certificate = app/'Contents/Resources/SSHHub-CodeSigning.cer'
-assert hashlib.sha256(certificate.read_bytes()).hexdigest() == '4e404f8eaed616350e2e759c11296408b0f863712ce11afa5a59f91511c2d684'
+assert not (app/'Contents/Resources/SSHHub-CodeSigning.cer').exists(), 'Legacy self-signed certificate must not ship'
+team = 'T3V8ZUE97C'
+policy = 'anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"' + team + '\"'
 
 def run(*command):
     return subprocess.check_output(command, stderr=subprocess.STDOUT, text=True, timeout=30)
@@ -39,13 +41,22 @@ for path in app.rglob('*'):
     for architecture in ['arm64', 'x86_64']:
         run('/usr/bin/codesign', '--verify', '--strict', '--architecture', architecture, str(path))
         requirement = run('/usr/bin/codesign', '-d', '-r-', '--architecture', architecture, str(path))
-        assert '22f2efb2ae6b78efafcf8ad5c80cc0b040f610a5' in requirement.lower() and 'cdhash' not in requirement, path
+        assert team in requirement and 'cdhash' not in requirement, path
+        identifier = info['CFBundleIdentifier'] + ('.helper.' + path.name if path.name != 'SSHHub' else '')
+        run('/usr/bin/codesign', '--verify', '--strict', '--architecture', architecture, '-R', '=identifier \"' + identifier + '\" and ' + policy, str(path))
+        metadata = run('/usr/bin/codesign', '-d', '--verbose=4', '--architecture', architecture, str(path))
+        assert '(runtime)' in metadata and 'Timestamp=' in metadata and ('TeamIdentifier=' + team) in metadata, path
         libraries = run('/usr/bin/otool', '-arch', architecture, '-L', str(path))
         dependencies = '\n'.join(line for line in libraries.splitlines() if line.startswith('\t'))
         assert not any(p in dependencies for p in ['/opt/homebrew/', '/usr/local/', '/private/tmp/', '/Users/']), path
 assert len(machos) == len(expected)
 run('/usr/bin/codesign', '--verify', '--deep', '--strict', str(app))
-print('Universal validation passed: all 9 binaries have signed arm64/x86_64 slices; pinned public certificate; portable dependencies.')
+print('Universal validation passed: all 9 binaries have signed arm64/x86_64 slices; Apple Developer ID team, Hardened Runtime, secure timestamps; portable dependencies.')
+
+if args.notarized:
+    run('/usr/bin/xcrun', 'stapler', 'validate', str(app))
+    run('/usr/sbin/spctl', '--assess', '--type', 'execute', '--verbose=2', str(app))
+    print('Notarization validation passed: stapled app ticket and Gatekeeper acceptance.')
 
 if args.smoke:
     # Refuse accidental execution against a developer/user Mac.

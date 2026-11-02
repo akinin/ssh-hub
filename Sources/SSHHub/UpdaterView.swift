@@ -47,7 +47,6 @@ import AppKit
     func cancel() { task?.cancel() }
     func install() {
         guard !busy, let update = available else { return }
-        guard !SigningCertificateModel.shared.busy else { error = "Дождись завершения установки сертификата."; return }
         let destination = Bundle.main.bundleURL.standardizedFileURL
         let directory = destination.deletingLastPathComponent()
         guard directory.path == "/Applications" || directory.path == NSHomeDirectory() + "/Applications",
@@ -84,7 +83,6 @@ import AppKit
 }
 struct AppUpdateView: View {
     @ObservedObject var updater = AppUpdater.shared
-    @ObservedObject private var signingCertificate = SigningCertificateModel.shared
     @Environment(\.dismiss) private var dismiss
     @State private var confirming = false
     var body: some View {
@@ -105,11 +103,11 @@ struct AppUpdateView: View {
                 Spacer()
                 if updater.busy { Button("Отменить") { updater.cancel() } }
                 else {
-                    Button("Закрыть") { dismiss() }.keyboardShortcut(.cancelAction).disabled(signingCertificate.busy)
-                    if updater.available != nil { Button("Скачать и установить") { confirming = true }.buttonStyle(.borderedProminent).disabled(signingCertificate.busy) }
+                    Button("Закрыть") { dismiss() }.keyboardShortcut(.cancelAction)
+                    if updater.available != nil { Button("Скачать и установить") { confirming = true }.buttonStyle(.borderedProminent) }
                 }
             }
-        }.padding(24).frame(width: 560).interactiveDismissDisabled(updater.busy || signingCertificate.busy).dismissOnOutsideClick(enabled: !updater.busy && !signingCertificate.busy)
+        }.padding(24).frame(width: 560).interactiveDismissDisabled(updater.busy).dismissOnOutsideClick(enabled: !updater.busy)
             .confirmationDialog("Установить обновление и перезапустить SSH Hub?", isPresented: $confirming, titleVisibility: .visible) {
                 Button("Установить и перезапустить") { updater.install() }
                 Button("Отмена", role: .cancel) {}

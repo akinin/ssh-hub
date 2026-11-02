@@ -705,12 +705,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         InventoryModel.stopAll()
         TopologyModel.stopAll()
         KDBXClient.stopAll()
-        SigningCertificateModel.shared.cancel()
         let tunnels = TunnelManager.shared
-        guard SigningCertificateModel.shared.busy || tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || AppDelegate.storeForTermination?.tools.nuclei.pending == true || AppDelegate.storeForTermination?.tools.audits.pending == true || AppDelegate.scannerForTermination?.pending == true || RecordDiscoveryModel.pending || AppDelegate.storeForTermination?.certificates.pending == true else { return .terminateNow }
+        guard tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || AppDelegate.storeForTermination?.tools.nuclei.pending == true || AppDelegate.storeForTermination?.tools.audits.pending == true || AppDelegate.scannerForTermination?.pending == true || RecordDiscoveryModel.pending || AppDelegate.storeForTermination?.certificates.pending == true else { return .terminateNow }
         tunnels.stopAll()
         UpdateTermination.finishAfterCleanup(sender) {
-            SigningCertificateModel.shared.busy || tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || AppDelegate.storeForTermination?.tools.nuclei.pending == true || AppDelegate.storeForTermination?.tools.audits.pending == true || AppDelegate.scannerForTermination?.pending == true || RecordDiscoveryModel.pending || AppDelegate.storeForTermination?.certificates.pending == true
+            tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || AppDelegate.storeForTermination?.tools.nuclei.pending == true || AppDelegate.storeForTermination?.tools.audits.pending == true || AppDelegate.scannerForTermination?.pending == true || RecordDiscoveryModel.pending || AppDelegate.storeForTermination?.certificates.pending == true
         }
         return .terminateLater
     }
@@ -803,7 +802,6 @@ struct StatusMenu: View {
 struct MainView: View {
     @ObservedObject private var access = AppAccess.shared
     @ObservedObject private var updater = AppUpdater.shared
-    @ObservedObject private var certificateOffer = SigningCertificateOffer.shared
     @EnvironmentObject var store: AliasStore
     @Environment(\.openWindow) private var openWindow
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
@@ -1076,7 +1074,6 @@ struct MainView: View {
         .sheet(item: $store.duplicatingAlias) { snapshot in CreateAliasView(duplicating: snapshot, existing: store.aliases).environmentObject(store) }
         .sheet(isPresented: $store.generatingKey) { GenerateKeyView(directory: store.config.sshDirectory) }
         .sheet(isPresented: $updater.presented) { AppUpdateView() }
-        .sheet(isPresented: $certificateOffer.presented, onDismiss: { certificateOffer.complete(); updater.checkAutomatically(); store.applyLaunchPreference() }) { SigningCertificateOfferView() }
         .sheet(isPresented: $store.showingProfiles) { ProfilesView().environmentObject(store) }
         .sheet(item: $store.editingTab) { TabCustomizationView(target: $0).environmentObject(store) }
         .sheet(isPresented: $store.showingPalette) { ActionPalette().environmentObject(store) }
@@ -1100,14 +1097,13 @@ struct MainView: View {
         .sheet(item: $store.groupingAlias) { GroupAssignmentView(entry: $0).environmentObject(store) }
         .sheet(item: $store.importReview) { ImportReviewView(review: $0, existing: store.aliases).environmentObject(store) }
         .onAppear {
-            certificateOffer.consider()
-            if !certificateOffer.presented { updater.checkAutomatically() }
+            updater.checkAutomatically()
             AppDelegate.storeForTermination = store
             AppDelegate.scannerForTermination = store.scanner
             QuickAccessController.shared.configure(store: store) {
                 openWindow(id: "main"); NSApplication.shared.activate(ignoringOtherApps: true)
             }
-            if !certificateOffer.presented { store.applyLaunchPreference() }
+            store.applyLaunchPreference()
             if !handledLaunchAction {
                 handledLaunchAction = true
                 if let action = IntegrationAction.launchAction(arguments: CommandLine.arguments) { presentIntegration(action) }

@@ -1,6 +1,31 @@
 import Foundation
 import CryptoKit
 import Darwin
+import Security
+
+// Pin the Apple-issued Developer ID team, allowing normal certificate renewal.
+// A matching bundle ID alone never identifies the publisher.
+enum DeveloperIDSignature {
+    static let teamID = "T3V8ZUE97C"
+    static let bundleID = "com.olshaniki.ssh-aliases"
+    static var requirementText: String {
+        "identifier \"" + bundleID + "\" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"" + teamID + "\""
+    }
+    static func validate(_ app: URL) throws {
+        var requirement: SecRequirement?
+        guard SecRequirementCreateWithString(requirementText as CFString, [], &requirement) == errSecSuccess, let requirement else {
+            throw UpdateError("Не удалось подготовить проверку издателя SSH Hub.")
+        }
+        var code: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(app as CFURL, [], &code) == errSecSuccess, let code else {
+            throw UpdateError("Не удалось прочитать подпись приложения.")
+        }
+        let flags = SecCSFlags(rawValue: kSecCSStrictValidate | kSecCSCheckAllArchitectures)
+        guard SecStaticCodeCheckValidity(code, flags, requirement) == errSecSuccess else {
+            throw UpdateError("Приложение не имеет действующей подписи Apple Developer ID команды SSH Hub.")
+        }
+    }
+}
 
 struct UpdateError: LocalizedError {
     let message: String
@@ -118,6 +143,8 @@ enum UpdateTransport {
             }
         }
         _ = try command("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path])
+        try DeveloperIDSignature.validate(app)
+        _ = try command("/usr/sbin/spctl", ["--assess", "--type", "execute", "--verbose=2", app.path])
     }
     static func extract(_ archive: URL, root: URL, version: String) throws -> URL {
         let directory = root.appendingPathComponent("extracted", isDirectory: true)

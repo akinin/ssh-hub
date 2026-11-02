@@ -40,3 +40,7 @@ venv/
 .env
 .env.*
 !.env.example
+
+# Apple signing requests and private API keys stay local.
+*.certSigningRequest
+*.p8

@@ -98,7 +98,7 @@ python3 Tests/SecurityIntelIntegrationTests.py "$build_dir/security-assessment-t
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" Sources/SSHHub/SSHConfig.swift Sources/SSHHub/ConfigChanges.swift Sources/SSHHub/ConnectionAppearance.swift Sources/SSHHub/AliasTransfer.swift Sources/SSHHub/LocalConnections.swift Sources/SSHHub/Nmap.swift Tests/TransportTests.swift -o "$build_dir/transport-tests"
 "$build_dir/transport-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" Sources/SSHHub/ReleaseUpdate.swift Tests/UpdateTests.swift -o "$build_dir/update-tests"
-swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" Sources/SSHHub/SSHConfig.swift Sources/SSHHub/CommandTask.swift Sources/SSHHub/SigningCertificate.swift Tests/SigningCertificateTests.swift -o "$build_dir/signing-certificate-tests" -framework Security
+swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" Sources/SSHHub/ReleaseUpdate.swift Sources/SSHHub/SigningCertificate.swift Tests/SigningCertificateTests.swift -o "$build_dir/signing-certificate-tests" -framework Security
 "$build_dir/signing-certificate-tests"
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" Sources/SSHHub/UpdateTermination.swift Tests/UpdateTerminationTests.swift -framework AppKit -o "$build_dir/update-quit-tests"
 "$build_dir/update-quit-tests"
@@ -215,7 +215,7 @@ cp Vendor/SwiftTerm/LICENSE "$app_dir/Contents/Resources/SwiftTerm-LICENSE.txt"
 
 zsh ./Scripts/build-universal.sh "$build_dir" "$sdk_dir"
 cp Resources/Info.plist "$app_dir/Contents/Info.plist"
-cp Signing/SSHHub-CodeSigning.cer "$app_dir/Contents/Resources/SSHHub-CodeSigning.cer"
+rm -f "$app_dir/Contents/Resources/SSHHub-CodeSigning.cer"
 swiftc -module-cache-path "$build_dir/module-cache" Tools/Icon.swift -o "$build_dir/make-icon" -framework AppKit
 "$build_dir/make-icon" "$build_dir/AppIcon.iconset"
 iconutil -c icns "$build_dir/AppIcon.iconset" -o "$app_dir/Contents/Resources/AppIcon.icns"

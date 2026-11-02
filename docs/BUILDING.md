@@ -28,7 +28,7 @@ SwiftTerm и изменённая keepass-rs включены в `Vendor/`, Go-�
 SSH_HUB_SIGN_IDENTITY=- zsh Scripts/build.sh /private/tmp/ssh-hub-dev
 ```
 
-Такую сборку не следует публиковать как официальный подписанный релиз. Устройство подписи и установка публичного сертификата описаны в [Signing/README.md](../Signing/README.md).
+Такую сборку не следует публиковать как официальный подписанный релиз. Подпись и нотарификация описаны в [Signing/README.md](../Signing/README.md).
 
 ## Универсальная сборка
 
@@ -58,12 +58,16 @@ swiftc -parse-as-library -swift-version 5 Sources/SSHHub/ApplicationDefaults.swi
 python3 Tests/UniversalBuildTests.py '/private/tmp/ssh-hub-build/SSH Hub.app'
 ```
 
-Ручной workflow **Universal macOS smoke** запускает опубликованный предварительный релиз на стандартных GitHub runners Intel и Apple Silicon, проверяет помощники, обновление, настройки и WireGuard loopback. Вход `source_ref` должен совпадать с коммитом, из которого запущен workflow. Права репозитория в CI — только на чтение. Временное доверие публичному сертификату настраивается только внутри одноразовой GitHub-машины; этот сценарий нельзя переносить на пользовательский Mac.
+Ручной workflow **Universal macOS smoke** запускает опубликованный предварительный релиз на стандартных GitHub runners Intel и Apple Silicon, проверяет помощники, обновление, настройки и WireGuard loopback. Вход `source_ref` должен совпадать с коммитом, из которого запущен workflow. Права репозитория в CI — только на чтение. CI использует штатное доверие Apple; импорт сертификатов и изменение trust settings не выполняются.
 
 Интеграционные проверки используют временные конфиги и локальные стенды. Не запускай их против пользовательских серверов, подсетей, SSH-конфигов или паролей. Ручные UI-стенды также используют отдельные тестовые данные.
 
 ## Файлы релиза
 
-Публикуемый комплект содержит универсальные ZIP и DMG, архив исходников точного тега, публичный `SSHHub-CodeSigning.cer`, инструкцию `SIGNING-SETUP-RU.md` и `SHA256SUMS`. Встроенное обновление ожидает стабильный Latest с тегом `vX.Y.Z` и файлом `SSH-Hub-macOS.zip`, содержащим `SSH Hub.app`.
+Публикуемый комплект содержит универсальные ZIP и DMG, `SHA256SUMS` и архив исходников точного тега. Встроенное обновление ожидает стабильный Latest с тегом `vX.Y.Z` и файлом `SSH-Hub-macOS.zip`, содержащим `SSH Hub.app`.
 
 Сборки, кэши, тестовые результаты и пользовательские данные не добавляются в Git. Готовые приложения размещаются в Releases. При подготовке новой версии обновляются версия и номер сборки в `Resources/Info.plist`, а описание изменений помещается в релиз. README остаётся описанием приложения.
+
+## Нотарификация
+
+После подписания выполни `zsh Scripts/notarize.sh /private/tmp/ssh-hub-build /private/tmp/ssh-hub-dist`. Нужен профиль `SSHHub-DeveloperID-Notary` в Связке ключей; секрет вводится владельцем в скрытом запросе `notarytool store-credentials`. Подробности — в [Signing/README.md](../Signing/README.md). Успех подтверждается статусом `Accepted`, `stapler validate` и Gatekeeper для приложения и DMG.
