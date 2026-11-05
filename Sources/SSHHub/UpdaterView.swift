@@ -10,10 +10,12 @@ import AppKit
     @Published private(set) var error: String?
     private var task: Task<Void, Never>?
     private var started = false
+    private let fetchLatest: (String) async throws -> AvailableUpdate?
     let installed = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
     private var stateDirectory: URL { HubPaths.applicationSupport.appendingPathComponent(UpdateTransport.bundleID).appendingPathComponent("Updates") }
     private var statusURL: URL { stateDirectory.appendingPathComponent("last-update.json") }
-    init() {
+    init(fetchLatest: @escaping (String) async throws -> AvailableUpdate? = { try await UpdateTransport.latestRelease(installed: $0) }) {
+        self.fetchLatest = fetchLatest
         if let data = try? Data(contentsOf: statusURL), let outcome = try? JSONDecoder().decode(UpdateOutcome.self, from: data) {
             if !outcome.success { error = outcome.message }
         }
@@ -36,10 +38,10 @@ import AppKit
         task = Task {
             defer { busy = false; task = nil }
             do {
-                let release = try await UpdateTransport.latestRelease(installed: installed)
+                let release = try await fetchLatest(installed)
                 try Task.checkCancellation()
                 available = release; message = release.map { "Доступна версия " + $0.version.string } ?? "Новых версий нет. Установлена " + installed + "."
-                HubPreferences.shared.set(Date().timeIntervalSince1970, forKey: "lastAutomaticUpdateCheck.v1")
+                if !AppAccess.shared.locked { HubPreferences.shared.set(Date().timeIntervalSince1970, forKey: "lastAutomaticUpdateCheck.v1") }
             } catch is CancellationError { message = "Проверка отменена." }
             catch { if Task.isCancelled { message = "Проверка отменена." } else { if manual { self.error = error.localizedDescription }; message = "Не удалось проверить обновления." } }
         }

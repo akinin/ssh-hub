@@ -603,6 +603,11 @@ import ConsoleSupport
     @Published private(set) var store: AliasStore?
     @Published private(set) var closing = false
     var presentGate: (() -> Void)?
+    func checkForUpdates(check: (@MainActor () -> Void)? = nil) {
+        QuickAccessController.shared.close()
+        presentGate?()
+        DispatchQueue.main.async { if let check { check() } else { AppUpdater.shared.check() } }
+    }
     private var automaticUnlockPending = true
     func consumeAutomaticUnlock() -> Bool { defer { automaticUnlockPending = false }; return automaticUnlockPending }
     @Published var vault: VaultWorkspace
@@ -678,7 +683,9 @@ import ConsoleSupport
             Group {
                 if let store, session.vault.unlocked { MainView().environmentObject(store) }
                 else { VaultGateView(session: session, model: session.vault) }
-            }.background(VaultWindowPresenter(session: session)).onAppear { initializeStore() }.onChange(of: session.vault.unlocked) { _, _ in initializeStore(restore: true) }
+            }.background(VaultWindowPresenter(session: session))
+             .sheet(isPresented: $updater.presented) { AppUpdateView() }
+             .onAppear { initializeStore() }.onChange(of: session.vault.unlocked) { _, _ in initializeStore(restore: true) }
         }
             .defaultSize(width: 960, height: 640)
             .windowResizability(.contentMinSize)
@@ -691,7 +698,7 @@ struct HubCommands: Commands {
     @ObservedObject var session: HubSession
     @ObservedObject private var access = AppAccess.shared
     @ObservedObject private var updater = AppUpdater.shared
-    // Every command is disabled until startup authentication has completed.
+    // Record commands require an unlocked database; application updates do not.
     private var store: AliasStore { session.store! }
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -727,9 +734,7 @@ struct HubCommands: Commands {
             }.disabled(access.locked || session.store == nil)
         }
         CommandGroup(after: .appInfo) {
-            Group {
-                Button(updater.available == nil ? "Проверить обновления…" : "Доступно обновление…") { QuickAccessController.shared.openMain { updater.check() } }
-            }.disabled(access.locked || session.store == nil)
+            Button(updater.available == nil ? "Проверить обновления…" : "Доступно обновление…") { session.checkForUpdates() }.disabled(updater.busy)
         }
         CommandGroup(replacing: .appSettings) {
             Group {
@@ -1144,7 +1149,6 @@ struct MainView: View {
         .sheet(item: $store.editingAlias) { snapshot in CreateAliasView(editing: snapshot).environmentObject(store) }
         .sheet(item: $store.duplicatingAlias) { snapshot in CreateAliasView(duplicating: snapshot, existing: store.aliases).environmentObject(store) }
         .sheet(isPresented: $store.generatingKey) { GenerateKeyView(directory: store.config.sshDirectory) }
-        .sheet(isPresented: $updater.presented) { AppUpdateView() }
         .sheet(isPresented: $store.showingProfiles) { ProfilesView().environmentObject(store) }
         .sheet(item: $store.editingTab) { TabCustomizationView(target: $0).environmentObject(store) }
         .sheet(isPresented: $store.showingPalette) { ActionPalette().environmentObject(store) }

@@ -303,3 +303,36 @@ extension MandatoryVaultTests {
         XCTAssertThrowsError(try invalid.discardGeneratedRuntime())
     }
 }
+extension MandatoryVaultTests {
+    @MainActor func testManualUpdateCheckWorksWithoutOpeningOrWritingLockedDatabase() async throws {
+        try await fixture { root in
+            let model = VaultWorkspace(config: root.appendingPathComponent("config"), file: root.appendingPathComponent("missing.sqlite3"))
+            model.installBridge()
+            let session = HubSession(vault: model)
+            var windowShown = false, requests = 0
+            session.presentGate = { windowShown = true }
+            let updater = AppUpdater(fetchLatest: { _ in requests += 1; return nil })
+            let requested = expectation(description: "Update menu action while locked")
+            session.checkForUpdates { updater.check(); requested.fulfill() }
+            await fulfillment(of: [requested], timeout: 2)
+            for _ in 0..<200 where updater.busy { try await Task.sleep(for: .milliseconds(10)) }
+            XCTAssertTrue(windowShown); XCTAssertTrue(updater.presented); XCTAssertEqual(requests, 1); XCTAssertNil(updater.error)
+            XCTAssertTrue(AppAccess.shared.locked); XCTAssertNil(session.store); XCTAssertFalse(model.exists)
+            XCTAssertNil(model.error, "A manual check must not attempt to save preferences into a locked database")
+        }
+    }
+    @MainActor func testCreatingAnotherDatabaseKeepsPreviousFileUnchanged() async throws {
+        try await fixture { root in
+            let first = root.appendingPathComponent("first.sqlite3"), second = root.appendingPathComponent("second.sqlite3")
+            let model = VaultWorkspace(config: root.appendingPathComponent("config"), file: first)
+            try model.createEmpty(password: "owned-first-master-password")
+            try model.database?.set("owned-record", Data("owned-saved-record".utf8)); model.lock()
+            let original = try Data(contentsOf: first)
+            try model.select(second); try model.createEmpty(password: "owned-second-master-password")
+            XCTAssertNil(try model.database?.get("owned-record")); model.lock()
+            XCTAssertEqual(try Data(contentsOf: first), original)
+            try model.select(first); try model.open("owned-first-master-password")
+            XCTAssertEqual(try model.database?.get("owned-record"), Data("owned-saved-record".utf8)); model.lock()
+        }
+    }
+}

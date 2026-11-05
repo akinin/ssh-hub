@@ -33,7 +33,6 @@ struct VaultGateView: View {
                         Button("Разблокировать") { unlock() }.buttonStyle(.borderedProminent).disabled(password.isEmpty)
                         if model.biometricEnabled { Button("Touch ID", systemImage: "touchid") { biometricUnlock() } }
                         Spacer()
-                        Button("Выбрать другую базу…") { choose() }
                     }
                 }.padding(22).background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 16))
             } else if creating {
@@ -56,6 +55,12 @@ struct VaultGateView: View {
                     if !model.url.lastPathComponent.isEmpty { Text("База не открыта. Можно выбрать файл или создать новую.").font(.caption).foregroundStyle(.secondary) }
                 }
             }
+            if model.exists && !creating {
+                HStack {
+                    Button("Выбрать другую базу…") { choose() }
+                    Button("Создать новую базу…", systemImage: "plus") { beginCreating() }
+                }
+            }
             if session.closing { ProgressView("Закрытие сеансов…") }
             else if working || model.busy { ProgressView("Открытие базы…") }
             if let message = error ?? model.error { Text(message).foregroundStyle(.red).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
@@ -65,6 +70,9 @@ struct VaultGateView: View {
             .disabled(working || model.busy || session.closing)
             .task { if session.consumeAutomaticUnlock() && model.biometricEnabled { biometricUnlock() } }
             .onDisappear { clear() }
+    }
+    private func beginCreating() {
+        model.lock(); creating = true; importing = false; clear()
     }
     private func clear() { password = ""; confirmation = ""; error = nil }
     private func finish() throws {
