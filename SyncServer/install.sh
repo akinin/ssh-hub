@@ -6,7 +6,7 @@ test "$(id -u)" = 0
 . /etc/os-release
 test "$ID" = debian
 test "$VERSION_ID" = 13
-for file in server.py accounts.py cloud.py admin.py index.html backup.py ssh-hub-sync-cloud.service ssh-hub-sync-backup.service ssh-hub-sync-backup.timer; do
+for file in server.py accounts.py cloud.py dashboard.py admin.py index.html app.css app.js backup.py ssh-hub-sync-cloud.service ssh-hub-sync-backup.service ssh-hub-sync-backup.timer; do
     test -f "/opt/ssh-hub-sync/$file"
     test ! -L "/opt/ssh-hub-sync/$file"
     chown root:root "/opt/ssh-hub-sync/$file"
