@@ -19,6 +19,7 @@ struct LocalConnectionRecord: Codable, Identifiable, Equatable {
     var aliasSource: URL?
     var extraOptions: [SSHOption] = []
     var rawSSHOptions: [String]?
+    var suppressedAlias: SSHRecordIdentity?
     var originIdentity: SSHRecordIdentity?
     var aliasSuggestion: String?
     var preserveIdentitiesOnly: Bool?
@@ -64,6 +65,7 @@ struct LocalConnectionRecord: Codable, Identifiable, Equatable {
         if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Укажи название записи." }
         if let error = ConnectionAppearance(name: title).validation { return error }
         if kind != .ssh && aliasName != nil { return "SSH-алиас доступен только для записей SSH." }
+        if let suppressedAlias, kind != .ssh || !suppressedAlias.valid { return "Некорректный исходный SSH-алиас." }
         if let originIdentity, kind != .ssh || !originIdentity.valid { return "Некорректная исходная SSH-запись." }
         if let error = AliasDraft.validateRawOptions(rawSSHOptions ?? []) { return error }
         if kind == .serial { return (serial ?? SerialSettings()).validation }
@@ -110,9 +112,11 @@ struct LocalConnectionRecord: Codable, Identifiable, Equatable {
 struct LocalConnectionRepository {
     let root: URL
     let config: URL
+    let portable: Bool
     init(config: URL, root: URL? = nil) {
         self.config = config
-        let base = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        portable = root == nil
+        let base = root ?? HubPaths.applicationSupport
             .appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases").appendingPathComponent("Connections")
         let scope = SHA256.hash(data: Data(config.standardizedFileURL.path.utf8)).map { String(format: "%02x", $0) }.joined()
         self.root = base.appendingPathComponent(scope)
@@ -120,6 +124,10 @@ struct LocalConnectionRepository {
     var file: URL { root.appendingPathComponent("records.json") }
     func privateConfig(_ id: UUID) -> URL { root.appendingPathComponent(id.uuidString + ".conf") }
     func load() throws -> [LocalConnectionRecord] {
+        if portable && PortableSecretBridge.active {
+            let records = try PortableSecretBridge.read("records", config.standardizedFileURL.path).map { try JSONDecoder().decode([LocalConnectionRecord].self, from: $0) } ?? []
+            try validate(records); try refreshPortableConfigs(records); return records
+        }
         guard FileManager.default.fileExists(atPath: file.path) else { return [] }
         guard try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0 <= 8_000_000 else { throw ConfigError.message("Файл записей больше 8 МБ.") }
         let records = try JSONDecoder().decode([LocalConnectionRecord].self, from: Data(contentsOf: file))
@@ -128,6 +136,19 @@ struct LocalConnectionRepository {
     func write(_ records: [LocalConnectionRecord], expected: [LocalConnectionRecord]) throws {
         guard try load() == expected else { throw ConfigError.message("Записи изменились. Закрой форму и обнови список.") }
         try validate(records)
+        if portable && PortableSecretBridge.active {
+            try PortableSecretBridge.atomic {
+                var hidden = try hiddenAliases()
+                let remaining = Set(records.map(\.id))
+                for record in expected where !remaining.contains(record.id) {
+                    if let key = record.originIdentity?.key { hidden.insert(key) }
+                    if let key = record.suppressedAlias?.key { hidden.insert(key) }
+                }
+                try PortableSecretBridge.write("hidden-aliases", config.standardizedFileURL.path, JSONEncoder().encode(hidden.sorted()))
+                try PortableSecretBridge.write("records", config.standardizedFileURL.path, JSONEncoder().encode(records))
+            }
+            return
+        }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         // Only app-private transport files are written here. ~/.ssh/config is changed solely by an explicit alias operation.
         for record in records where record.kind == .ssh {
@@ -144,6 +165,21 @@ struct LocalConnectionRepository {
         try encoder.encode(records).write(to: staged, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: staged.path)
         guard Darwin.rename(staged.path, file.path) == 0 else { throw ConfigError.message("Не удалось сохранить записи.") }
+    }
+    func hiddenAliases() throws -> Set<String> {
+        guard portable && PortableSecretBridge.active else { return [] }
+        return Set(try PortableSecretBridge.read("hidden-aliases", config.standardizedFileURL.path).map { try JSONDecoder().decode([String].self, from: $0) } ?? [])
+    }
+    private func refreshPortableConfigs(_ records: [LocalConnectionRecord]) throws {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        for record in records where record.kind == .ssh {
+            var local = record.draft; local.name = record.originIdentity?.name ?? "connection"
+            let extras = record.extraOptions.map { "    \($0.key) \(SSHConfig.configQuote($0.value))\n" }.joined()
+            let text = local.block + extras + "\nHost *\nInclude \(SSHConfig.configQuote(config.path))\nInclude /etc/ssh/ssh_config\n"
+            let file = privateConfig(record.id)
+            try Data(text.utf8).write(to: file, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        }
     }
     private func validate(_ records: [LocalConnectionRecord]) throws {
         guard records.count <= 1000, Set(records.map(\.id)).count == records.count else { throw ConfigError.message("Можно хранить до 1000 отдельных записей.") }

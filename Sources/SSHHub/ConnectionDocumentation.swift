@@ -26,8 +26,10 @@ struct ConnectionDocument: Codable, Equatable {
 struct DocumentationRepository {
     static let maximumBytes = 262_144
     let root: URL
+    let portable: Bool
     init(root: URL? = nil) {
-        self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        portable = root == nil
+        self.root = root ?? HubPaths.applicationSupport
             .appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases")
             .appendingPathComponent("Documentation", isDirectory: true)
     }
@@ -36,6 +38,10 @@ struct DocumentationRepository {
         return root.appendingPathComponent(hash + ".json")
     }
     func load(_ key: String) throws -> ConnectionDocument {
+        if portable && PortableSecretBridge.active {
+            let value = try PortableSecretBridge.read("document", key).map { try JSONDecoder().decode(ConnectionDocument.self, from: $0) } ?? ConnectionDocument()
+            try validate(value); return value
+        }
         let file = url(for: key)
         guard FileManager.default.fileExists(atPath: file.path) else { return ConnectionDocument() }
         let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
@@ -46,6 +52,11 @@ struct DocumentationRepository {
     }
     func write(_ record: ConnectionDocument, for key: String) throws {
         try validate(record)
+        if portable && PortableSecretBridge.active {
+            try PortableSecretBridge.write("document", key, JSONEncoder().encode(record))
+            NotificationCenter.default.post(name: Notification.Name("SSHHubRecordMaterialsChanged"), object: nil, userInfo: ["key": key]); return
+        }
+
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let file = url(for: key)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]

@@ -7,7 +7,7 @@ extension AliasStore {
     var profileName: String { profiles.profiles.first { $0.id == profiles.active }?.name ?? "Home" }
     func persistProfiles() {
         guard profiles.valid, let data = try? JSONEncoder().encode(profiles), data.count <= 20_000_000 else { error = "Настройки профилей слишком большие или повреждены. Изменения не сохранены."; return }
-        UserDefaults.standard.set(data, forKey: profilesKey)
+        if !persistPortable("profiles", profiles) { UserDefaults.standard.set(data, forKey: profilesKey) }
     }
     func switchProfile(_ id: UUID) {
         guard id != profiles.active, profiles.profiles.contains(where: { $0.id == id }) else { return }

@@ -27,7 +27,7 @@ struct RecordTrashRepository {
     let config: URL
     init(config: URL, root: URL? = nil) {
         self.config = config
-        let base = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases")
+        let base = root ?? HubPaths.applicationSupport.appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases")
         let scope = SHA256.hash(data: Data(config.standardizedFileURL.path.utf8)).map { String(format: "%02x", $0) }.joined()
         self.root = base.appendingPathComponent("Trash").appendingPathComponent(scope)
     }

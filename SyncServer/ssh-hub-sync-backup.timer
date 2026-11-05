@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily encrypted SSH Hub Sync backup
+
+[Timer]
+OnCalendar=*-*-* 04:10:00
+RandomizedDelaySec=20m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

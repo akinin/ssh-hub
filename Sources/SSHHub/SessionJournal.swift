@@ -13,7 +13,7 @@ struct SessionEvent: Codable, Identifiable {
 }
 @MainActor final class SessionJournal: ObservableObject {
     static let shared = SessionJournal()
-    nonisolated static var root: URL { FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases").appendingPathComponent("SessionLogs") }
+    nonisolated static var root: URL { HubPaths.applicationSupport.appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases").appendingPathComponent("SessionLogs") }
     @Published private(set) var events: [SessionEvent] = []
     init() {
         if let data = UserDefaults.standard.data(forKey: "sessionJournal.v1"), data.count <= 2_000_000,

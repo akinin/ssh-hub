@@ -35,10 +35,14 @@ enum PrivateMaterialFile {
 struct RecordLicenseRepository {
     static let limit = 10_485_760
     let root: URL
-    init(root: URL? = nil) { self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases").appendingPathComponent("LicenseFiles") }
+    let portable: Bool
+    init(root: URL? = nil) { portable = root == nil; self.root = root ?? HubPaths.applicationSupport.appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases").appendingPathComponent("LicenseFiles") }
     func folder(_ id: UUID) -> URL { root.appendingPathComponent(id.uuidString) }
     func file(_ metadata: RecordLicenseFile) -> URL { folder(metadata.id).appendingPathComponent("file") }
     func load(_ metadata: RecordLicenseFile) throws -> Data {
+        if portable && PortableSecretBridge.active {
+            guard let data = try PortableSecretBridge.read("license", metadata.id.uuidString), metadata.valid, data.count == metadata.size, PrivateMaterialFile.digest(data) == metadata.digest else { throw ConfigError.message("Повреждён файл лицензии.") }; return data
+        }
         guard metadata.valid else { throw ConfigError.message("Некорректный файл лицензии.") }
         try PrivateMaterialFile.directory(root.deletingLastPathComponent(), create: false); try PrivateMaterialFile.directory(root, create: false); try PrivateMaterialFile.directory(folder(metadata.id), create: false)
         let data = try PrivateMaterialFile.read(file(metadata), limit: Self.limit)
@@ -46,6 +50,9 @@ struct RecordLicenseRepository {
     }
     func install(_ data: Data, metadata: RecordLicenseFile) throws {
         guard metadata.valid, data.count == metadata.size, PrivateMaterialFile.digest(data) == metadata.digest else { throw ConfigError.message("Повреждён файл лицензии.") }
+        if portable && PortableSecretBridge.active {
+            guard try PortableSecretBridge.read("license", metadata.id.uuidString) == nil else { throw ConfigError.message("Файл лицензии уже существует.") }; try PortableSecretBridge.write("license", metadata.id.uuidString, data); return
+        }
         try PrivateMaterialFile.directory(root.deletingLastPathComponent()); try PrivateMaterialFile.directory(root)
         let directory = folder(metadata.id)
         guard mkdir(directory.path, 0o700) == 0 else { throw ConfigError.message("Файл лицензии с таким ID уже существует.") }

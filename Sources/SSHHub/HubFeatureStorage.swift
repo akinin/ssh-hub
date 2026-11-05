@@ -9,7 +9,7 @@ struct HubFeatureFile {
     private let base: URL
     private let validFeature: Bool
     init(feature: String, config: URL, profile: UUID, limit: Int = 2_000_000, root: URL? = nil) {
-        let base = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let base = root ?? HubPaths.applicationSupport
             .appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases")
         let scope = SHA256.hash(data: Data(config.standardizedFileURL.path.utf8)).map { String(format: "%02x", $0) }.joined()
         self.base = base

@@ -9,6 +9,7 @@ enum OperationsPanel: String, Identifiable, CaseIterable {
 struct InfrastructureImportTarget: Identifiable { var id = UUID(); var value: InfrastructureDiscoveredRecord }
 extension AliasStore {
     func lockApplication() {
+        portableVault.lock()
         guard AppAccess.shared.enabled else { showingSettings = true; return }
         QuickAccessController.shared.close()
         kdbx?.cancel(); sharedCredentials?.lock()

@@ -44,6 +44,7 @@ enum SSHPasswordStore {
         return entry
     }
     static func hasStoredPassword(for entry: SSHAlias, config: URL) -> Bool {
+        if PortableSecretBridge.active { return (try? PortableSecretBridge.read(service, account(for: entry, config: config))) != nil }
         var query = query(account(for: entry, config: config)); query[kSecReturnAttributes as String] = true
         let context = LAContext(); context.interactionNotAllowed = true
         query[kSecUseAuthenticationContext as String] = context
@@ -64,6 +65,7 @@ enum SSHPasswordStore {
         return hasStoredPassword(for: entry, config: config)
     }
     static func changedAt(for entry: SSHAlias, config: URL) -> Date? {
+        if PortableSecretBridge.active { return nil }
         var item = query(account(for: entry, config: config)); item[kSecReturnAttributes as String] = true
         let context = LAContext(); context.interactionNotAllowed = true; item[kSecUseAuthenticationContext as String] = context
         var result: CFTypeRef?
@@ -86,6 +88,7 @@ enum SSHPasswordStore {
     }
     // Editors and rollback paths must operate on the original per-record secret.
     static func storedPassword(for entry: SSHAlias, config: URL) throws -> String? {
+        if PortableSecretBridge.active { return try PortableSecretBridge.read(service, account(for: entry, config: config)).map { String(decoding: $0, as: UTF8.self) } }
         var query = query(account(for: entry, config: config)); query[kSecReturnData as String] = true
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
@@ -98,6 +101,11 @@ enum SSHPasswordStore {
     // Import only into a fresh record account. Never update an existing item.
     static func importPassword(_ password: String, for entry: SSHAlias, config: URL) throws {
         guard !password.isEmpty, password.utf8.count <= 16384, !password.contains(where: { $0.isNewline || $0 == "\0" }) else { throw ConfigError.message("Некорректный пароль в архиве.") }
+        if PortableSecretBridge.active {
+            let account = account(for: entry, config: config)
+            guard try PortableSecretBridge.read(service, account) == nil else { throw ConfigError.message("Пароль записи уже существует.") }
+            try PortableSecretBridge.write(service, account, Data(password.utf8)); return
+        }
         var item = query(account(for: entry, config: config))
         item[kSecValueData as String] = Data(password.utf8)
         item[kSecAttrLabel as String] = "SSH Hub · " + entry.name
@@ -106,6 +114,10 @@ enum SSHPasswordStore {
         guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else { throw ConfigError.message("Не удалось добавить пароль архива в новую запись Связки ключей.") }
     }
     static func set(_ password: String?, for entry: SSHAlias, config: URL) throws {
+        if PortableSecretBridge.active {
+            guard password?.contains(where: { $0.isNewline || $0 == "\0" }) != true, (password?.utf8.count ?? 0) <= 16384 else { throw ConfigError.message("Некорректный пароль записи.") }
+            try PortableSecretBridge.write(service, account(for: entry, config: config), password.flatMap { $0.isEmpty ? nil : Data($0.utf8) }); return
+        }
         let query = query(account(for: entry, config: config))
         guard let password, !password.isEmpty else {
             let status = SecItemDelete(query as CFDictionary)

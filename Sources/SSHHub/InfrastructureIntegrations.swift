@@ -153,7 +153,7 @@ struct InfrastructureRepository {
     let file: URL
     let root: URL
     init(configURL: URL, profileID: UUID, root: URL? = nil) {
-        let base = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let base = root ?? HubPaths.applicationSupport
             .appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases").appendingPathComponent("Integrations")
         let scope = SHA256.hash(data: Data(configURL.standardizedFileURL.path.utf8)).map { String(format: "%02x", $0) }.joined()
         self.root = base

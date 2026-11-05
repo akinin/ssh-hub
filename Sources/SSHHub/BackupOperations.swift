@@ -14,7 +14,7 @@ struct BackupOperations: Codable {
     var chats: [AssistantChatDocument]? = nil
 
     static func base(_ root: URL?) -> URL {
-        root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases")
+        root ?? HubPaths.applicationSupport.appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases")
     }
     private static func backupKey(_ key: String, exportIDs: [String: UUID]) -> String? { exportIDs[key].map { "backup:" + $0.uuidString } }
     private static func recordID(_ key: String) -> UUID? { guard key.hasPrefix("backup:"), let id = UUID(uuidString: String(key.dropFirst(7))), key == "backup:" + id.uuidString else { return nil }; return id }

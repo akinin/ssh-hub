@@ -1,0 +1,16 @@
+[Unit]
+Description=Backup encrypted SSH Hub Sync database
+ConditionPathExists=/var/lib/ssh-hub-sync/cloud/accounts.sqlite3
+
+[Service]
+Type=oneshot
+User=ssh-hub-sync
+Group=ssh-hub-sync
+ExecStart=/usr/bin/python3 -I /opt/ssh-hub-sync/backup.py
+UMask=0077
+NoNewPrivileges=yes
+# No filesystem namespace requirements: works in a non-nested LXC.
+# The service account has write access only to data and backup directories.
+RestrictAddressFamilies=AF_UNIX
+TimeoutStartSec=180
+MemoryMax=128M

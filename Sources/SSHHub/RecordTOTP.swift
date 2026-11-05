@@ -55,11 +55,17 @@ enum RecordTOTPStore {
     static func account(config: URL, record: String) -> String { SHA256.hash(data: Data((config.standardizedFileURL.path + "\0" + record).utf8)).map { String(format: "%02x", $0) }.joined() }
     private static func query(_ account: String) -> [String: Any] { [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.olshaniki.sshhub.totp.v1", kSecAttrAccount as String: account] }
     static func has(_ account: String) -> Bool {
+        if PortableSecretBridge.active { return (try? PortableSecretBridge.read("totp", account)) != nil }
         var q = query(account); q[kSecReturnAttributes as String] = true
         let context = LAContext(); context.interactionNotAllowed = true; q[kSecUseAuthenticationContext as String] = context
         return SecItemCopyMatching(q as CFDictionary, nil) == errSecSuccess
     }
     static func read(_ account: String, allowInteraction: Bool = true) throws -> TOTPToken? {
+        if PortableSecretBridge.active {
+            guard let data = try PortableSecretBridge.read("totp", account) else { return nil }
+            let token = try JSONDecoder().decode(TOTPToken.self, from: data)
+            guard token.valid else { throw ConfigError.message("Повреждён TOTP хранилища.") }; return token
+        }
         var q = query(account); q[kSecReturnData as String] = true
         if !allowInteraction { let context = LAContext(); context.interactionNotAllowed = true; q[kSecUseAuthenticationContext as String] = context; q[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail }
         var result: CFTypeRef?; let status = SecItemCopyMatching(q as CFDictionary, &result)
@@ -67,6 +73,11 @@ enum RecordTOTPStore {
         guard status == errSecSuccess, let data = result as? Data, data.count <= 2048, let token = try? JSONDecoder().decode(TOTPToken.self, from: data), token.valid else { throw ConfigError.message("Не удалось прочитать TOTP из Связки ключей.") }; return token
     }
     static func write(_ token: TOTPToken?, account: String) throws {
+        if PortableSecretBridge.active {
+            guard token?.valid != false else { throw ConfigError.message("Некорректный TOTP.") }
+            try PortableSecretBridge.write("totp", account, try token.map { try JSONEncoder().encode($0) })
+            NotificationCenter.default.post(name: changed, object: nil); return
+        }
         guard let token else { let status = SecItemDelete(query(account) as CFDictionary); guard status == errSecSuccess || status == errSecItemNotFound else { throw ConfigError.message("Не удалось удалить TOTP.") }; NotificationCenter.default.post(name: changed, object: nil); return }
         guard token.valid else { throw ConfigError.message("Некорректные параметры TOTP.") }
         let value: [String: Any] = [kSecValueData as String: try JSONEncoder().encode(token)]

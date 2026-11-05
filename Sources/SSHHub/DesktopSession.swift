@@ -10,7 +10,7 @@ final class RDPBridge: @unchecked Sendable {
     func start(entry: SSHAlias, password: String, proxyPort: Int = 0, clipboard: @escaping @Sendable (String) -> Void, channelStatus: @escaping @Sendable (String) -> Void, frame: @escaping @Sendable (Int, Int, Data) -> Void, trust: @escaping @Sendable (String) -> Bool, finished: @escaping @Sendable (String) -> Void) throws {
         guard let helper = Bundle.main.url(forAuxiliaryExecutable: "SSHRDP") else { throw ConfigError.message("Не найден встроенный RDP-движок.") }
         let s = entry.transport ?? ConnectionSettings()
-        let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases").appendingPathComponent("RDP")
+        let root = HubPaths.applicationSupport.appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases").appendingPathComponent("RDP")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         process.executableURL = helper; process.arguments = [entry.host, entry.port, entry.user, s.domain, String(s.width), String(s.height), root.path, String(s.rdpMonitors ?? 1), s.rdpClipboard == true ? "1" : "0", s.rdpSharedFolder ?? "", String(proxyPort)]
         process.standardInput = input; process.standardOutput = output; process.standardError = diagnostic

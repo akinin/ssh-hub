@@ -65,7 +65,11 @@ struct AppAccessKeychain: AppAccessStorage {
 }
 
 @MainActor final class AppAccess: ObservableObject {
-    static let shared = AppAccess(storage: AppAccessKeychain(), deferredLoad: true)
+    // Explicit dependency injection for owned runtime tests; production has no
+    // setting/environment switch that bypasses application authorization.
+    static var testingInstance: AppAccess?
+    private static let standard = AppAccess(storage: AppAccessKeychain(), deferredLoad: true)
+    static var shared: AppAccess { testingInstance ?? standard }
     @Published private(set) var locked = false
     @Published private(set) var enabled = false
     @Published private(set) var busy = false

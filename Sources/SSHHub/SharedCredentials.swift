@@ -100,16 +100,22 @@ struct SharedCredentialRepository {
     let config: URL
     let profileID: UUID
     let root: URL
+    let portable: Bool
     var scope: String { Self.digest(config.standardizedFileURL.path) + ":" + profileID.uuidString.lowercased() }
     var directory: URL { root.appendingPathComponent(Self.digest(config.standardizedFileURL.path), isDirectory: true).appendingPathComponent(profileID.uuidString.lowercased(), isDirectory: true) }
     var file: URL { directory.appendingPathComponent("credentials.json") }
     init(config: URL, profileID: UUID, root: URL? = nil) {
         self.config = config; self.profileID = profileID
-        self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases").appendingPathComponent("SharedCredentials", isDirectory: true)
+        portable = root == nil
+        self.root = root ?? HubPaths.applicationSupport.appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases").appendingPathComponent("SharedCredentials", isDirectory: true)
     }
     static func digest(_ text: String) -> String { SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined() }
     static func recordKey(_ entry: SSHAlias) -> String { entry.originIdentity?.key ?? entry.source.standardizedFileURL.path + "::" + (entry.localID.map { "record:" + $0.uuidString } ?? entry.name.lowercased()) }
     func load() throws -> SharedCredentialDocument {
+        if portable && PortableSecretBridge.active {
+            let value = try PortableSecretBridge.read("shared-metadata", scope).map { try JSONDecoder().decode(SharedCredentialDocument.self, from: $0) } ?? SharedCredentialDocument()
+            if let error = value.validation { throw SharedCredentialError.invalid(error) }; return value
+        }
         guard FileManager.default.fileExists(atPath: file.path) else { return SharedCredentialDocument() }
         let properties = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard properties.isRegularFile == true, properties.isSymbolicLink != true, properties.fileSize ?? 0 <= 4_000_000 else { throw SharedCredentialError.invalid("Файл общих учётных данных повреждён или слишком велик.") }
@@ -119,6 +125,7 @@ struct SharedCredentialRepository {
     func write(_ value: SharedCredentialDocument, expected: SharedCredentialDocument) throws {
         if let error = value.validation { throw SharedCredentialError.invalid(error) }
         guard try load() == expected else { throw SharedCredentialError.changed }
+        if portable && PortableSecretBridge.active { try PortableSecretBridge.write("shared-metadata", scope, JSONEncoder().encode(value)); return }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let staged = directory.appendingPathComponent(".credentials-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: staged) }
@@ -149,12 +156,14 @@ final class SharedCredentialKeychain: SharedCredentialSecretStorage {
                 kSecAttrAccount as String: scope + ":" + id.uuidString.lowercased(), kSecUseAuthenticationContext as String: context]
     }
     func read(scope: String, id: UUID, context: LAContext?) throws -> String? {
+        if PortableSecretBridge.active { return try PortableSecretBridge.read(service, scope + ":" + id.uuidString.lowercased()).map { String(decoding: $0, as: UTF8.self) } }
         var item = query(scope: scope, id: id, context: context); item[kSecReturnData as String] = true
         var result: CFTypeRef?; let status = SecItemCopyMatching(item as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = result as? Data, let value = String(data: data, encoding: .utf8) else { throw SharedCredentialError.keychain }; return value
     }
     func changedAt(scope: String, id: UUID) -> Date? {
+        if PortableSecretBridge.active { return nil }
         var item = query(scope: scope, id: id, context: nil); item[kSecReturnAttributes as String] = true
         var result: CFTypeRef?
         guard SecItemCopyMatching(item as CFDictionary, &result) == errSecSuccess, let attributes = result as? [String: Any],
@@ -165,6 +174,11 @@ final class SharedCredentialKeychain: SharedCredentialSecretStorage {
     }
     func importPassword(_ password: String, scope: String, id: UUID) throws {
         guard !password.isEmpty, password.utf8.count <= 16384, !password.contains(where: { $0.isNewline || $0 == "\0" }) else { throw SharedCredentialError.keychain }
+        if PortableSecretBridge.active {
+            let account = scope + ":" + id.uuidString.lowercased()
+            guard try PortableSecretBridge.read(service, account) == nil else { throw SharedCredentialError.keychain }
+            try PortableSecretBridge.write(service, account, Data(password.utf8)); return
+        }
         var item = query(scope: scope, id: id, context: nil); item.removeValue(forKey: kSecUseAuthenticationContext as String)
         item[kSecValueData as String] = Data(password.utf8); item[kSecAttrLabel as String] = "SSH Hub · Общие учётные данные"
         item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
@@ -172,6 +186,10 @@ final class SharedCredentialKeychain: SharedCredentialSecretStorage {
         guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else { throw SharedCredentialError.keychain }
     }
     func write(_ password: String?, scope: String, id: UUID, protected: Bool, context: LAContext?) throws {
+        if PortableSecretBridge.active {
+            guard (password?.utf8.count ?? 0) <= 16384, password?.contains(where: { $0.isNewline || $0 == "\0" }) != true else { throw SharedCredentialError.keychain }
+            try PortableSecretBridge.write(service, scope + ":" + id.uuidString.lowercased(), password.flatMap { $0.isEmpty ? nil : Data($0.utf8) }); return
+        }
         let query = query(scope: scope, id: id, context: context)
         guard let password, !password.isEmpty else {
             let status = SecItemDelete(query as CFDictionary)

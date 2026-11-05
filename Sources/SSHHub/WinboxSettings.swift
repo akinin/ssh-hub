@@ -87,8 +87,10 @@ enum WinboxError: LocalizedError {
 
 struct WinboxRepository {
     let root: URL
+    let portable: Bool
     init(root: URL? = nil) {
-        self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        portable = root == nil
+        self.root = root ?? HubPaths.applicationSupport
             .appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases").appendingPathComponent("Winbox")
     }
     func file(_ key: String) -> URL { root.appendingPathComponent(SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined() + ".json") }
@@ -102,6 +104,10 @@ struct WinboxRepository {
         if create { try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path) }
     }
     func load(_ key: String) throws -> WinboxSettings {
+        if portable && PortableSecretBridge.active {
+            let value = try PortableSecretBridge.read("winbox", key).map { try JSONDecoder().decode(WinboxSettings.self, from: $0) } ?? WinboxSettings()
+            if let error = value.validation { throw WinboxError.message(error) }; return value
+        }
         try checkRoot(create: false)
         let url = file(key)
         let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
@@ -118,6 +124,7 @@ struct WinboxRepository {
     }
     func write(_ settings: WinboxSettings, key: String) throws {
         if let validation = settings.validation { throw WinboxError.message(validation) }
+        if portable && PortableSecretBridge.active { try PortableSecretBridge.write("winbox", key, JSONEncoder().encode(settings)); return }
         try checkRoot(create: true)
         let data = try JSONEncoder().encode(settings)
         guard data.count <= 65536 else { throw WinboxError.message("Файл настроек WinBox слишком большой.") }

@@ -1,4 +1,46 @@
 import Foundation
+
+// Central filesystem location, with an explicit owned-root injection for QA.
+// Production keeps the existing Application Support paths unchanged.
+enum HubPaths {
+    private static let mutex = NSLock()
+    private static var override: URL?
+    static var testingRoot: URL? {
+        get { mutex.lock(); defer { mutex.unlock() }; return override }
+        set { mutex.lock(); defer { mutex.unlock() }; override = newValue }
+    }
+    static var applicationSupport: URL {
+        testingRoot ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    }
+}
+
+// Installed only for an explicitly created portable vault. Missing/locked vault
+// is a hard failure, never an implicit fallback to stale Keychain credentials.
+enum PortableSecretBridge {
+    private static let mutex = NSLock()
+    private static var reader: ((String, String) throws -> Data?)?
+    private static var writer: ((String, String, Data?) throws -> Void)?
+    private static var transaction: (((() throws -> Void)) throws -> Void)?
+    private static var materializer: ((String, String, String) throws -> URL)?
+    static var active: Bool { mutex.lock(); defer { mutex.unlock() }; return reader != nil }
+    static func install(read: ((String, String) throws -> Data?)?, write: ((String, String, Data?) throws -> Void)?, materialize: ((String, String, String) throws -> URL)? = nil, atomic: (((() throws -> Void)) throws -> Void)? = nil) {
+        mutex.lock(); defer { mutex.unlock() }; reader = read; writer = write; materializer = materialize; transaction = atomic
+    }
+    static func read(_ service: String, _ account: String) throws -> Data? {
+        mutex.lock(); let read = reader; mutex.unlock(); return try read?(service, account)
+    }
+    static func write(_ service: String, _ account: String, _ data: Data?) throws {
+        mutex.lock(); let write = writer; mutex.unlock(); try write?(service, account, data)
+    }
+    static func atomic(_ body: () throws -> Void) throws {
+        mutex.lock(); let perform = transaction; mutex.unlock()
+        if let perform { try perform(body) } else { try body() }
+    }
+    static func file(_ service: String, _ account: String, _ name: String) -> URL {
+        mutex.lock(); let make = materializer; mutex.unlock()
+        return (try? make?(service, account, name)) ?? URL(fileURLWithPath: "/nonexistent/locked-ssh-hub-material")
+    }
+}
 import Darwin
 
 struct SSHOption: Identifiable, Equatable, Codable {

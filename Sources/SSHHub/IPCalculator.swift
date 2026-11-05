@@ -74,7 +74,7 @@ enum RetiredLibraryData {
     // The removed catalog stored all contents, assets and assignments in this one file.
     // Never traverse directories or remove other app data, including the command library.
     static func remove(root: URL? = nil) throws {
-        let directory = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases")
+        let directory = root ?? HubPaths.applicationSupport.appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases")
         let file = directory.appendingPathComponent("KnowledgeLibrary.json")
         let attributes: [FileAttributeKey: Any]
         do { attributes = try FileManager.default.attributesOfItem(atPath: file.path) }

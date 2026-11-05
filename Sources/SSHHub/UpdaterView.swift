@@ -11,7 +11,7 @@ import AppKit
     private var task: Task<Void, Never>?
     private var started = false
     let installed = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
-    private var stateDirectory: URL { FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(UpdateTransport.bundleID).appendingPathComponent("Updates") }
+    private var stateDirectory: URL { HubPaths.applicationSupport.appendingPathComponent(UpdateTransport.bundleID).appendingPathComponent("Updates") }
     private var statusURL: URL { stateDirectory.appendingPathComponent("last-update.json") }
     init() {
         if let data = try? Data(contentsOf: statusURL), let outcome = try? JSONDecoder().decode(UpdateOutcome.self, from: data) {

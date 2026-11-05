@@ -1,0 +1,22 @@
+[Unit]
+Description=SSH Hub private cloud synchronization API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ssh-hub-sync
+Group=ssh-hub-sync
+WorkingDirectory=/opt/ssh-hub-sync
+ExecStart=/usr/bin/python3 -I /opt/ssh-hub-sync/cloud.py
+Environment=SSH_HUB_SYNC_ORIGIN=https://ssh-hub.olshaniki.com
+Environment=SSH_HUB_SYNC_PROXY=10.10.100.10
+UMask=0077
+NoNewPrivileges=yes
+Restart=on-failure
+RestartSec=3
+MemoryMax=768M
+TasksMax=32
+LimitNOFILE=256
+
+[Install]
+WantedBy=multi-user.target

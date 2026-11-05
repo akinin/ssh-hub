@@ -25,7 +25,7 @@ import AppKit
     var busy: Bool { running || updating || pending }
     var pending: Bool { runner?.pending == true || operation != nil }
     var report: NucleiReport? { reports.first { $0.id == reportID } }
-    var directory: URL { FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases").appendingPathComponent("NucleiRuntime") }
+    var directory: URL { HubPaths.applicationSupport.appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases").appendingPathComponent("NucleiRuntime") }
     var templates: URL { directory.appendingPathComponent("templates") }
     init() { refresh() }
     func refresh() {

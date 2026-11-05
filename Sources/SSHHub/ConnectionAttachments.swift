@@ -10,17 +10,24 @@ struct ConnectionAttachment: Codable, Identifiable, Equatable {
 }
 struct AttachmentsRepository {
     let root: URL
+    let portable: Bool
     init(root: URL? = nil) {
-        self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        portable = root == nil
+        self.root = root ?? HubPaths.applicationSupport
             .appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases").appendingPathComponent("Attachments")
     }
     func folder(_ key: String) -> URL {
         root.appendingPathComponent(SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined())
     }
     func file(_ attachment: ConnectionAttachment, key: String) -> URL {
-        folder(key).appendingPathComponent(attachment.id.uuidString, isDirectory: true).appendingPathComponent(attachment.name)
+        if portable && PortableSecretBridge.active { return PortableSecretBridge.file("attachment", key + "/" + attachment.id.uuidString, attachment.name) }
+        return folder(key).appendingPathComponent(attachment.id.uuidString, isDirectory: true).appendingPathComponent(attachment.name)
     }
     func load(_ key: String) throws -> [ConnectionAttachment] {
+        if portable && PortableSecretBridge.active {
+            let values = try PortableSecretBridge.read("attachment-index", key).map { try JSONDecoder().decode([ConnectionAttachment].self, from: $0) } ?? []
+            try validate(values); return values
+        }
         let manifest = folder(key).appendingPathComponent("index.json")
         guard FileManager.default.fileExists(atPath: manifest.path) else { return [] }
         guard try manifest.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0 < 1_000_000 else { throw ConfigError.message("Список вложений повреждён.") }
@@ -37,6 +44,10 @@ struct AttachmentsRepository {
     }
     private func write(_ values: [ConnectionAttachment], key: String) throws {
         try validate(values)
+        if portable && PortableSecretBridge.active {
+            try PortableSecretBridge.write("attachment-index", key, JSONEncoder().encode(values))
+            NotificationCenter.default.post(name: Notification.Name("SSHHubRecordMaterialsChanged"), object: nil, userInfo: ["key": key]); return
+        }
         let directory = folder(key)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let manifest = directory.appendingPathComponent("index.json")
@@ -52,6 +63,18 @@ struct AttachmentsRepository {
             newItems.append(ConnectionAttachment(name: url.lastPathComponent, size: Int64(info.fileSize ?? 0)))
         }
         values += newItems; try validate(values)
+        if portable && PortableSecretBridge.active {
+            do {
+                for (url, item) in zip(urls, newItems) {
+                    let data = try PrivateMaterialFile.read(url, limit: 104_857_600)
+                    guard data.count == item.size else { throw ConfigError.message("Вложение изменилось.") }
+                    try PortableSecretBridge.write("attachment", key + "/" + item.id.uuidString, data)
+                }
+                try write(values, key: key); return values
+            } catch {
+                for item in newItems { try? PortableSecretBridge.write("attachment", key + "/" + item.id.uuidString, nil) }; throw error
+            }
+        }
         var copied: [URL] = []
         do {
             for (url, item) in zip(urls, newItems) {
@@ -72,6 +95,14 @@ struct AttachmentsRepository {
     }
     func copy(from old: String, to new: String) throws {
         guard old != new else { return }
+        if portable && PortableSecretBridge.active {
+            let values = try load(old); guard try load(new).isEmpty else { return }
+            for item in values {
+                guard let data = try PortableSecretBridge.read("attachment", old + "/" + item.id.uuidString) else { throw ConfigError.message("Нет файла вложения.") }
+                try PortableSecretBridge.write("attachment", new + "/" + item.id.uuidString, data)
+            }
+            try write(values, key: new); return
+        }
         let values = try load(old); guard !values.isEmpty, try load(new).isEmpty else { return }
         let destination = folder(new), stage = root.appendingPathComponent(".copy-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: stage) }

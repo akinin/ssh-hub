@@ -236,7 +236,7 @@ enum NmapTemplates {
 }
 struct NmapTemplateRepository {
     let file: URL
-    init(file: URL? = nil) { self.file = file ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases").appendingPathComponent("NmapTemplates.json") }
+    init(file: URL? = nil) { self.file = file ?? HubPaths.applicationSupport.appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases").appendingPathComponent("NmapTemplates.json") }
     func load() throws -> [NmapTemplate] {
         guard FileManager.default.fileExists(atPath: file.path) else { return [] }
         let info = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])

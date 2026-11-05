@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 import ConsoleSupport
 
 @MainActor final class AliasStore: ObservableObject {
+    var portableVault: VaultWorkspace!
     @Published var profiles = HubProfiles()
     @Published var showingProfiles = false
     @Published var tabStyles: [String: WorkspaceTabStyle] = [:]
@@ -129,14 +130,16 @@ import ConsoleSupport
     private var undoGroupEdit: (entry: SSHAlias, group: String)?
     var data = Data()
     let config: SSHConfig
-    init() {
+    init(configURL: URL? = nil, vaultRoot: URL? = nil) {
         do { try RetiredLibraryData.remove() } catch { self.error = error.localizedDescription }
         // A separate configuration path is useful for a demo or isolated tests.
-        if let index = CommandLine.arguments.firstIndex(of: "--config"), CommandLine.arguments.count > index + 1 {
+        if let configURL { config = SSHConfig(url: configURL) }
+        else if let index = CommandLine.arguments.firstIndex(of: "--config"), CommandLine.arguments.count > index + 1 {
             config = SSHConfig(url: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
         } else if let testPath = Bundle.main.object(forInfoDictionaryKey: "SSHConfigPath") as? String {
             config = SSHConfig(url: URL(fileURLWithPath: testPath))
         } else { config = SSHConfig() }
+        portableVault = VaultWorkspace(config: config.url, root: vaultRoot)
         if let data = UserDefaults.standard.data(forKey: profilesKey), data.count <= 20_000_000, let value = try? JSONDecoder().decode(HubProfiles.self, from: data), value.valid { profiles = value }
         favorites = Set(UserDefaults.standard.stringArray(forKey: "favoriteAliases.v1") ?? [])
         groups = UserDefaults.standard.dictionary(forKey: "aliasGroups.v1") as? [String: String] ?? [:]
@@ -207,6 +210,7 @@ import ConsoleSupport
         persistAppearances(); certificates.configure(self)
     }
     private func persistAppearances() {
+        if persistPortable("appearances", appearances) { return }
         if let data = try? JSONEncoder().encode(appearances) { UserDefaults.standard.set(data, forKey: "connectionAppearance.v1") }
     }
     func group(_ entry: SSHAlias) -> String { groups[entry.favoriteID] ?? "" }
@@ -238,6 +242,7 @@ import ConsoleSupport
         let name = ConnectionTree.normalized(name)
         guard AliasTransfer.validGroup(name) else { return }
         groups[entry.favoriteID] = name.isEmpty ? nil : name
+        if persistPortable("groups", groups) { return }
         UserDefaults.standard.set(groups, forKey: "aliasGroups.v1")
     }
     func applyLaunchPreference() {
@@ -308,7 +313,7 @@ import ConsoleSupport
         if !favorites.insert(entry.favoriteID).inserted { favorites.remove(entry.favoriteID) }
         persistFavorites()
     }
-    private func persistFavorites() { UserDefaults.standard.set(Array(favorites).sorted(), forKey: "favoriteAliases.v1") }
+    private func persistFavorites() { if !persistPortable("favorites", favorites.sorted()) { UserDefaults.standard.set(Array(favorites).sorted(), forKey: "favoriteAliases.v1") } }
     private func moveFavorite(from: SSHAlias, to: SSHAlias) {
         moveOperationsRecord(from: from.favoriteID, to: to.favoriteID)
         moveSidebarOrder(from: from.favoriteID, to: to.favoriteID)
@@ -433,7 +438,8 @@ import ConsoleSupport
                 guard let name = record.aliasName else { return nil }
                 return snapshot.aliases.first { $0.name == name && $0.source == record.aliasSource }
             }
-            let loadedAliases = snapshot.aliases.filter { item in !linked.contains(where: { $0.id == item.id }) } + records.map { record in
+            let hiddenAliases = try localRepository.hiddenAliases()
+            let loadedAliases = snapshot.aliases.filter { item in !hiddenAliases.contains(item.favoriteID) && !linked.contains(where: { $0.id == item.id }) && !records.contains(where: { $0.aliasName == nil && $0.originIdentity?.key == item.favoriteID || $0.suppressedAlias?.key == item.favoriteID }) } + records.map { record in
                 record.entry(config: config.url, privateConfig: localRepository.privateConfig(record.id), alias: linked.first { $0.name == record.aliasName && $0.source == record.aliasSource })
             }
             guard Set(loadedAliases.map(\.favoriteID)).count == loadedAliases.count else {
@@ -699,17 +705,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppDelegate.storeForTermination?.finishWorkspace()
         ConsoleStore.shared.closeAll()
         SFTPRegistry.shared.closeAll()
-        ToolkitSession.stopAll()
+        ToolkitSession.stopAll(); VaultSyncClient.stopAll()
         RecordDiscoveryModel.stopAll()
         RecordLogsModel.stopAll()
         InventoryModel.stopAll()
         TopologyModel.stopAll()
         KDBXClient.stopAll()
         let tunnels = TunnelManager.shared
-        guard tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || AppDelegate.storeForTermination?.tools.nuclei.pending == true || AppDelegate.storeForTermination?.tools.audits.pending == true || AppDelegate.scannerForTermination?.pending == true || RecordDiscoveryModel.pending || AppDelegate.storeForTermination?.certificates.pending == true else { return .terminateNow }
+        guard VaultSyncClient.pending || tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || AppDelegate.storeForTermination?.tools.nuclei.pending == true || AppDelegate.storeForTermination?.tools.audits.pending == true || AppDelegate.scannerForTermination?.pending == true || RecordDiscoveryModel.pending || AppDelegate.storeForTermination?.certificates.pending == true else { return .terminateNow }
         tunnels.stopAll()
         UpdateTermination.finishAfterCleanup(sender) {
-            tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || AppDelegate.storeForTermination?.tools.nuclei.pending == true || AppDelegate.storeForTermination?.tools.audits.pending == true || AppDelegate.scannerForTermination?.pending == true || RecordDiscoveryModel.pending || AppDelegate.storeForTermination?.certificates.pending == true
+            VaultSyncClient.pending || tunnels.hasSessions || TunnelSession.pending || SFTPRegistry.shared.hasSessions || ConsoleProcess.pendingCount > 0 || ToolkitSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || AppDelegate.storeForTermination?.tools.nuclei.pending == true || AppDelegate.storeForTermination?.tools.audits.pending == true || AppDelegate.scannerForTermination?.pending == true || RecordDiscoveryModel.pending || AppDelegate.storeForTermination?.certificates.pending == true
         }
         return .terminateLater
     }

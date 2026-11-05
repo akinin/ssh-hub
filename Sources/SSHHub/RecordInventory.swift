@@ -232,8 +232,10 @@ enum InventoryError: LocalizedError {
 struct InventoryRepository {
     static let maximumFileBytes = 4_000_000
     let root: URL
+    let portable: Bool
     init(root: URL? = nil) {
-        self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        portable = root == nil
+        self.root = root ?? HubPaths.applicationSupport
             .appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases")
             .appendingPathComponent("Inventory", isDirectory: true)
     }
@@ -251,6 +253,10 @@ struct InventoryRepository {
         if create { try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path) }
     }
     func load(_ key: String) throws -> RecordInventory {
+        if portable && PortableSecretBridge.active {
+            let value = try PortableSecretBridge.read("inventory", key).map { try JSONDecoder().decode(RecordInventory.self, from: $0) } ?? RecordInventory()
+            try Self.validate(value); return value
+        }
         try checkRoot(create: false)
         let fd = open(url(for: key).path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
         guard fd >= 0 else { if errno == ENOENT { return RecordInventory() }; throw InventoryError.invalidFile }
@@ -265,6 +271,10 @@ struct InventoryRepository {
         return inventory
     }
     func write(_ inventory: RecordInventory, for key: String) throws {
+        if portable && PortableSecretBridge.active {
+            try Self.validate(inventory); try PortableSecretBridge.write("inventory", key, JSONEncoder().encode(inventory))
+            NotificationCenter.default.post(name: Notification.Name("SSHHubRecordMaterialsChanged"), object: nil, userInfo: ["key": key]); return
+        }
         try Self.validate(inventory); try checkRoot(create: true)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(inventory)

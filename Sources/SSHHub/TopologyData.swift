@@ -951,7 +951,7 @@ struct TopologyRepository {
     static let maximumMaps = 2500
     let root: URL
     init(root: URL? = nil, config: URL? = nil) {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let support = HubPaths.applicationSupport
             .appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases")
         if let root { self.root = root }
         else if let config {

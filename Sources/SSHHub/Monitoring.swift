@@ -122,7 +122,7 @@ struct MonitoringRepository {
     let scope: String
     init(configURL: URL, profileID: UUID, root: URL? = nil) {
         scope = SHA256.hash(data: Data((configURL.standardizedFileURL.path + ":" + profileID.uuidString.lowercased()).utf8)).map { String(format: "%02x", $0) }.joined()
-        self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases").appendingPathComponent("Monitoring", isDirectory: true)
+        self.root = root ?? HubPaths.applicationSupport.appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases").appendingPathComponent("Monitoring", isDirectory: true)
     }
     var file: URL { root.appendingPathComponent(scope + ".json") }
     func read() throws -> MonitoringSettings {

@@ -50,12 +50,18 @@ struct SavedCommandSet: Codable, Equatable {
 }
 struct SavedCommandsRepository {
     let root: URL
+    let portable: Bool
     init(root: URL? = nil) {
-        self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        portable = root == nil
+        self.root = root ?? HubPaths.applicationSupport
             .appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases").appendingPathComponent("ConsoleCommands")
     }
     func file(_ key: String) -> URL { root.appendingPathComponent(SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined() + ".json") }
     func load(_ key: String) throws -> SavedCommandSet {
+        if portable && PortableSecretBridge.active {
+            let value = try PortableSecretBridge.read("commands", key).map { try JSONDecoder().decode(SavedCommandSet.self, from: $0) } ?? SavedCommandSet()
+            if let error = value.validation { throw ConfigError.message(error) }; return value
+        }
         let url = file(key)
         guard FileManager.default.fileExists(atPath: url.path) else { return SavedCommandSet() }
         guard try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0 <= 1_000_000 else { throw ConfigError.message("Файл команд слишком большой.") }
@@ -64,6 +70,7 @@ struct SavedCommandsRepository {
     }
     func write(_ value: SavedCommandSet, key: String) throws {
         if let error = value.validation { throw ConfigError.message(error) }
+        if portable && PortableSecretBridge.active { try PortableSecretBridge.write("commands", key, JSONEncoder().encode(value)); return }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let url = file(key)
         let data = try JSONEncoder().encode(value)

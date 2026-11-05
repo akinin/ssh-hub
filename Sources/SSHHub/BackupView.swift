@@ -12,7 +12,7 @@ extension AliasStore {
             var record = localRecords.first(where: { $0.id == entry.localID }) ?? LocalConnectionRecord()
             record.id = exportIDs[entry.favoriteID]!
             record.kind = entry.recordKind ?? .ssh; record.title = title(entry)
-            record.aliasName = nil; record.aliasSource = nil; record.originIdentity = nil; record.aliasSuggestion = nil; record.inheritedSSHValues = nil
+            record.suppressedAlias = nil; record.aliasName = nil; record.aliasSource = nil; record.originIdentity = nil; record.aliasSuggestion = nil; record.inheritedSSHValues = nil
             record.host = entry.host; record.user = entry.user; record.port = entry.port
             record.identity = entry.value("IdentityFile") ?? ""; record.jump = entry.value("ProxyJump") ?? ""
             record.authentication = entry.authentication; record.website = entry.website ?? ""; record.serial = entry.serial

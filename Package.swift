@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     dependencies: [.package(path: "Vendor/SwiftTerm")],
     targets: [
+        .testTarget(name: "SSHHubVaultTests", dependencies: ["SSHHub"], path: "Tests/Vault"),
         .executableTarget(
             name: "SSHHub",
             dependencies: ["ConsoleSupport", .product(name: "SwiftTerm", package: "SwiftTerm")],
