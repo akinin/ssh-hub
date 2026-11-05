@@ -642,6 +642,16 @@ import ConsoleSupport
         if let issue = value.error { vault.lock(); vault.error = issue; return }
         if vault.required { UserDefaults.standard.set(vault.url.path, forKey: Self.selectedDatabaseKey) }
     }
+    func finishPasswordUnlock(rememberBiometrics: Bool) {
+        guard vault.unlocked, !vault.requiresUpgrade else { return }
+        var warning: String?
+        if vault.biometricStorage.available(), rememberBiometrics != vault.biometricEnabled {
+            do { try vault.setBiometrics(rememberBiometrics) }
+            catch { warning = "База открыта мастер-паролем, но настройку Touch ID сохранить не удалось. " + error.localizedDescription }
+        }
+        start()
+        if let warning, let store { vault.status = warning; store.error = warning }
+    }
     static var pending: Bool {
         VaultSyncClient.pending || ConsoleProcess.pendingCount > 0 || SFTPRegistry.shared.hasSessions || ToolkitSession.pending || TunnelSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || RecordDiscoveryModel.pending
     }

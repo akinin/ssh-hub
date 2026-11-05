@@ -13,8 +13,12 @@
 - `DeveloperIDApplication.cer` — только публичный сертификат Apple.
 - `signing-identity.sha1` — публичный SHA-1 identity, используемой сборщиком.
 - `developer-team-id.txt` — закреплённая команда Apple Developer.
+- `SSHHub.provisionprofile` — публичный профиль Developer ID для macOS и этого bundle ID; входит в приложение как `Contents/embedded.provisionprofile`. Приватных ключей в профиле нет.
+- `SSHHub.entitlements` — только идентификатор приложения, команда и его собственная группа Keychain `T3V8ZUE97C.com.olshaniki.ssh-aliases`. Помощники этих прав не получают.
 
 Скрипт проверяет, что identity — действующая Developer ID Application нужной команды. Подписывает помощники раньше основного приложения, без `--deep` при подписании и без ослабляющих entitlements. Проверка выполняется с `--deep --strict` и требованием Apple Developer ID команды издателя. Одного совпадения bundle ID недостаточно. Нормальное продление сертификата той же команды не требует изменения политики обновления.
+
+Touch ID хранит только ключ разблокировки базы в Data Protection Keychain с `biometryCurrentSet`, `WhenUnlockedThisDeviceOnly` и отключённой синхронизацией. Для этого macOS требует авторизованные профилем права приложения. Скрипты проверяют команду, срок профиля, macOS, Developer ID certificate и разрешение собственной группы; в обеих архитектурах подписанное приложение должно иметь ровно минимальные entitlements. Профиль обновляют при истечении срока или продлении сертификата, без смены bundle ID и группы. Доступ к старым паролям и ACL не расширяется. См. [требования Apple к Keychain на Mac](https://developer.apple.com/documentation/technotes/tn3137-on-mac-keychains).
 
 ```sh
 zsh Scripts/sign-app.sh --check

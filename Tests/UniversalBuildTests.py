@@ -6,6 +6,7 @@ import pathlib
 import platform
 import plistlib
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -46,11 +47,15 @@ for path in app.rglob('*'):
         run('/usr/bin/codesign', '--verify', '--strict', '--architecture', architecture, '-R', '=identifier \"' + identifier + '\" and ' + policy, str(path))
         metadata = run('/usr/bin/codesign', '-d', '--verbose=4', '--architecture', architecture, str(path))
         assert '(runtime)' in metadata and 'Timestamp=' in metadata and ('TeamIdentifier=' + team) in metadata, path
+        if path.name != 'SSHHub':
+            entitlements = subprocess.check_output(['/usr/bin/codesign', '-d', '--architecture', architecture, '--entitlements', ':-', str(path)], stderr=subprocess.DEVNULL)
+            assert not entitlements or not plistlib.loads(entitlements), 'Helpers must not receive main app Keychain rights'
         libraries = run('/usr/bin/otool', '-arch', architecture, '-L', str(path))
         dependencies = '\n'.join(line for line in libraries.splitlines() if line.startswith('\t'))
         assert not any(p in dependencies for p in ['/opt/homebrew/', '/usr/local/', '/private/tmp/', '/Users/']), path
 assert len(machos) == len(expected)
 run('/usr/bin/codesign', '--verify', '--deep', '--strict', str(app))
+run(sys.executable, 'Scripts/signing-profile.py', '--app', str(app))
 print('Universal validation passed: all 9 binaries have signed arm64/x86_64 slices; Apple Developer ID team, Hardened Runtime, secure timestamps; portable dependencies.')
 
 if args.notarized:

@@ -75,13 +75,12 @@ struct VaultGateView: View {
         model.lock(); creating = true; importing = false; clear()
     }
     private func clear() { password = ""; confirmation = ""; error = nil }
-    private func finish() throws {
+    private func finish() {
         guard !model.requiresUpgrade else { password = ""; return }
-        if model.biometricStorage.available() && (rememberTouchID || model.biometricEnabled) { try model.setBiometrics(rememberTouchID) }
-        session.start(); clear()
+        session.finishPasswordUnlock(rememberBiometrics: rememberTouchID); clear()
     }
     private func unlock() {
-        do { try model.open(password); try finish() } catch { self.error = error.localizedDescription; model.lock() }
+        do { try model.open(password); finish() } catch { self.error = error.localizedDescription; model.lock() }
         password = ""
     }
     private func biometricUnlock() {
@@ -94,7 +93,7 @@ struct VaultGateView: View {
             do {
                 let context = LAContext(); defer { context.invalidate() }
                 guard try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Перенести ключи и настройки в базу SSH Hub") else { throw VaultError.locked }
-                try model.upgrade(context: context); try finish()
+                try model.upgrade(context: context); finish()
             } catch { self.error = error.localizedDescription }
         }
     }
@@ -126,7 +125,7 @@ struct VaultGateView: View {
                     try await model.create(store: legacy, password: secret, backup: backup, passwords: true, mfa: true)
                     legacy.finishWorkspace()
                 } else { try model.createEmpty(password: secret) }
-                try finish()
+                finish()
             } catch { model.lock(); model.installBridge(); self.error = error.localizedDescription }
         }
     }

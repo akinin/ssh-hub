@@ -13,13 +13,15 @@ private final class DatabaseTestBiometrics: VaultBiometricStorage, @unchecked Se
     var keys: [String: Data] = [:]
     var waiting: DispatchSemaphore?
     var began: (() -> Void)?
+    var writeError: Error?
+    var writes = 0
     func available() -> Bool { true }
     func contains(_ account: String) throws -> Bool { keys[account] != nil }
     func read(_ account: String, context: LAContext) throws -> Data {
         let value = keys[account]; began?(); waiting?.wait()
         guard let value else { throw VaultError.locked }; return value
     }
-    func write(_ key: Data, account: String) throws { keys[account] = key }
+    func write(_ key: Data, account: String) throws { writes += 1; if let writeError { throw writeError }; keys[account] = key }
     func remove(_ account: String) throws { keys.removeValue(forKey: account) }
 }
 final class MandatoryVaultTests: XCTestCase {
@@ -304,6 +306,25 @@ extension MandatoryVaultTests {
     }
 }
 extension MandatoryVaultTests {
+    @MainActor func testTouchIDEnrollmentFailureDoesNotRelockPasswordAuthenticatedDatabase() async throws {
+        try await fixture { root in
+            let adapter = DatabaseTestBiometrics()
+            adapter.writeError = VaultError.message("Owned enrollment failure")
+            let model = VaultWorkspace(config: root.appendingPathComponent("config"), file: root.appendingPathComponent("database.sqlite3"), biometrics: adapter)
+            try model.createEmpty(password: "owned-fixture-master-password")
+            try model.database?.set("owned-record", Data("preserved".utf8))
+            let session = HubSession(vault: model)
+            session.finishPasswordUnlock(rememberBiometrics: true)
+            XCTAssertTrue(model.unlocked); XCTAssertFalse(AppAccess.shared.locked); XCTAssertNotNil(session.store)
+            XCTAssertFalse(model.biometricEnabled); XCTAssertNotNil(session.store?.error)
+            XCTAssertEqual(try model.database?.get("owned-record"), Data("preserved".utf8))
+            adapter.writeError = nil; session.finishPasswordUnlock(rememberBiometrics: true)
+            XCTAssertTrue(model.biometricEnabled); XCTAssertEqual(adapter.writes, 2)
+            session.finishPasswordUnlock(rememberBiometrics: true)
+            XCTAssertEqual(adapter.writes, 2, "An already enrolled key must not be recreated at every password unlock")
+            model.lock()
+        }
+    }
     @MainActor func testManualUpdateCheckWorksWithoutOpeningOrWritingLockedDatabase() async throws {
         try await fixture { root in
             let model = VaultWorkspace(config: root.appendingPathComponent("config"), file: root.appendingPathComponent("missing.sqlite3"))

@@ -5,6 +5,7 @@ repo_root="${0:A:h:h}"
 identity="${SSH_HUB_SIGN_IDENTITY:-$(<"$repo_root/Signing/signing-identity.sha1")}"
 identity="${identity:u}"
 team_id="$(<"$repo_root/Signing/developer-team-id.txt")"
+profile="${SSH_HUB_PROVISIONING_PROFILE:-$repo_root/Signing/SSHHub.provisionprofile}"
 fail() { print -u2 -- "$*"; exit 1; }
 [[ "$team_id" =~ '^[A-Z0-9]{10}$' ]] || fail 'Некорректный Apple Developer Team ID.'
 verify_only=false
@@ -16,6 +17,9 @@ if [[ "$identity" != '-' ]]; then
         identity_line="$(print -r -- "$identities" | awk -v digest="$identity" '$2 == digest { print; exit }')"
         [[ "$identity_line" == *'"Developer ID Application: '*"($team_id)"* ]] || fail "Developer ID Application $identity команды $team_id недоступен. Сборка остановлена; ad-hoc автоматически не используется."
     fi
+fi
+if [[ "$identity" != '-' && "$verify_only" == false ]]; then
+    python3 "$repo_root/Scripts/signing-profile.py" --profile "$profile" --identity "$identity"
 fi
 if [[ "${1:-}" == '--check' ]]; then print -- "Developer ID: $identity · Team $team_id"; exit 0; fi
 [[ $# == 1 ]] || fail 'Использование: zsh Scripts/sign-app.sh [--verify] /путь/SSH\ Hub.app | --check'
@@ -40,10 +44,16 @@ for binary in "$app_dir/Contents/MacOS/"*(N); do
     fi
 done
 if [[ "$verify_only" == false ]]; then
-    /usr/bin/codesign --force --sign "$identity" "${sign_flags[@]}" --identifier "$bundle_id" "$app_dir"
+    if [[ "$identity" != '-' ]]; then
+        cp "$profile" "$app_dir/Contents/embedded.provisionprofile"
+        /usr/bin/codesign --force --sign "$identity" "${sign_flags[@]}" --identifier "$bundle_id" --entitlements "$repo_root/Signing/SSHHub.entitlements" "$app_dir"
+    else
+        /usr/bin/codesign --force --sign "$identity" "${sign_flags[@]}" --identifier "$bundle_id" "$app_dir"
+    fi
 fi
 /usr/bin/codesign --verify --deep --strict "$app_dir"
 if [[ "$identity" != '-' ]]; then
+    python3 "$repo_root/Scripts/signing-profile.py" --app "$app_dir" --identity "$identity"
     /usr/bin/codesign --verify --strict -R "$(requirement "$bundle_id")" "$app_dir"
     for binary in "$app_dir/Contents/MacOS/"*(N); do
         binary_id="$bundle_id.helper.${binary:t}"
