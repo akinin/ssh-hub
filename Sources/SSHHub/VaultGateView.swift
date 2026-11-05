@@ -20,7 +20,7 @@ struct VaultGateView: View {
             if model.unlocked && model.requiresUpgrade {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Обновление базы").font(.headline)
-                    Text("Перенеси настройки, SSH-ключи, VPN и интеграции в базу. Перед обновлением автоматически сохраняется зашифрованная копия исходной базы.")
+                    Text("Перенеси настройки, SSH-ключи, VPN и интеграции в базу. Перед обновлением автоматически сохраняется зашифрованная копия исходной базы.").fixedSize(horizontal: false, vertical: true)
                     Button("Обновить базу и открыть") { upgrade() }.buttonStyle(.borderedProminent)
                     Button("Закрыть базу") { model.lock() }
                 }.padding(22).background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 16))
@@ -58,7 +58,7 @@ struct VaultGateView: View {
             }
             if session.closing { ProgressView("Закрытие сеансов…") }
             else if working || model.busy { ProgressView("Открытие базы…") }
-            if let message = error ?? model.error { Text(message).foregroundStyle(.red).textSelection(.enabled) }
+            if let message = error ?? model.error { Text(message).foregroundStyle(.red).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
         }.padding(40).frame(maxWidth: 680).frame(maxWidth: .infinity, maxHeight: .infinity)
             .frame(minWidth: 620, minHeight: 500)
             .background(Color(nsColor: .windowBackgroundColor))

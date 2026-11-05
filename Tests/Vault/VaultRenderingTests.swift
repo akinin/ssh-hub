@@ -15,8 +15,8 @@ final class VaultRenderingTests: XCTestCase {
         defer { PortableSecretBridge.install(read: nil, write: nil); HubPaths.testingRoot = nil; try? FileManager.default.removeItem(at: root) }
         HubPaths.testingRoot = root; AppAccess.testingInstance = AppAccess(storage: RenderingAccess(), databaseGate: true)
         _ = NSApplication.shared
-        func render<V: View>(_ name: String, _ content: V) throws {
-            let view = NSHostingView(rootView: content.frame(width: 960, height: 880).preferredColorScheme(.dark)); view.frame = NSRect(x: 0, y: 0, width: 960, height: 880)
+        func render<V: View>(_ name: String, _ content: V, width: CGFloat = 960, height: CGFloat = 880) throws {
+            let view = NSHostingView(rootView: content.frame(width: width, height: height).preferredColorScheme(.dark)); view.frame = NSRect(x: 0, y: 0, width: width, height: height)
             let window = NSWindow(contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false)
             window.appearance = NSAppearance(named: .darkAqua)
             window.contentView = view; view.layoutSubtreeIfNeeded()
@@ -38,6 +38,11 @@ final class VaultRenderingTests: XCTestCase {
         let store = try XCTUnwrap(session.store)
         model.endpoint.enabled = true
         try render("login", Form { VaultSettingsView(model: model) }.formStyle(.grouped).environmentObject(store))
+        try model.database?.set("app/storage-version", VaultCollection.encode(1))
+        model.lock()
+        for _ in 0..<200 where session.closing { try await Task.sleep(for: .milliseconds(10)) }
+        try model.open("owned-render-master-password")
+        try render("upgrade", VaultGateView(session: session, model: model), width: 720, height: 640)
         model.lock()
     }
 }

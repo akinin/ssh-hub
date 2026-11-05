@@ -266,3 +266,40 @@ extension MandatoryVaultTests {
         XCTAssertFalse(FileManager.default.fileExists(atPath: active.url.path))
     }
 }
+extension MandatoryVaultTests {
+    @MainActor func testMigrationSkipsThousandsOfDownloadedTemplatesAndKeepsUserHistory() async throws {
+        try await fixture { _ in
+            let root = HubPrivateFiles.root
+            let templates = root.appendingPathComponent("NucleiRuntime/templates")
+            try FileManager.default.createDirectory(at: templates, withIntermediateDirectories: true)
+            // Reproduce the count limit independently of the amount of user data.
+            for index in 0..<10005 {
+                XCTAssertTrue(FileManager.default.createFile(atPath: templates.appendingPathComponent("fixture-\(index).yaml").path, contents: Data("owned template".utf8)))
+            }
+            let history = root.appendingPathComponent("NucleiHistory/owned.json")
+            let settings = root.appendingPathComponent("Assistant/owned.json")
+            for file in [history, settings] {
+                try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data("owned-user-material".utf8).write(to: file)
+            }
+            let values = try VaultMigrationData.rawFiles()
+            XCTAssertEqual(Set(values.keys), ["private-file/NucleiHistory/owned.json", "private-file/Assistant/owned.json"])
+            XCTAssertEqual(try Data(contentsOf: history), Data("owned-user-material".utf8))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: templates.appendingPathComponent("fixture-10004.yaml").path))
+            XCTAssertFalse(VaultBuiltinSnapshot.includes("private-file/NucleiRuntime/templates/owned.yaml"))
+            XCTAssertTrue(VaultBuiltinSnapshot.includes("private-file/NucleiHistory/owned.json"))
+        }
+    }
+    func testLegacySnapshotDiscardsOnlyGeneratedScannerRuntime() throws {
+        let history = Data("owned-history".utf8), secret = Data("owned-secret".utf8)
+        let snapshot = VaultBuiltinSnapshot(config: "/owned/config", objects: ["private-file/NucleiRuntime/templates/owned.yaml": Data("owned template".utf8), "private-file/NucleiHistory/owned.json": history, "secret/owned/fixture": secret])
+        var collection = VaultCollection(format: 2, values: ["profiles": try VaultCollection.encode(HubProfiles().profiles), "builtin": try VaultCollection.encode(snapshot)])
+        try collection.discardGeneratedRuntime(); try collection.validate()
+        let result = try JSONDecoder().decode(VaultBuiltinSnapshot.self, from: XCTUnwrap(collection.values["builtin"]))
+        XCTAssertEqual(result.objects, ["private-file/NucleiHistory/owned.json": history, "secret/owned/fixture": secret])
+        let stable = collection; try collection.discardGeneratedRuntime(); XCTAssertEqual(collection, stable)
+        var invalid = collection
+        invalid.values["builtin"] = try VaultCollection.encode(VaultBuiltinSnapshot(config: "/owned/config", objects: ["private-file/NucleiRuntime/../../escape": Data()]))
+        XCTAssertThrowsError(try invalid.discardGeneratedRuntime())
+    }
+}

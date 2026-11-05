@@ -5,13 +5,22 @@ import LocalAuthentication
 // Called only by the explicit, owner-authorized migration UI. Runtime readers
 // never consult legacy files or Keychain as fallback for missing database data.
 enum VaultMigrationData {
+    // Downloaded scanner templates/configuration are reproducible tool runtime,
+    // not user records. Keep NucleiHistory and all feature settings in migration.
+    static let generatedRootFolders: Set<String> = ["NucleiRuntime"]
+    static func isGeneratedRuntimePath(_ relative: String) -> Bool {
+        relative.split(separator: "/").first.map { generatedRootFolders.contains(String($0)) } ?? false
+    }
     @MainActor static func rawFiles() throws -> [String: Data] {
         var values: [String: Data] = [:], bytes = 0
-        let root = HubPrivateFiles.root
+        let root = HubPrivateFiles.root.standardizedFileURL.resolvingSymlinksInPath()
+        let rootParts = root.pathComponents
         if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey]) {
             for case let file as URL in enumerator {
-                let path = String(file.path.dropFirst(root.path.count + 1)), first = path.split(separator: "/").first.map(String.init) ?? ""
-                if ["Vaults", "Connections", "Updates", "UpdateStaging"].contains(first) { enumerator.skipDescendants(); continue }
+                let fileParts = file.standardizedFileURL.pathComponents
+                guard fileParts.starts(with: rootParts), fileParts.count > rootParts.count else { throw VaultError.message("Некорректный путь материалов переноса.") }
+                let path = fileParts.dropFirst(rootParts.count).joined(separator: "/"), first = path.split(separator: "/").first.map(String.init) ?? ""
+                if ["Vaults", "Connections", "Updates", "UpdateStaging"].contains(first) || generatedRootFolders.contains(first) { enumerator.skipDescendants(); continue }
                 let info = try file.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey])
                 if info.isSymbolicLink == true { enumerator.skipDescendants(); continue }
                 guard info.isRegularFile == true else { continue }

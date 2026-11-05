@@ -31,7 +31,7 @@ struct VaultBuiltinSnapshot: Codable {
         // encrypted in the database, but are not synchronized between devices.
         if name.hasPrefix("private-file/") {
             let path = String(name.dropFirst(13))
-            return !["Connections/", "Vaults/", "Updates/", "UpdateStaging/", "SessionLogs/"].contains(where: path.hasPrefix)
+            return !VaultMigrationData.isGeneratedRuntimePath(path) && !["Connections/", "Vaults/", "Updates/", "UpdateStaging/", "SessionLogs/"].contains(where: path.hasPrefix)
         }
         if name.hasPrefix("preferences/") {
             let key = String(name.dropFirst(12))
@@ -39,11 +39,11 @@ struct VaultBuiltinSnapshot: Codable {
         }
         return false
     }
-    func validate() throws {
+    func validate(allowLegacyRuntime: Bool = false) throws {
         guard config.hasPrefix("/"), config.utf8.count <= 4096, !config.contains("\n"), objects.count <= 15000,
               objects.values.reduce(0, { $0 + $1.count }) <= 280_000_000 else { throw VaultError.message("Некорректные встроенные материалы снимка.") }
         for (name, data) in objects {
-            guard Self.includes(name), name.utf8.count <= 8192, !name.contains("\0"), !name.split(separator: "/").contains(".."), data.count <= 100_000_000 else { throw VaultError.message("Недопустимый объект встроенного хранилища.") }
+            guard Self.includes(name) || (allowLegacyRuntime && name.hasPrefix("private-file/") && VaultMigrationData.isGeneratedRuntimePath(String(name.dropFirst(13)))), name.utf8.count <= 8192, !name.contains("\0"), !name.split(separator: "/").contains(".."), data.count <= 100_000_000 else { throw VaultError.message("Недопустимый объект встроенного хранилища.") }
             if name.hasPrefix("ssh-key/") {
                 let value = try JSONDecoder().decode(VaultSSHKey.self, from: data)
                 try VaultSSHKeys.validate(value)
@@ -56,6 +56,17 @@ struct VaultBuiltinSnapshot: Codable {
 struct VaultCollection: Codable, Equatable {
     var format = 1
     var values: [String: Data] = [:]
+    mutating func discardGeneratedRuntime() throws {
+        guard let data = values["builtin"] else { return }
+        var builtin = try JSONDecoder().decode(VaultBuiltinSnapshot.self, from: data)
+        try builtin.validate(allowLegacyRuntime: true)
+        let filtered = builtin.objects.filter { name, _ in
+            !name.hasPrefix("private-file/") || !VaultMigrationData.isGeneratedRuntimePath(String(name.dropFirst(13)))
+        }
+        guard filtered.count != builtin.objects.count else { return }
+        builtin.objects = filtered
+        values["builtin"] = filtered.isEmpty ? nil : try Self.encode(builtin)
+    }
     func validate() throws {
         guard (1...2).contains(format), values.count <= 1100, values.values.reduce(0, { $0 + $1.count }) <= 300_000_000 else { throw VaultError.message("Снимок синхронизации слишком большой или неподдерживаемый.") }
         if !values.isEmpty {
@@ -443,15 +454,16 @@ struct VaultCollection: Codable, Equatable {
                 guard self.endpoint.enabled, let db = self.database, self.unlocked, !AppAccess.shared.locked else { throw VaultError.locked }
                 try store.requireVaultIdle(); try db.unlock(password); try self.saveEndpoint()
                 let auth = AppAccess.shared.authorizationRevision, local = try self.collect(store)
-                let base = try db.get("sync/base").map { try JSONDecoder().decode(VaultCollection.self, from: $0) } ?? VaultCollection()
+                var base = try db.get("sync/base").map { try JSONDecoder().decode(VaultCollection.self, from: $0) } ?? VaultCollection()
+                try base.discardGeneratedRuntime()
                 let lastSeen = try db.get("sync/revision").map { try JSONDecoder().decode(Int.self, from: $0) } ?? 0
                 guard let session = self.cloudSession, session.server == self.endpoint.address, session.vault == self.endpoint.vault, session.expiresAt > Date().timeIntervalSince1970 else { throw VaultError.message("Войди в облачную учётную запись.") }
                 let client = try self.clientFactory(self.endpoint, session.token); self.client = client
                 let revision = try await client.head()
                 guard revision >= lastSeen else { throw VaultError.message("На сервере более старая ревизия. Автоматическая перезапись остановлена.") }
-                let remote: VaultCollection
+                var remote: VaultCollection
                 if revision == 0 { remote = VaultCollection() }
-                else { remote = try JSONDecoder().decode(VaultCollection.self, from: await client.pull(password: password, revision: revision, lastSeen: lastSeen)); try remote.validate() }
+                else { remote = try JSONDecoder().decode(VaultCollection.self, from: await client.pull(password: password, revision: revision, lastSeen: lastSeen)); try remote.discardGeneratedRuntime(); try remote.validate() }
                 guard self.generation == operation, !AppAccess.shared.locked, auth == AppAccess.shared.authorizationRevision, try self.collect(store) == local else { throw VaultError.message("Рабочая область изменилась во время обмена. Повтори синхронизацию.") }
                 let resolvedChoices: [String: Bool]
                 if let pending = self.pending, pending.0 == base, pending.1 == local, pending.2 == remote, pending.3 == revision { resolvedChoices = choices } else { resolvedChoices = [:] }
