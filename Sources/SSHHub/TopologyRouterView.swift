@@ -21,7 +21,7 @@ struct TopologyRouterView: View {
             }
             Text("UniFi, MikroTik и Keenetic можно использовать вместе. Привязка дополняет существующее устройство. WAN1/WAN2 и связи с другими шлюзами настраиваются в карте.").font(.caption).foregroundStyle(.secondary)
             Text(settings.provider == .mikrotik ? "RouterOS REST API через HTTPS (www-ssl). Сбор читает интерфейсы, адреса, маршруты, DNS и соседей; конфигурацию устройства не меняет." : "Локальный Keenetic RCI через HTTPS с поддерживаемой авторизацией. Сбор читает сетевые сведения; конфигурацию устройства не меняет.").font(.caption).foregroundStyle(.secondary)
-            Text("Нужен доверенный сертификат сервера. Пароль хранится только в Связке ключей и привязан к адресу, пользователю и профилю; в архив не включается.").font(.caption).foregroundStyle(.secondary)
+            Text("Нужен доверенный сертификат сервера. Пароль хранится в зашифрованной базе SSH Hub и привязан к адресу, пользователю и профилю; в архив не включается.").font(.caption).foregroundStyle(.secondary)
             if hasPassword { Label("Пароль сохранён",systemImage:"key.fill").font(.caption).foregroundStyle(.secondary) }
             if let error = error ?? model.error { Text(error).foregroundStyle(.red).font(.caption).textSelection(.enabled) }
             if saved { Text("Настройки сохранены").font(.caption).foregroundStyle(.green) }

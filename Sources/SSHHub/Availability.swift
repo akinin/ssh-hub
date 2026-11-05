@@ -3,14 +3,14 @@ import Network
 
 @MainActor final class AvailabilityMonitor: ObservableObject {
     @Published private(set) var results: [String: AvailabilityResult] = [:]
-    @Published var selected: Set<String> { didSet { UserDefaults.standard.set(Array(selected), forKey: "availability.selected.v1"); restart() } }
-    @Published var interval: Double { didSet { UserDefaults.standard.set(interval, forKey: "availability.interval.v1"); restart() } }
+    @Published var selected: Set<String> { didSet { HubPreferences.shared.set(Array(selected), forKey: "availability.selected.v1"); restart() } }
+    @Published var interval: Double { didSet { HubPreferences.shared.set(interval, forKey: "availability.interval.v1"); restart() } }
     private var entries: [SSHAlias] = []
     private var task: Task<Void, Never>?
     private var generation = UUID()
     init() {
-        selected = Set(UserDefaults.standard.stringArray(forKey: "availability.selected.v1") ?? [])
-        interval = min(3600, max(10, UserDefaults.standard.object(forKey: "availability.interval.v1") as? Double ?? 60))
+        selected = Set(HubPreferences.shared.stringArray(forKey: "availability.selected.v1") ?? [])
+        interval = min(3600, max(10, HubPreferences.shared.object(forKey: "availability.interval.v1") as? Double ?? 60))
     }
     func configure(entries: [SSHAlias]) {
         let next = entries.filter { $0.availabilityEndpoint != nil && selected.contains($0.favoriteID) }

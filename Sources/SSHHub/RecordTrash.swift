@@ -17,6 +17,7 @@ struct RecordTrashEntry: Codable, Identifiable {
     var favorite: Bool
     var profiles: [UUID]
     var files: [RecordTrashFile] = []
+    var databaseMaterials: [String: Data]? = nil
     var title: String { appearance.title(fallback: record.title) }
 }
 
@@ -96,10 +97,18 @@ struct RecordTrashRepository {
         return (count, hash.finalize().map { String(format: "%02x", $0) }.joined())
     }
     func list() throws -> [RecordTrashEntry] {
+        if HubPrivateFiles.key(root) != nil {
+            return try HubPrivateFiles.names(in: root).filter { $0.lastPathComponent == "entry.json" }.compactMap { UUID(uuidString: $0.deletingLastPathComponent().lastPathComponent) }.map { try load($0) }.sorted { $0.date > $1.date }
+        }
         try checkRoot(); guard FileManager.default.fileExists(atPath: root.path) else { return [] }
         return try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).filter { UUID(uuidString: $0.lastPathComponent) != nil }.map { try load(UUID(uuidString: $0.lastPathComponent)!) }.sorted { $0.date > $1.date }
     }
     func load(_ id: UUID) throws -> RecordTrashEntry {
+        if HubPrivateFiles.key(root) != nil {
+            guard let data = try HubPrivateFiles.read(root.appendingPathComponent(id.uuidString).appendingPathComponent("entry.json"), limit: 300_000_000) else { throw ConfigError.message("Запись корзины отсутствует в базе.") }
+            let value = try JSONDecoder().decode(RecordTrashEntry.self, from: data)
+            guard value.id == id, value.record.validation == nil, value.appearance.validation == nil, value.record.entry(config: config, privateConfig: config).favoriteID == value.key, AliasTransfer.validGroup(value.group), value.profiles.count <= 50, value.key.utf8.count <= 8192, (value.databaseMaterials ?? [:]).count < 2000, (value.databaseMaterials ?? [:]).values.reduce(0, { $0 + $1.count }) <= 280_000_000 else { throw ConfigError.message("Запись корзины повреждена.") }; return value
+        }
         try checkRoot(); let folder = root.appendingPathComponent(id.uuidString); try directory(folder)
         let file = folder.appendingPathComponent("entry.json")
         guard let info = try fileInfo(file), info.st_size <= 2_000_000 else { throw ConfigError.message("Запись корзины повреждена.") }
@@ -113,6 +122,17 @@ struct RecordTrashRepository {
         return value
     }
     func capture(_ value: RecordTrashEntry, sources: [String: URL]) throws -> RecordTrashEntry {
+        if HubPrivateFiles.key(root) != nil {
+            var value = value, materials: [String: Data] = [:]
+            for service in ["document", "commands", "inventory", "winbox", "attachment-index"] {
+                if let data = try PortableSecretBridge.read(service, value.key) { materials[service + "/" + value.key] = data }
+            }
+            let files = try AttachmentsRepository().load(value.key)
+            for file in files { if let data = try PortableSecretBridge.read("attachment", value.key + "/" + file.id.uuidString) { materials["attachment/" + value.key + "/" + file.id.uuidString] = data } }
+            value.databaseMaterials = materials
+            guard try list().count < 1000 else { throw ConfigError.message("В корзине 1000 записей.") }
+            try HubPrivateFiles.write(JSONEncoder().encode(value), to: root.appendingPathComponent(value.id.uuidString).appendingPathComponent("entry.json"), overwrite: false); return value
+        }
         try checkRoot(create: true)
         guard try list().count < 1000 else { throw ConfigError.message("В корзине 1000 записей. Удали ненужные восстановительные копии.") }
         let stage = root.appendingPathComponent(".stage-" + UUID().uuidString)
@@ -136,6 +156,21 @@ struct RecordTrashRepository {
         return value
     }
     func restoreMaterials(_ value: RecordTrashEntry, destinations: [String: URL], commit: () throws -> Void) throws {
+        if HubPrivateFiles.key(root) != nil {
+            let saved = try load(value.id)
+            try PortableSecretBridge.atomic {
+                for (name, data) in saved.databaseMaterials ?? [:] {
+                    guard let slash = name.firstIndex(of: "/") else { throw ConfigError.message("Повреждены материалы корзины.") }
+                    let service = String(name[..<slash]), account = String(name[name.index(after: slash)...])
+                    guard ["document", "commands", "inventory", "winbox", "attachment-index", "attachment"].contains(service), account == saved.key || (service == "attachment" && account.hasPrefix(saved.key + "/")) else { throw ConfigError.message("Повреждены ссылки материалов корзины.") }
+                    let current = try PortableSecretBridge.read(service, account)
+                    guard current == nil || current == data else { throw ConfigError.message("Материалы уже изменены. Восстановление не заменяет новые данные.") }
+                    if current == nil { try PortableSecretBridge.write(service, account, data) }
+                }
+                try commit()
+            }
+            return
+        }
         let saved = try load(value.id), folder = root.appendingPathComponent(value.id.uuidString)
         var missing: [(URL, URL)] = []
         for item in saved.files {
@@ -161,6 +196,7 @@ struct RecordTrashRepository {
         } catch { for (file, digest) in created where (try? dataFile(file).1) == digest { try? FileManager.default.removeItem(at: file) }; throw error }
     }
     func remove(_ id: UUID) throws {
+        if HubPrivateFiles.key(root) != nil { try HubPrivateFiles.remove(root.appendingPathComponent(id.uuidString).appendingPathComponent("entry.json")); return }
         _ = try load(id); try FileManager.default.removeItem(at: root.appendingPathComponent(id.uuidString))
     }
 }

@@ -83,13 +83,13 @@ extension AliasStore {
         do {
             let maps = try repository.list(profileID: profiles.active)
             let active = activePage.flatMap { $0.topologyMapID(profileID: profiles.active) }
-            let saved = UserDefaults.standard.string(forKey: topologySelectionKey).flatMap(UUID.init(uuidString:))
+            let saved = HubPreferences.shared.string(forKey: topologySelectionKey).flatMap(UUID.init(uuidString:))
             let id = requested ?? active ?? saved.flatMap { candidate in maps.contains { $0.id == candidate } ? candidate : nil } ?? maps.first?.id ?? profiles.active
             guard id == profiles.active || maps.contains(where: { $0.id == id }) else { throw ConfigError.message("Эта карта удалена или принадлежит другому профилю.") }
             if maps.isEmpty && id == profiles.active { try repository.write(TopologyDocument(profileID: profiles.active)) }
             let page = pages.first { $0.section == .topology && $0.topologyMapID(profileID: profiles.active) == id } ?? EntryPage(key: EntryPage.topologyKey(mapID: id, profileID: profiles.active), section: .topology)
             if !pages.contains(where: { $0.id == page.id }) { pages.append(page); createRecordTools(for: page) }
-            selectPage(page); UserDefaults.standard.set(id.uuidString, forKey: topologySelectionKey); reloadTopologyMapIndex()
+            selectPage(page); HubPreferences.shared.set(id.uuidString, forKey: topologySelectionKey); reloadTopologyMapIndex()
             if let entry, let model = topologyModels[page.id] {
                 if !model.document.nodes.contains(where: { $0.recordKey == entry.favoriteID }) { model.addRecords([(entry, title(entry))]) }
                 model.selectedNode = model.document.nodes.first(where: { $0.recordKey == entry.favoriteID })?.id
@@ -102,7 +102,7 @@ extension AliasStore {
     }
     func closeDeletedTopology(_ mapID: UUID) {
         for page in Array(pages) where page.section == .topology && page.topologyMapID(profileID: profiles.active) == mapID { closePage(page, force: true) }
-        reloadTopologyMapIndex(); UserDefaults.standard.removeObject(forKey: topologySelectionKey)
+        reloadTopologyMapIndex(); HubPreferences.shared.removeObject(forKey: topologySelectionKey)
     }
     func moveTopologyRecord(from old: String, to new: String) {
         guard old != new else { return }

@@ -111,7 +111,8 @@ struct PublicSSHKey: Identifiable {
     let fingerprint: String
     var id: String { url.path }
     var privateURL: URL { url.deletingPathExtension() }
-    var name: String { privateURL.lastPathComponent }
+    var builtinTitle: String? = nil
+    var name: String { builtinTitle ?? privateURL.lastPathComponent }
     var comment: String { text.split(separator: " ", maxSplits: 2).dropFirst(2).joined(separator: " ") }
     var installCommand: String {
         "mkdir -p ~/.ssh && chmod 700 ~/.ssh && printf '%s\\n' " + SSHConfig.shellQuote(text) + " >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
@@ -133,6 +134,12 @@ struct PublicSSHKey: Identifiable {
     }
 
     static func read(_ url: URL) throws -> Self {
+        let cacheID = url.deletingLastPathComponent().lastPathComponent.hasPrefix("key-") ? String(url.deletingLastPathComponent().lastPathComponent.dropFirst(4)) : nil
+        if PortableSecretBridge.active, let id = VaultSSHKeys.identifier(url.path) ?? cacheID {
+            let value = try VaultSSHKeys.read(id)
+            guard let text = value.publicText else { throw ConfigError.message("Публичный ключ отсутствует в базе. Импортируй пару ключей.") }
+            return Self(url: URL(fileURLWithPath: VaultSSHKeys.prefix + id + ".pub"), text: text, fingerprint: value.fingerprint ?? "", builtinTitle: value.title)
+        }
         let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
         guard size > 0, size <= 32768 else { throw ConfigError.message("Публичный ключ должен быть не больше 32 КБ.") }
         let text = try validate(String(contentsOf: url, encoding: .utf8))
@@ -146,10 +153,14 @@ struct PublicSSHKey: Identifiable {
     }
 
     static func identityURL(_ value: String, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        if PortableSecretBridge.active { return URL(fileURLWithPath: PortableSecretBridge.identity(value)) }
         let expanded = (value as NSString).expandingTildeInPath
         return (expanded.hasPrefix("/") ? URL(fileURLWithPath: expanded) : home.appendingPathComponent(expanded)).resolvingSymlinksInPath()
     }
     static func discover(directory: URL, aliases: [SSHAlias]) -> (keys: [Self], warnings: [String]) {
+        if PortableSecretBridge.active {
+            do { return (try VaultSSHKeys.publicKeys(), []) } catch { return ([], [error.localizedDescription]) }
+        }
         var candidates = Set((try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil))?.filter { $0.pathExtension == "pub" } ?? [])
         for entry in aliases {
             for option in entry.options where option.key.lowercased() == "identityfile" {
@@ -165,7 +176,7 @@ struct PublicSSHKey: Identifiable {
     }
     func usedBy(_ aliases: [SSHAlias]) -> [String] {
         aliases.filter { entry in
-            entry.options.contains { $0.key.lowercased() == "identityfile" && Self.identityURL($0.value) == privateURL.resolvingSymlinksInPath() }
+            entry.options.contains { $0.key.lowercased() == "identityfile" && ($0.value == privateURL.path || Self.identityURL($0.value) == Self.identityURL(privateURL.path)) }
         }.map(\.name).sorted()
     }
 }

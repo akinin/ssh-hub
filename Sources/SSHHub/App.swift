@@ -129,9 +129,9 @@ import ConsoleSupport
     private var undoAppearanceEdit: (entry: SSHAlias, appearance: ConnectionAppearance)?
     private var undoGroupEdit: (entry: SSHAlias, group: String)?
     var data = Data()
-    let config: SSHConfig
-    init(configURL: URL? = nil, vaultRoot: URL? = nil) {
-        do { try RetiredLibraryData.remove() } catch { self.error = error.localizedDescription }
+    var config: SSHConfig
+    init(configURL: URL? = nil, vaultRoot: URL? = nil, openedVault: VaultWorkspace? = nil, legacyImport: Bool = false) {
+        if !PortableSecretBridge.active && !legacyImport { do { try RetiredLibraryData.remove() } catch { self.error = error.localizedDescription } }
         // A separate configuration path is useful for a demo or isolated tests.
         if let configURL { config = SSHConfig(url: configURL) }
         else if let index = CommandLine.arguments.firstIndex(of: "--config"), CommandLine.arguments.count > index + 1 {
@@ -139,22 +139,26 @@ import ConsoleSupport
         } else if let testPath = Bundle.main.object(forInfoDictionaryKey: "SSHConfigPath") as? String {
             config = SSHConfig(url: URL(fileURLWithPath: testPath))
         } else { config = SSHConfig() }
-        portableVault = VaultWorkspace(config: config.url, root: vaultRoot)
-        if let data = UserDefaults.standard.data(forKey: profilesKey), data.count <= 20_000_000, let value = try? JSONDecoder().decode(HubProfiles.self, from: data), value.valid { profiles = value }
-        favorites = Set(UserDefaults.standard.stringArray(forKey: "favoriteAliases.v1") ?? [])
-        groups = UserDefaults.standard.dictionary(forKey: "aliasGroups.v1") as? [String: String] ?? [:]
-        history = ConnectionHistory.decode(UserDefaults.standard.data(forKey: "connectionHistory.v1"))
-        appearances = ConnectionAppearance.decode(UserDefaults.standard.data(forKey: "connectionAppearance.v1"))
+        portableVault = openedVault ?? VaultWorkspace(config: config.url, root: vaultRoot)
+        if let openedVault { do { try openedVault.hydrate(self) } catch { self.error = error.localizedDescription; return } }
+        else {
+        if let data = HubPreferences.shared.data(forKey: profilesKey), data.count <= 20_000_000, let value = try? JSONDecoder().decode(HubProfiles.self, from: data), value.valid { profiles = value }
+        favorites = Set(HubPreferences.shared.stringArray(forKey: "favoriteAliases.v1") ?? [])
+        groups = HubPreferences.shared.dictionary(forKey: "aliasGroups.v1") as? [String: String] ?? [:]
+        history = ConnectionHistory.decode(HubPreferences.shared.data(forKey: "connectionHistory.v1"))
+        appearances = ConnectionAppearance.decode(HubPreferences.shared.data(forKey: "connectionAppearance.v1"))
+        }
         ConsoleStore.shared.onSelection = { [weak self] session in self?.selectConsole(session) }
         ConsoleStore.shared.onClose = { [weak self] id in self?.tabStyles.removeValue(forKey: WorkspaceTab.console(id).dragToken); self?.removeDetached(.console(id)); self?.workspace.remove(.console(id)); self?.syncWorkspaceSelection() }
         ConsoleStore.shared.onReplacement = { [weak self] old, new in self?.replaceConsoleTab(old, with: new) }
         reload()
-        restoreWorkspace()
+        if !legacyImport { restoreWorkspace() }
         restoringWorkspace = false
         if pages.isEmpty && ConsoleStore.shared.sessions.isEmpty, let initial = current ?? filtered.first { showDashboard(initial) }
-        saveWorkspace()
-        availability.configure(entries: aliases)
-        _ = credentialVault(); reloadSearchMetadata(); observeRecordMaterials(); refreshFeatureTags()
+        if !legacyImport {
+            saveWorkspace(); availability.configure(entries: aliases)
+            _ = credentialVault(); reloadSearchMetadata(); observeRecordMaterials(); refreshFeatureTags()
+        }
     }
     var ordered: [SSHAlias] {
         aliases.sorted {
@@ -211,7 +215,7 @@ import ConsoleSupport
     }
     private func persistAppearances() {
         if persistPortable("appearances", appearances) { return }
-        if let data = try? JSONEncoder().encode(appearances) { UserDefaults.standard.set(data, forKey: "connectionAppearance.v1") }
+        if let data = try? JSONEncoder().encode(appearances) { HubPreferences.shared.set(data, forKey: "connectionAppearance.v1") }
     }
     func group(_ entry: SSHAlias) -> String { groups[entry.favoriteID] ?? "" }
     var groupNames: [String] { Set(profileEntries.map { ConnectionTree.normalized(group($0)) }.filter { !$0.isEmpty } + folders).sorted { $0.localizedStandardCompare($1) == .orderedAscending } }
@@ -243,12 +247,12 @@ import ConsoleSupport
         guard AliasTransfer.validGroup(name) else { return }
         groups[entry.favoriteID] = name.isEmpty ? nil : name
         if persistPortable("groups", groups) { return }
-        UserDefaults.standard.set(groups, forKey: "aliasGroups.v1")
+        HubPreferences.shared.set(groups, forKey: "aliasGroups.v1")
     }
     func applyLaunchPreference() {
         guard !appliedLaunchPreference else { return }
         appliedLaunchPreference = true
-        if UserDefaults.standard.bool(forKey: "startInMenuBar") {
+        if HubPreferences.shared.bool(forKey: "startInMenuBar") {
             DispatchQueue.main.async {
                 // Keep the quick-search popover usable without unhiding a hidden main window.
                 for window in NSApplication.shared.windows where window.identifier?.rawValue == "main" || window.title == "SSH Hub" { window.orderOut(nil) }
@@ -280,12 +284,16 @@ import ConsoleSupport
     }
     func importRecords(_ records: [TransferAlias], expectedData: Data) throws {
         let before = try localRepository.load()
-        let publicRecords = records.filter { !$0.isStandalone }
+        let publicRecords = PortableSecretBridge.active ? [] : records.filter { !$0.isStandalone }
         var after = before, created: [(UUID, TransferAlias)] = []
-        for value in records where value.isStandalone {
-            var record = LocalConnectionRecord(); record.kind = value.recordKind ?? .ssh; record.title = value.appearance.trimmedName
+        for value in records where value.isStandalone || PortableSecretBridge.active {
+            var record = LocalConnectionRecord(); record.kind = value.recordKind ?? .ssh; record.title = value.appearance.trimmedName.isEmpty ? value.name : value.appearance.trimmedName
             record.host = value.host; record.user = value.user; record.port = value.port; record.identity = value.identity; record.jump = value.jump; record.authentication = value.authentication ?? .automatic; record.website = value.website ?? ""; record.serial = value.serial
             record.transport = value.transport
+            if PortableSecretBridge.active {
+                if !value.isStandalone { record.aliasName = value.name; record.aliasSource = config.url }
+                if !record.identity.isEmpty && VaultSSHKeys.identifier(record.identity) == nil { record.identity = VaultSSHKeys.prefix + VaultCrypto.digest(Data(record.identity.utf8)) }
+            }
             after.append(record); created.append((record.id, value))
         }
         var change: ConfigChange?
@@ -297,7 +305,7 @@ import ConsoleSupport
         else { undoChange = change }
         query = ""; groupFilter = "all"; reload()
         for value in records {
-            let entry = value.isStandalone ? created.first(where: { $0.1.name == value.name }).flatMap { id, _ in aliases.first { $0.localID == id } } : aliases.first { $0.localID == nil && $0.name == value.name.trimmingCharacters(in: .whitespaces) }
+            let entry = (value.isStandalone || PortableSecretBridge.active) ? created.first(where: { $0.1.name == value.name }).flatMap { id, _ in aliases.first { $0.localID == id } } : aliases.first { $0.localID == nil && $0.name == value.name.trimmingCharacters(in: .whitespaces) }
             if let entry {
                 if undoRecordChange == nil { undoImportedMetadata[entry.favoriteID] = (groups[entry.favoriteID], isFavorite(entry), appearances[entry.favoriteID]) }
                 setGroup(value.group, for: entry); setAppearance(value.appearance, for: entry)
@@ -313,7 +321,7 @@ import ConsoleSupport
         if !favorites.insert(entry.favoriteID).inserted { favorites.remove(entry.favoriteID) }
         persistFavorites()
     }
-    private func persistFavorites() { if !persistPortable("favorites", favorites.sorted()) { UserDefaults.standard.set(Array(favorites).sorted(), forKey: "favoriteAliases.v1") } }
+    private func persistFavorites() { if !persistPortable("favorites", favorites.sorted()) { HubPreferences.shared.set(Array(favorites).sorted(), forKey: "favoriteAliases.v1") } }
     private func moveFavorite(from: SSHAlias, to: SSHAlias) {
         moveOperationsRecord(from: from.favoriteID, to: to.favoriteID)
         moveSidebarOrder(from: from.favoriteID, to: to.favoriteID)
@@ -403,7 +411,7 @@ import ConsoleSupport
             if let edit = undoAppearanceEdit { setAppearance(edit.appearance, for: edit.entry) }
             if let edit = undoGroupEdit { setGroup(edit.group, for: edit.entry) }
             persistAppearances()
-            UserDefaults.standard.set(groups, forKey: "aliasGroups.v1"); persistFavorites()
+            HubPreferences.shared.set(groups, forKey: "aliasGroups.v1"); persistFavorites()
             reload(select: undoNames?.before.name)
             clearUndo(); notice = "Изменение отменено."
         } catch {
@@ -430,7 +438,7 @@ import ConsoleSupport
     var current: SSHAlias? { aliases.first { $0.id == selected } }
     func reload(select name: String? = nil) {
         do {
-            let snapshot = try config.load()
+            let snapshot = PortableSecretBridge.active ? SSHSnapshot(aliases: [], data: Data(), warnings: []) : try config.load()
             rawAliases = snapshot.aliases
             let records = try localRepository.load()
             localRecords = records
@@ -449,7 +457,7 @@ import ConsoleSupport
             refreshFeatureTags()
             profiles.discover(aliases.map(\.favoriteID))
             if profiles.profiles.contains(where: { $0.folderPaths == nil }) {
-            profiles.migrateFolders(legacy: UserDefaults.standard.stringArray(forKey: "folderPaths.v1") ?? [], appearances: ConnectionAppearance.decode(UserDefaults.standard.data(forKey: "folderAppearance.v1")), groups: groups, keys: aliases.map(\.favoriteID))
+            profiles.migrateFolders(legacy: HubPreferences.shared.stringArray(forKey: "folderPaths.v1") ?? [], appearances: ConnectionAppearance.decode(HubPreferences.shared.data(forKey: "folderAppearance.v1")), groups: groups, keys: aliases.map(\.favoriteID))
             }
             persistProfiles()
             for (id, session) in Array(connectionSessions) {
@@ -521,7 +529,7 @@ import ConsoleSupport
         if entry.recordKind == .serial { selected = entry.id; ConsoleStore.shared.connect(entry, title: title(entry), config: config.url, newSession: newSession); recordConnection(entry, kind: .serial); return }
         guard entry.canSSH else { if entry.recordKind == .website { openWebsite(entry) } else { showDashboard(entry) }; return }
         selected = entry.id
-        if UserDefaults.standard.string(forKey: "consoleDestination.v1") == "external" {
+        if HubPreferences.shared.string(forKey: "consoleDestination.v1") == "external" {
             connectExternally(entry); return
         }
         ConsoleStore.shared.connect(entry, title: title(entry), config: config.url, newSession: newSession)
@@ -562,7 +570,7 @@ import ConsoleSupport
         if groupFilter == "recent" { selected = nil }
     }
     private func persistHistory() {
-        if let data = try? JSONEncoder().encode(history) { UserDefaults.standard.set(data, forKey: "connectionHistory.v1") }
+        if let data = try? JSONEncoder().encode(history) { HubPreferences.shared.set(data, forKey: "connectionHistory.v1") }
     }
     func recordConnection(_ entry: SSHAlias, kind: ConnectionKind) {
         guard let current = aliases.first(where: { $0.favoriteID == entry.favoriteID }) else { return }
@@ -577,11 +585,12 @@ import ConsoleSupport
         }
     }
     func launchInTerminal(_ command: String, record entry: SSHAlias? = nil, kind: ConnectionKind = .ssh) async throws {
-        let terminalID = UserDefaults.standard.string(forKey: "terminalID") ?? "com.apple.Terminal"
+        let terminalID = HubPreferences.shared.string(forKey: "terminalID") ?? "com.apple.Terminal"
         try await TerminalLauncher.open(command: command, terminalID: terminalID)
         if let entry { recordConnection(entry, kind: kind) }
     }
     func openConfig() {
+        if PortableSecretBridge.active { NSWorkspace.shared.activateFileViewerSelecting([portableVault.url]); return }
         if FileManager.default.fileExists(atPath: config.url.path) {
             NSWorkspace.shared.activateFileViewerSelecting([config.url])
         } else {
@@ -592,12 +601,68 @@ import ConsoleSupport
 
 @MainActor final class HubSession: ObservableObject {
     @Published private(set) var store: AliasStore?
+    @Published private(set) var closing = false
+    var presentGate: (() -> Void)?
+    private var automaticUnlockPending = true
+    func consumeAutomaticUnlock() -> Bool { defer { automaticUnlockPending = false }; return automaticUnlockPending }
+    @Published var vault: VaultWorkspace
     private var updates: AnyCancellable?
+    private var vaultUpdates: AnyCancellable?
+    private var drainingStore: AliasStore?
+    private var writeFailures: AnyCancellable?
+    static let selectedDatabaseKey = "database.selected-file.v1"
+    init(vault: VaultWorkspace? = nil) {
+        if let vault { self.vault = vault }
+        else {
+            let config: URL
+            if let index = CommandLine.arguments.firstIndex(of: "--config"), CommandLine.arguments.count > index + 1 { config = URL(fileURLWithPath: CommandLine.arguments[index + 1]) }
+            else { config = SSHConfig().url }
+            let selected = UserDefaults.standard.string(forKey: Self.selectedDatabaseKey).map { URL(fileURLWithPath: $0) }
+            self.vault = VaultWorkspace(config: config, file: selected, required: true)
+        }
+        writeFailures = NotificationCenter.default.publisher(for: Notification.Name("SSHHubDatabaseWriteFailed")).sink { [weak self] note in
+            let message = note.userInfo?["message"] as? String ?? "Не удалось сохранить настройки в базе."
+            Task { @MainActor in if let store = self?.store { store.error = message } else { self?.vault.error = message } }
+        }
+        self.vault.onWillLock = { [weak self] in self?.closeStore() }
+        vaultUpdates = self.vault.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+    }
     func start() {
-        guard store == nil else { return }
-        let value = AliasStore()
+        guard store == nil, !closing, vault.unlocked, !vault.requiresUpgrade else { return }
+        AppAccess.shared.authorizeDatabase()
+        TemplateLibrary.shared.reload(); CommandLibrary.shared.reload(); SessionJournal.shared.reload(); TunnelManager.shared.reloadForDatabase()
+        let value = AliasStore(configURL: vault.config, openedVault: vault)
         updates = value.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         store = value
+        if let issue = value.error { vault.lock(); vault.error = issue; return }
+        if vault.required { UserDefaults.standard.set(vault.url.path, forKey: Self.selectedDatabaseKey) }
+    }
+    static var pending: Bool {
+        VaultSyncClient.pending || ConsoleProcess.pendingCount > 0 || SFTPRegistry.shared.hasSessions || ToolkitSession.pending || TunnelSession.pending || RecordLogsModel.pending || InventoryModel.pending || WinboxModel.hasPendingOperations || TopologyModel.pending || InfrastructureIntegrationModel.pending || MonitoringHTTPTransport.pending || MonitoringInstallationModel.pending || LoginNotificationModel.pending || MaintenanceModel.pending || AssistantAPI.pending || KDBXClient.pending || RecordDiscoveryModel.pending
+    }
+    func closeStore() {
+        closing = true
+        defer {
+            Task { @MainActor [weak self] in
+                while let self {
+                    if !Self.pending && self.drainingStore?.scanner.pending != true && self.drainingStore?.tools.audits.pending != true && self.drainingStore?.tools.nuclei.pending != true && self.drainingStore?.certificates.pending != true { self.drainingStore = nil; self.closing = false; return }
+                    try? await Task.sleep(for: .milliseconds(20))
+                }
+            }
+            DispatchQueue.main.async { [weak self] in self?.presentGate?() }
+        }
+        guard let value = store else { AppAccess.shared.lock(); return }
+        drainingStore = value
+        value.finishWorkspace(); ConsoleStore.shared.closeAll(); SFTPRegistry.shared.closeAll(); TunnelManager.shared.stopAll()
+        for tab in Array(value.detachedWindows.keys) { value.removeDetached(tab) }
+        QuickAccessController.shared.resetDatabase()
+        value.aliases = []; value.rawAliases = []; value.localRecords = []; value.pages = []; value.history = []; value.groups = [:]; value.appearances = [:]; value.favorites = []; value.profiles = HubProfiles(); value.selected = nil; value.query = ""; value.notice = nil; value.error = nil
+        value.connectionSessions = [:]; value.logModels = [:]; value.inventoryModels = [:]; value.winboxModels = [:]; value.topologyModels = [:]
+        value.documentation.clearForDatabaseLock(); value.savedCommands.clearForDatabaseLock()
+        for window in NSApp.windows where window.sheetParent != nil { if let parent = window.sheetParent { parent.endSheet(window, returnCode: .cancel) } }
+        if NSApp.modalWindow != nil { NSApp.abortModal() }
+        TunnelManager.shared.clearForDatabaseLock(); TemplateLibrary.shared.clearForDatabaseLock(); CommandLibrary.shared.clearForDatabaseLock(); SessionJournal.shared.clearForDatabaseLock()
+        updates = nil; store = nil; AppAccess.shared.lock()
     }
 }
 
@@ -607,20 +672,19 @@ import ConsoleSupport
     @ObservedObject private var access = AppAccess.shared
     @ObservedObject private var updater = AppUpdater.shared
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    init() { ApplicationDefaults.register(); NSApplication.shared.setActivationPolicy(.regular) }
+    init() { ApplicationDefaults.register(in: HubPreferences.shared); NSApplication.shared.setActivationPolicy(.regular) }
     var body: some Scene {
         Window("SSH Hub", id: "main") {
             Group {
-                if access.locked { AppUnlockView(access: access) }
-                else if let store { MainView().environmentObject(store) }
-                else { ProgressView().frame(minWidth: 600, minHeight: 400) }
-            }.onAppear { initializeStore() }.onChange(of: access.locked) { _, _ in initializeStore(restore: true) }
+                if let store, session.vault.unlocked { MainView().environmentObject(store) }
+                else { VaultGateView(session: session, model: session.vault) }
+            }.background(VaultWindowPresenter(session: session)).onAppear { initializeStore() }.onChange(of: session.vault.unlocked) { _, _ in initializeStore(restore: true) }
         }
             .defaultSize(width: 960, height: 640)
             .windowResizability(.contentMinSize)
             .commands { HubCommands(session: session) }
     }
-    private func initializeStore(restore: Bool = false) { if !access.locked { let starting = session.store == nil; session.start(); if starting || restore { session.store?.wireGuardWorkspace().runtime.activate(); session.store?.unlockRememberedKDBX() } } }
+    private func initializeStore(restore: Bool = false) { if session.vault.unlocked { let starting = session.store == nil; session.start(); if starting || restore { session.store?.wireGuardWorkspace().runtime.activate(); session.store?.unlockRememberedKDBX() } } }
 }
 
 struct HubCommands: Commands {
@@ -651,7 +715,7 @@ struct HubCommands: Commands {
                 Button("Массовое редактирование…") { store.showBatchEditor() }.disabled((session.store?.batchEntries.count ?? 0) < 2)
                 Button("Обновить список") { store.reload() }.keyboardShortcut("r", modifiers: .command)
                 Button("Создать SSH-ключ…") { store.generatingKey = true }.keyboardShortcut("k", modifiers: [.command, .shift])
-                Button("Показать конфиг в Finder") { store.openConfig() }.keyboardShortcut("o", modifiers: .command)
+                Button("Показать файл базы в Finder") { store.openConfig() }.keyboardShortcut("o", modifiers: .command)
                 Divider()
                 Button("Импорт записей…") { store.chooseImport() }
                 Button("Экспорт всех записей…") { store.export(entries: store.ordered) }.disabled(session.store?.aliases.isEmpty != false)
@@ -670,7 +734,7 @@ struct HubCommands: Commands {
         CommandGroup(replacing: .appSettings) {
             Group {
                 Button("Настройки…") { store.showingSettings = true }.keyboardShortcut(",", modifiers: .command)
-                Button("Заблокировать SSH Hub", systemImage: "lock") { store.lockApplication() }.keyboardShortcut("l", modifiers: [.command, .control]).disabled(!access.enabled)
+                Button("Заблокировать SSH Hub", systemImage: "lock") { store.lockApplication() }.keyboardShortcut("l", modifiers: [.command, .control]).disabled(session.store == nil)
             }.disabled(access.locked || session.store == nil)
         }
         CommandGroup(after: .undoRedo) {
@@ -698,6 +762,7 @@ struct HubCommands: Commands {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static weak var storeForTermination: AliasStore?
     static weak var scannerForTermination: NmapModel?
+    func applicationWillTerminate(_ notification: Notification) { AppDelegate.storeForTermination?.portableVault.lock() }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         AppDelegate.scannerForTermination?.cancel()
@@ -814,8 +879,8 @@ struct MainView: View {
     @State private var quickAddress = ""
     @State private var quickKind: RecordKind = .ssh
     @State private var handledLaunchAction = false
-    @AppStorage(CustomMenuSurface.toolbar.key) private var toolbarData = Data()
-    @AppStorage(CustomMenuSurface.tools.key) private var toolsData = Data()
+    @AppStorage(CustomMenuSurface.toolbar.key, store: HubPreferences.shared) private var toolbarData = Data()
+    @AppStorage(CustomMenuSurface.tools.key, store: HubPreferences.shared) private var toolsData = Data()
     @State private var customizingToolbar = false
     @State private var toolbarWindowWidth: CGFloat = 960
     @State private var toolbarSidebarWidth: CGFloat = 280
@@ -1152,8 +1217,8 @@ struct AliasDetail: View {
     @EnvironmentObject var store: AliasStore
     let entry: SSHAlias
     @State private var customizingTiles = false
-    @AppStorage(RecordActionDefaults.key) private var globalTiles = Data()
-    @AppStorage(InterfaceDensity.key) private var densityValue = InterfaceDensity.normal.rawValue
+    @AppStorage(RecordActionDefaults.key, store: HubPreferences.shared) private var globalTiles = Data()
+    @AppStorage(InterfaceDensity.key, store: HubPreferences.shared) private var densityValue = InterfaceDensity.normal.rawValue
     private var density: InterfaceDensity { InterfaceDensity(rawValue: densityValue) ?? .normal }
     private var visibleActions: [RecordActionStyle] { RecordAction.layout(store.appearance(entry).actionTiles, global: RecordActionDefaults.decode(globalTiles), entry: entry).filter { !$0.hidden } }
     private var visibleTiles: [RecordActionStyle] { visibleActions.filter { $0.effectivePlacement == .tiles } }
@@ -1406,7 +1471,7 @@ struct CreateAliasView: View {
             }
             .sheet(isPresented: $generatingKey) {
                 GenerateKeyView(directory: store.config.sshDirectory) { url in
-                    draft.identity = url.path.replacingOccurrences(of: NSHomeDirectory() + "/", with: "~/")
+                    do { draft.identity = PortableSecretBridge.active ? try VaultSSHKeys.importFile(url) : url.path.replacingOccurrences(of: NSHomeDirectory() + "/", with: "~/") } catch { self.error = error.localizedDescription }
                     advanced = true
                 }
             }

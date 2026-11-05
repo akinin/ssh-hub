@@ -336,6 +336,7 @@ struct CommandLibraryRepository {
     let file: URL
     init(file: URL? = nil) { self.file = file ?? SavedCommandsRepository().root.deletingLastPathComponent().appendingPathComponent("CommandLibrary.json") }
     func load() throws -> [SavedConsoleCommand] {
+        if HubPrivateFiles.key(file) != nil { let values = try HubPrivateFiles.read(file, limit: 8_000_000).map { try JSONDecoder().decode([SavedConsoleCommand].self, from: $0) } ?? []; try CommandCatalog.validate(values); return values }
         guard FileManager.default.fileExists(atPath: file.path) else { return [] }
         guard try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0 <= 8_000_000 else { throw ConfigError.message("Библиотека больше 8 МБ.") }
         let commands = try JSONDecoder().decode([SavedConsoleCommand].self, from: Data(contentsOf: file))
@@ -345,6 +346,7 @@ struct CommandLibraryRepository {
         try CommandCatalog.validate(commands)
         let data = try JSONEncoder().encode(commands)
         guard data.count <= 8_000_000 else { throw ConfigError.message("Библиотека больше 8 МБ.") }
+        if HubPrivateFiles.key(file) != nil { try HubPrivateFiles.write(data, to: file); return }
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try data.write(to: file, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)

@@ -30,7 +30,7 @@ extension AliasStore {
         if let entry = aliases.first(where: { $0.localID == saved.record.id }) {
             setAppearance(saved.appearance, for: entry); setGroup(saved.group, for: entry)
             if saved.favorite { favorites.insert(entry.favoriteID) } else { favorites.remove(entry.favoriteID) }
-            UserDefaults.standard.set(Array(favorites), forKey: "favoriteAliases.v1")
+            HubPreferences.shared.set(Array(favorites), forKey: "favoriteAliases.v1")
             let members = Set(saved.profiles).intersection(Set(profiles.profiles.map(\.id)))
             profiles.membership[entry.favoriteID] = members.isEmpty ? [profiles.active] : members; persistProfiles()
             showDashboard(entry)

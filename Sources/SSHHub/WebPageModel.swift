@@ -142,11 +142,11 @@ import Network
             let fingerprint = SHA256.hash(data: SecCertificateCopyData(certificate) as Data).map { String(format: "%02X",$0) }.joined(separator: ":")
             let host = challenge.protectionSpace.host + ":" + String(challenge.protectionSpace.port)
             let key = "webCertificate.v1." + SHA256.hash(data: Data((entry.favoriteID + host).utf8)).map { String(format: "%02x",$0) }.joined()
-            if UserDefaults.standard.string(forKey: key) == fingerprint { completionHandler(.useCredential,URLCredential(trust: trust)); return }
+            if HubPreferences.shared.string(forKey: key) == fingerprint { completionHandler(.useCredential,URLCredential(trust: trust)); return }
             let alert = NSAlert(); alert.messageText = "Проверка сертификата веб-панели"
-            alert.informativeText = (UserDefaults.standard.string(forKey: key) == nil ? "Сертификат не подтверждён системой. Сверь SHA-256 с администратором.\n\n" : "Сертификат изменился. Сверь новый SHA-256 перед входом.\n\n") + host + "\n" + fingerprint
+            alert.informativeText = (HubPreferences.shared.string(forKey: key) == nil ? "Сертификат не подтверждён системой. Сверь SHA-256 с администратором.\n\n" : "Сертификат изменился. Сверь новый SHA-256 перед входом.\n\n") + host + "\n" + fingerprint
             alert.addButton(withTitle: "Доверять этому сертификату"); alert.addButton(withTitle: "Отмена")
-            if alert.runModal() == .alertFirstButtonReturn { UserDefaults.standard.set(fingerprint,forKey: key); completionHandler(.useCredential,URLCredential(trust: trust)) }
+            if alert.runModal() == .alertFirstButtonReturn { HubPreferences.shared.set(fingerprint,forKey: key); completionHandler(.useCredential,URLCredential(trust: trust)) }
             else { completionHandler(.cancelAuthenticationChallenge,nil) }
             return
         }

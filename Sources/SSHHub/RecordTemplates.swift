@@ -5,8 +5,12 @@ import SwiftUI
     @Published private(set) var custom: [RecordTemplate] = []
     private var file: URL { DocumentationRepository().root.deletingLastPathComponent().appendingPathComponent("Templates.json") }
     var all: [RecordTemplate] { RecordTemplate.builtins + custom }
-    init() {
-        if let data = try? Data(contentsOf: file), data.count <= 8_000_000,
+    init() { reload() }
+    func clearForDatabaseLock() { custom = [] }
+    func reload() {
+        custom = []
+        let source = HubPrivateFiles.key(file) != nil ? try? HubPrivateFiles.read(file, limit: 8_000_000) : try? Data(contentsOf: file)
+        if let data = source, data.count <= 8_000_000,
            let values = try? JSONDecoder().decode([RecordTemplate].self, from: data), values.count <= 100,
            Set(values.map(\.id)).count == values.count, values.allSatisfy({ $0.validation == nil }) { custom = values }
     }
@@ -21,6 +25,7 @@ import SwiftUI
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let data = try JSONEncoder().encode(values)
         guard data.count <= 8_000_000 else { throw ConfigError.message("Шаблоны занимают больше 8 МБ.") }
+        if HubPrivateFiles.key(file) != nil { try HubPrivateFiles.write(data, to: file); custom = values; return }
         try data.write(to: file, options: .atomic); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         custom = values
     }

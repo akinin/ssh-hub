@@ -143,11 +143,11 @@ final class DesktopFrameDelivery: @unchecked Sendable {
     }
     private func trust(_ certificate: String) -> Bool {
         let key = "rdpCertificate.v1." + SHA256.hash(data: Data((entry.favoriteID + entry.host + entry.port).utf8)).map { String(format: "%02x", $0) }.joined()
-        if UserDefaults.standard.string(forKey: key) == certificate { return true }
+        if HubPreferences.shared.string(forKey: key) == certificate { return true }
         let alert = NSAlert(); alert.messageText = "Проверка сертификата RDP"
-        alert.informativeText = (UserDefaults.standard.string(forKey: key) == nil ? "Сертификат не подтверждён доверенным центром. Сверь отпечаток с администратором сервера.\n\n" : "Сертификат сервера изменился. Сверь новый отпечаток перед подключением.\n\n") + certificate
+        alert.informativeText = (HubPreferences.shared.string(forKey: key) == nil ? "Сертификат не подтверждён доверенным центром. Сверь отпечаток с администратором сервера.\n\n" : "Сертификат сервера изменился. Сверь новый отпечаток перед подключением.\n\n") + certificate
         alert.addButton(withTitle: "Доверять этому сертификату"); alert.addButton(withTitle: "Отмена")
-        if alert.runModal() == .alertFirstButtonReturn { UserDefaults.standard.set(certificate, forKey: key); return true }; return false
+        if alert.runModal() == .alertFirstButtonReturn { HubPreferences.shared.set(certificate, forKey: key); return true }; return false
     }
     private func update(_ w: Int, _ h: Int, _ data: Data) {
         guard w > 0, h > 0, data.count == w * h * 4, let provider = CGDataProvider(data: data as CFData) else { return }

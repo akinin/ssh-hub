@@ -25,8 +25,8 @@ import AppKit
     func checkAutomatically() {
         guard !started else { return }; started = true
         if error != nil { presented = true; return }
-        guard UserDefaults.standard.object(forKey: "checkUpdatesOnLaunch.v1") as? Bool ?? true,
-              Date().timeIntervalSince1970 - UserDefaults.standard.double(forKey: "lastAutomaticUpdateCheck.v1") > 86_400 else { return }
+        guard HubPreferences.shared.object(forKey: "checkUpdatesOnLaunch.v1") as? Bool ?? true,
+              Date().timeIntervalSince1970 - HubPreferences.shared.double(forKey: "lastAutomaticUpdateCheck.v1") > 86_400 else { return }
         check(manual: false)
     }
     func check(manual: Bool = true) {
@@ -39,7 +39,7 @@ import AppKit
                 let release = try await UpdateTransport.latestRelease(installed: installed)
                 try Task.checkCancellation()
                 available = release; message = release.map { "Доступна версия " + $0.version.string } ?? "Новых версий нет. Установлена " + installed + "."
-                UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "lastAutomaticUpdateCheck.v1")
+                HubPreferences.shared.set(Date().timeIntervalSince1970, forKey: "lastAutomaticUpdateCheck.v1")
             } catch is CancellationError { message = "Проверка отменена." }
             catch { if Task.isCancelled { message = "Проверка отменена." } else { if manual { self.error = error.localizedDescription }; message = "Не удалось проверить обновления." } }
         }

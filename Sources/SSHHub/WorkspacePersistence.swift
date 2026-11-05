@@ -24,11 +24,11 @@ extension AliasStore {
         let snapshot = WorkspaceSnapshot(layout: workspace, fraction: splitFraction, pages: pages,
             consoles: ConsoleStore.shared.sessions.map { WorkspaceConsoleSnapshot(id: $0.id, key: $0.entry.favoriteID, title: $0.title, zoom: $0.zoom) },
             windows: detachedWindows.map { WorkspaceWindowSnapshot(tab: $0.key, frame: $0.value.window.map { NSStringFromRect($0.frame) } ?? "") }, paths: paths, tabStyles: tabStyles)
-        if let data = try? JSONEncoder().encode(snapshot) { UserDefaults.standard.set(data, forKey: workspaceKey) }
+        if let data = try? JSONEncoder().encode(snapshot) { HubPreferences.shared.set(data, forKey: workspaceKey) }
     }
     func restoreWorkspace() {
-        guard UserDefaults.standard.object(forKey: "restoreWorkspace.v1") as? Bool != false,
-              let data = UserDefaults.standard.data(forKey: workspaceKey), data.count <= 2_000_000,
+        guard HubPreferences.shared.object(forKey: "restoreWorkspace.v1") as? Bool != false,
+              let data = HubPreferences.shared.data(forKey: workspaceKey), data.count <= 2_000_000,
               let snapshot = try? JSONDecoder().decode(WorkspaceSnapshot.self, from: data), snapshot.version == 1,
               snapshot.pages.count + snapshot.consoles.count <= 150 else { return }
         tabStyles = (snapshot.tabStyles ?? [:]).filter { WorkspaceTab(dragToken: $0.key) != nil && $0.value.valid }
@@ -119,7 +119,7 @@ extension AliasStore {
     }
     func removeDetached(_ tab: WorkspaceTab) {
         guard let controller = detachedWindows.removeValue(forKey: tab) else { return }
-        detachedTabs.remove(tab); controller.returnOnClose = false; controller.close(); saveWorkspace()
+        detachedTabs.remove(tab); controller.returnOnClose = false; controller.close(); controller.window?.contentViewController = nil; saveWorkspace()
     }
     func returnToWorkspace(_ tab: WorkspaceTab) {
         removeDetached(tab); workspace.insert(tab, in: .primary); syncWorkspaceSelection()

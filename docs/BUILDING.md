@@ -64,10 +64,10 @@ python3 Tests/UniversalBuildTests.py '/private/tmp/ssh-hub-build/SSH Hub.app'
 
 ## Локальная база и облако
 
-`Tests/Vault` — SwiftPM-тесты шифрования SQLite, переноса с внедрёнными readers, двух устройств, конфликтов и offline-повторов. Для проверки без пользовательского Keychain:
+`Tests/Vault` — SwiftPM-тесты шифрования SQLite, обязательного открытия базы, блокировки и очистки рабочего пространства, Touch ID с тестовым адаптером, переноса SSH-ключей, AppStorage, восстановления архивов, двух устройств, конфликтов и offline-повторов. Для проверки без пользовательского Keychain:
 
 ```sh
-swift test --filter PortableVaultTests
+swift test --filter 'PortableVaultTests|MandatoryVaultTests'
 ```
 
 Все тестовые профили используют собственный временный Application Support и fake AppAccess storage. `CloudIntegrationTests` требует явно переданного файла собственной временной qa-учётной записи, иначе пропускается. `VaultRenderingTests` включается через `SSH_HUB_RENDER_VAULT_QA=1` и рисует только собственные временные формы без показа пользовательских окон. Развёртывание и Python-тесты сервера описаны в [SyncServer/README.md](../SyncServer/README.md).

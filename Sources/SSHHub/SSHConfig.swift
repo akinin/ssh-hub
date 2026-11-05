@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 // Central filesystem location, with an explicit owned-root injection for QA.
 // Production keeps the existing Application Support paths unchanged.
@@ -14,17 +15,61 @@ enum HubPaths {
     }
 }
 
+// All application preferences use the open database. Only the selected database
+// URL and biometric availability are device bootstrap state, never record data.
+final class HubPreferences: UserDefaults, @unchecked Sendable {
+    static let shared = HubPreferences(suiteName: "com.olshaniki.sshhub.database-preferences")!
+    private let valueLock = NSRecursiveLock()
+    private var registered: [String: Any] = [:]
+    private var transient: [String: Any] = [:]
+    var legacyImport = false
+    override func register(defaults registrationDictionary: [String: Any]) { valueLock.lock(); defer { valueLock.unlock() }; registered.merge(registrationDictionary, uniquingKeysWith: { _, new in new }) }
+    override func object(forKey key: String) -> Any? {
+        valueLock.lock(); defer { valueLock.unlock() }
+        if PortableSecretBridge.active {
+            if let data = try? PortableSecretBridge.read("preferences", key), let value = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) { return value }
+            return registered[key]
+        }
+        return transient[key] ?? (legacyImport ? UserDefaults.standard.object(forKey: key) : nil) ?? registered[key]
+    }
+    override func set(_ value: Any?, forKey key: String) {
+        if !PortableSecretBridge.active { valueLock.lock(); transient[key] = value; valueLock.unlock(); return }
+        do {
+            let data = try value.map { try PropertyListSerialization.data(fromPropertyList: $0, format: .binary, options: 0) }
+            willChangeValue(forKey: key)
+            defer { didChangeValue(forKey: key) }
+            try PortableSecretBridge.write("preferences", key, data)
+            NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: self)
+        } catch { NotificationCenter.default.post(name: Notification.Name("SSHHubDatabaseWriteFailed"), object: nil, userInfo: ["message": error.localizedDescription]) }
+    }
+    override func removeObject(forKey key: String) { set(nil, forKey: key) }
+    override func data(forKey key: String) -> Data? { object(forKey: key) as? Data }
+    override func string(forKey key: String) -> String? { object(forKey: key) as? String }
+    override func array(forKey key: String) -> [Any]? { object(forKey: key) as? [Any] }
+    override func stringArray(forKey key: String) -> [String]? { object(forKey: key) as? [String] }
+    override func dictionary(forKey key: String) -> [String: Any]? { object(forKey: key) as? [String: Any] }
+    override func bool(forKey key: String) -> Bool { (object(forKey: key) as? NSNumber)?.boolValue ?? false }
+    override func integer(forKey key: String) -> Int { (object(forKey: key) as? NSNumber)?.intValue ?? 0 }
+    override func double(forKey key: String) -> Double { (object(forKey: key) as? NSNumber)?.doubleValue ?? 0 }
+    override func float(forKey key: String) -> Float { (object(forKey: key) as? NSNumber)?.floatValue ?? 0 }
+    override func set(_ value: Bool, forKey key: String) { set(NSNumber(value: value) as Any, forKey: key) }
+    override func set(_ value: Int, forKey key: String) { set(NSNumber(value: value) as Any, forKey: key) }
+    override func set(_ value: Double, forKey key: String) { set(NSNumber(value: value) as Any, forKey: key) }
+    override func set(_ value: Float, forKey key: String) { set(NSNumber(value: value) as Any, forKey: key) }
+}
+
 // Installed only for an explicitly created portable vault. Missing/locked vault
 // is a hard failure, never an implicit fallback to stale Keychain credentials.
 enum PortableSecretBridge {
     private static let mutex = NSLock()
     private static var reader: ((String, String) throws -> Data?)?
     private static var writer: ((String, String, Data?) throws -> Void)?
+    private static var listing: ((String, String) throws -> [String])?
     private static var transaction: (((() throws -> Void)) throws -> Void)?
     private static var materializer: ((String, String, String) throws -> URL)?
     static var active: Bool { mutex.lock(); defer { mutex.unlock() }; return reader != nil }
-    static func install(read: ((String, String) throws -> Data?)?, write: ((String, String, Data?) throws -> Void)?, materialize: ((String, String, String) throws -> URL)? = nil, atomic: (((() throws -> Void)) throws -> Void)? = nil) {
-        mutex.lock(); defer { mutex.unlock() }; reader = read; writer = write; materializer = materialize; transaction = atomic
+    static func install(read: ((String, String) throws -> Data?)?, write: ((String, String, Data?) throws -> Void)?, materialize: ((String, String, String) throws -> URL)? = nil, atomic: (((() throws -> Void)) throws -> Void)? = nil, list: ((String, String) throws -> [String])? = nil) {
+        mutex.lock(); defer { mutex.unlock() }; reader = read; writer = write; materializer = materialize; transaction = atomic; listing = list
     }
     static func read(_ service: String, _ account: String) throws -> Data? {
         mutex.lock(); let read = reader; mutex.unlock(); return try read?(service, account)
@@ -36,12 +81,124 @@ enum PortableSecretBridge {
         mutex.lock(); let perform = transaction; mutex.unlock()
         if let perform { try perform(body) } else { try body() }
     }
+    static func identity(_ value: String) -> String {
+        let prefix = "/__ssh_hub_key__/"
+        guard active else { return value.hasPrefix(prefix) ? "/nonexistent/closed-ssh-hub-key" : value }
+        var id = String(value.dropFirst(prefix.count))
+        if !value.hasPrefix(prefix) {
+            guard let data = try? read("ssh-key-origin", (value as NSString).expandingTildeInPath), let mapped = String(data: data, encoding: .utf8) else { return "/nonexistent/import-ssh-key-into-database" }; id = mapped
+        }
+        let publicKey = id.hasSuffix(".pub"); if publicKey { id = String(id.dropLast(4)) }
+        guard id.count == 64, id.allSatisfy({ "0123456789abcdef".contains($0) }) else { return "/nonexistent/missing-ssh-hub-key" }
+        return file("ssh-key", id, publicKey ? "identity.pub" : "identity").path
+    }
+    static func names(_ service: String, prefix: String = "") throws -> [String] {
+        mutex.lock(); let list = listing; mutex.unlock(); return try list?(service, prefix) ?? []
+    }
     static func file(_ service: String, _ account: String, _ name: String) -> URL {
         mutex.lock(); let make = materializer; mutex.unlock()
         return (try? make?(service, account, name)) ?? URL(fileURLWithPath: "/nonexistent/locked-ssh-hub-material")
     }
 }
+// Application-owned secret services are stored in the selected encrypted database.
+// The biometric database-unlock item and the optional legacy app verifier are
+// intentionally handled by their own Keychain adapters.
+enum HubSecretItems {
+    private static func fields(_ query: CFDictionary) -> (String, String)? {
+        guard PortableSecretBridge.active, let q = query as? [String: Any], let service = q[kSecAttrService as String] as? String,
+              let account = q[kSecAttrAccount as String] as? String else { return nil }
+        return ("secret/" + service, account)
+    }
+    static func copyMatching(_ query: CFDictionary, _ result: UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus {
+        guard let (service, account) = fields(query) else { return SecItemCopyMatching(query, result) }
+        do {
+            guard let data = try PortableSecretBridge.read(service, account) else { return errSecItemNotFound }
+            let q = query as NSDictionary
+            if (q[kSecReturnData] as? Bool) == true { result?.pointee = data as CFData }
+            else { result?.pointee = [kSecAttrAccount: account] as CFDictionary }
+            return errSecSuccess
+        } catch { return errSecInteractionNotAllowed }
+    }
+    static func update(_ query: CFDictionary, _ attributes: CFDictionary) -> OSStatus {
+        guard let (service, account) = fields(query) else { return SecItemUpdate(query, attributes) }
+        do {
+            guard try PortableSecretBridge.read(service, account) != nil else { return errSecItemNotFound }
+            guard let data = (attributes as NSDictionary)[kSecValueData] as? Data else { return errSecParam }
+            try PortableSecretBridge.write(service, account, data); return errSecSuccess
+        } catch { return errSecInteractionNotAllowed }
+    }
+    static func add(_ query: CFDictionary, _ result: UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus {
+        guard let (service, account) = fields(query) else { return SecItemAdd(query, result) }
+        do {
+            guard try PortableSecretBridge.read(service, account) == nil else { return errSecDuplicateItem }
+            guard let data = (query as NSDictionary)[kSecValueData] as? Data else { return errSecParam }
+            try PortableSecretBridge.write(service, account, data); return errSecSuccess
+        } catch { return errSecInteractionNotAllowed }
+    }
+    static func delete(_ query: CFDictionary) -> OSStatus {
+        guard let (service, account) = fields(query) else { return SecItemDelete(query) }
+        do { try PortableSecretBridge.write(service, account, nil); return errSecSuccess }
+        catch { return errSecInteractionNotAllowed }
+    }
+}
+
+// Virtual application files are encrypted database objects. Explicit external
+// imports/exports and system SSH files keep their separately authorized paths.
+enum HubPrivateFiles {
+    static var root: URL { HubPaths.applicationSupport.appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases") }
+    static func key(_ url: URL) -> String? {
+        let prefix = root.standardizedFileURL.path + "/", path = url.standardizedFileURL.path
+        guard PortableSecretBridge.active, path.hasPrefix(prefix) else { return nil }
+        return String(path.dropFirst(prefix.count))
+    }
+    static func read(_ url: URL, limit: Int) throws -> Data? {
+        guard let key = key(url) else { return nil }
+        guard let data = try PortableSecretBridge.read("private-file", key) else { return nil }
+        guard data.count <= limit else { throw ConfigError.message("Файл в базе превышает допустимый размер.") }; return data
+    }
+    static func write(_ data: Data, to url: URL, overwrite: Bool = true) throws {
+        guard let key = key(url) else { throw ConfigError.message("Некорректный путь данных базы.") }
+        try PortableSecretBridge.atomic {
+            if !overwrite, try PortableSecretBridge.read("private-file", key) != nil { throw ConfigError.message("Данные уже существуют.") }
+            try PortableSecretBridge.write("private-file", key, data)
+        }
+    }
+    static func names(in folder: URL) throws -> [URL] {
+        guard let prefix = key(folder) else { throw VaultFileError.unavailable }
+        return try PortableSecretBridge.names("private-file", prefix: prefix + "/").map { root.appendingPathComponent($0) }
+    }
+    static func remove(_ file: URL) throws {
+        guard let key = key(file) else { throw VaultFileError.unavailable }; try PortableSecretBridge.write("private-file", key, nil)
+    }
+    enum VaultFileError: Error { case unavailable }
+}
 import Darwin
+
+// Imported CA certificates are canonical database objects; the path returned to
+// curl is a short-lived runtime copy owned by the open database.
+enum VaultFileAssets {
+    static let prefix = "/__ssh_hub_asset__/"
+    static func store(_ data: Data) throws -> String {
+        guard data.count <= 1_048_576, !data.isEmpty,
+              String(data: data, encoding: .utf8)?.contains("-----BEGIN CERTIFICATE-----") == true else { throw ConfigError.message("Выбери CA-сертификат в формате PEM, до 1 МБ.") }
+        let id = UUID().uuidString.lowercased()
+        try PortableSecretBridge.write("file-asset", id, data)
+        return prefix + id
+    }
+    static func importFile(_ url: URL) throws -> String {
+        let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { throw ConfigError.message("Не удалось прочитать CA-сертификат.") }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true); defer { try? handle.close() }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG, (1...1_048_576).contains(info.st_size) else { throw ConfigError.message("Выбери обычный CA-сертификат до 1 МБ.") }
+        return try store(handle.read(upToCount: 1_048_577) ?? Data())
+    }
+    static func runtime(_ value: String) -> String {
+        guard PortableSecretBridge.active else { return value }
+        guard value.hasPrefix(prefix), let id = UUID(uuidString: String(value.dropFirst(prefix.count))) else { return "/nonexistent/import-ca-into-database" }
+        return PortableSecretBridge.file("file-asset", id.uuidString.lowercased(), "ca.pem").path
+    }
+}
 
 struct SSHOption: Identifiable, Equatable, Codable {
     let key: String
@@ -295,9 +452,13 @@ struct AliasDraft {
             if manageIdentitiesOnly { result += "    IdentitiesOnly yes\n" }
         }
         if manageAuthentication { for (key, value) in authentication.options { result += "    \(key) \(value)\n" } }
-        if !jump.isEmpty { result += "    ProxyJump \(SSHConfig.configQuote(jump))\n" }
+        if !jump.isEmpty { result += "    ProxyJump \(jump)\n" }
         result += rawOptions.map { "    " + $0 + "\n" }.joined()
-        return result
+        return result.components(separatedBy: "\n").map { line in
+            let parts = SSHConfig.tokens(line)
+            guard parts.first?.lowercased() == "identityfile", let value = parts.dropFirst().first, PortableSecretBridge.active || value.hasPrefix("/__ssh_hub_key__/") else { return line }
+            return "    IdentityFile " + SSHConfig.configQuote(PortableSecretBridge.identity(value))
+        }.joined(separator: "\n")
     }
 }
 
@@ -325,7 +486,7 @@ final class SSHConfig {
         return "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
     static func configQuote(_ text: String) -> String {
-        "\"" + text.replacingOccurrences(of: "\\", with: "\\\\")
+        return "\"" + text.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
 

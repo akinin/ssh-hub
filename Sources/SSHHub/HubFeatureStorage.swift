@@ -27,6 +27,10 @@ struct HubFeatureFile {
         }
     }
     func load<T: Decodable>(_ type: T.Type, fallback: @autoclosure () -> T) throws -> T {
+        if HubPrivateFiles.key(url) != nil {
+            guard validFeature, let data = try HubPrivateFiles.read(url, limit: limit) else { return fallback() }
+            return try JSONDecoder().decode(type, from: data)
+        }
         try checkFolders()
         let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
         if fd < 0, errno == ENOENT { return fallback() }
@@ -39,9 +43,10 @@ struct HubFeatureFile {
         return try JSONDecoder().decode(type, from: data)
     }
     func write<T: Encodable>(_ value: T) throws {
-        try checkFolders()
         let data = try JSONEncoder().encode(value)
-        guard data.count <= limit else { throw ConfigError.message("Настройки превышают допустимый размер.") }
+        guard validFeature, data.count <= limit else { throw ConfigError.message("Настройки превышают допустимый размер.") }
+        if HubPrivateFiles.key(url) != nil { try HubPrivateFiles.write(data, to: url); return }
+        try checkFolders()
         let root = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try checkFolders()

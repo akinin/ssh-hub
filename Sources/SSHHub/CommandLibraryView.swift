@@ -6,7 +6,9 @@ import SwiftUI
     @Published private(set) var custom: [SavedConsoleCommand] = []
     @Published private(set) var error: String?
     var all: [SavedConsoleCommand] { CommandCatalog.presets + custom }
-    init() { do { custom = try repository.load() } catch { self.error = error.localizedDescription } }
+    init() { reload() }
+    func clearForDatabaseLock() { custom = []; error = nil }
+    func reload() { custom = []; do { custom = try repository.load(); error = nil } catch { self.error = error.localizedDescription } }
     func replace(_ commands: [SavedConsoleCommand]) throws {
         try repository.write(commands); custom = commands; error = nil
     }

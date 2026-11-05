@@ -76,11 +76,11 @@ enum TopologyRouterKeyStore {
     }
     static func hasPassword(profileID: UUID, settings: TopologyRouterSettings) -> Bool {
         guard var item = try? query(profileID: profileID, settings: settings) else { return false }
-        item[kSecReturnAttributes as String] = true; return SecItemCopyMatching(item as CFDictionary, nil) == errSecSuccess
+        item[kSecReturnAttributes as String] = true; return HubSecretItems.copyMatching(item as CFDictionary, nil) == errSecSuccess
     }
     static func read(profileID: UUID, settings: TopologyRouterSettings) throws -> String? {
         var item = try query(profileID: profileID, settings: settings); item[kSecReturnData as String] = true
-        var value: CFTypeRef?; let status = SecItemCopyMatching(item as CFDictionary, &value)
+        var value: CFTypeRef?; let status = HubSecretItems.copyMatching(item as CFDictionary, &value)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = value as? Data, let password = String(data: data, encoding: .utf8) else { throw keychainError("прочитать") }
         try TopologyRouterAPIClient.validatePassword(password); return password
@@ -89,17 +89,17 @@ enum TopologyRouterKeyStore {
         try TopologyRouterAPIClient.validatePassword(password)
         let item = try query(profileID: profileID, settings: settings)
         let update = [kSecValueData as String: Data(password.utf8)]
-        var status = SecItemUpdate(item as CFDictionary, update as CFDictionary)
+        var status = HubSecretItems.update(item as CFDictionary, update as CFDictionary)
         if status == errSecItemNotFound {
             var added = item; added[kSecValueData as String] = Data(password.utf8)
             added[kSecAttrLabel as String] = "SSH Hub · " + settings.provider.title + " API"
             added[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-            status = SecItemAdd(added as CFDictionary, nil)
+            status = HubSecretItems.add(added as CFDictionary, nil)
         }
         guard status == errSecSuccess else { throw keychainError("сохранить") }
     }
     static func remove(profileID: UUID, settings: TopologyRouterSettings) throws {
-        let status = SecItemDelete(try query(profileID: profileID, settings: settings) as CFDictionary)
+        let status = HubSecretItems.delete(try query(profileID: profileID, settings: settings) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw keychainError("удалить") }
     }
     private static func keychainError(_ operation: String) -> NSError {

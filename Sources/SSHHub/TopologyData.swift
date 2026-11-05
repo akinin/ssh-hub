@@ -994,6 +994,11 @@ struct TopologyRepository {
     }
     func load(_ profileID: UUID, mapID: UUID? = nil) throws -> TopologyDocument {
         let id = mapID ?? profileID
+        if HubPrivateFiles.key(url(for: id)) != nil {
+            guard let data = try HubPrivateFiles.read(url(for: id), limit: Self.maximumFileBytes) else { guard id == profileID else { throw TopologyError.invalidFile }; return TopologyDocument(profileID: profileID) }
+            let document = try JSONDecoder().decode(TopologyDocument.self, from: data)
+            guard document.id == id, document.profileID == profileID else { throw TopologyError.profileMismatch }; try Self.validate(document); return document
+        }
         // Only the historical primary descriptor may represent a new blank
         // map. Named maps are persisted before opening: a missing named file
         // is a deletion/error, never permission to resurrect it through Save.
@@ -1008,6 +1013,10 @@ struct TopologyRepository {
         guard document.profileID == profileID else { throw TopologyError.profileMismatch }; return document
     }
     func loadMap(_ mapID: UUID) throws -> TopologyDocument {
+        if HubPrivateFiles.key(url(for: mapID)) != nil {
+            guard let data = try HubPrivateFiles.read(url(for: mapID), limit: Self.maximumFileBytes) else { return TopologyDocument(profileID: mapID) }
+            let document = try JSONDecoder().decode(TopologyDocument.self, from: data); guard document.id == mapID else { throw TopologyError.profileMismatch }; try Self.validate(document); return document
+        }
         guard let fd = try directory(create: false) else { return TopologyDocument(profileID: mapID) }; defer { close(fd) }
         return try loadMap(mapID, directory: fd) ?? TopologyDocument(profileID: mapID)
     }
@@ -1015,6 +1024,11 @@ struct TopologyRepository {
         try Self.validate(document)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(document); guard data.count <= Self.maximumFileBytes else { throw TopologyError.invalidData }
+        if HubPrivateFiles.key(url(for: document.id)) != nil {
+            let exists = try HubPrivateFiles.read(url(for: document.id), limit: Self.maximumFileBytes) != nil
+            if !exists { let maps = try list(); guard maps.count < Self.maximumMaps, maps.filter({ $0.profileID == document.profileID }).count < Self.maximumMapsPerProfile else { throw TopologyError.mapLimit } }
+            try HubPrivateFiles.write(data, to: url(for: document.id), overwrite: overwrite); return
+        }
         guard let rootFD = try directory(create: true) else { throw TopologyError.invalidFile }; defer { close(rootFD) }
         let name = url(for: document.id).lastPathComponent, staging = ".tmp-" + UUID().uuidString
         var existing = stat()
@@ -1043,6 +1057,10 @@ struct TopologyRepository {
         _ = fsync(rootFD)
     }
     func list(profileID: UUID? = nil) throws -> [TopologyDocument] {
+        if HubPrivateFiles.key(root) != nil {
+            let maps = try HubPrivateFiles.names(in: root).filter { $0.deletingLastPathComponent() == root && $0.pathExtension == "json" }.compactMap { UUID(uuidString: $0.deletingPathExtension().lastPathComponent) }.map { try loadMap($0) }
+            return maps.filter { profileID == nil || $0.profileID == profileID }
+        }
         guard let fd = try directory(create: false) else { return [] }; defer { close(fd) }
         guard let stream = fdopendir(dup(fd)) else { throw TopologyError.invalidFile }; defer { closedir(stream) }
         var ids: [UUID] = []
@@ -1056,6 +1074,7 @@ struct TopologyRepository {
         return documents.filter { profileID == nil || $0.profileID == profileID }
     }
     func remove(_ profileID: UUID) throws {
+        if HubPrivateFiles.key(url(for: profileID)) != nil { try HubPrivateFiles.remove(url(for: profileID)); return }
         guard let fd = try directory(create: false) else { return }; defer { close(fd) }
         let name = url(for: profileID).lastPathComponent; var metadata = stat()
         guard fstatat(fd, name, &metadata, AT_SYMLINK_NOFOLLOW) == 0 else { if errno == ENOENT { return }; throw TopologyError.invalidFile }

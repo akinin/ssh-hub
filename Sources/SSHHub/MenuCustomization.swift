@@ -10,8 +10,8 @@ struct MenuCustomizationView: View {
     @State private var error: String?
     init(surface: CustomMenuSurface) {
         self.surface = surface
-        let data = UserDefaults.standard.data(forKey: surface.key) ?? Data()
-        _data = AppStorage(wrappedValue: Data(), surface.key)
+        let data = HubPreferences.shared.data(forKey: surface.key) ?? Data()
+        _data = AppStorage(wrappedValue: Data(), surface.key, store: HubPreferences.shared)
         _initial = State(initialValue: data); _draft = State(initialValue: CustomMenuLayout.items(data, for: surface))
     }
     var body: some View {

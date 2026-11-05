@@ -296,7 +296,7 @@ final class SharedCredentialRuntime: @unchecked Sendable {
             let directory = repository.directory.appendingPathComponent("Runtime", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             let file = directory.appendingPathComponent(UUID().uuidString + ".conf")
-            let text = "Host " + SSHConfig.configQuote(originalEntry.sshTarget) + "\n" + overrides.map { "    \($0.key) \(SSHConfig.configQuote($0.value))\n" }.joined() + "\nHost *\nInclude " + SSHConfig.configQuote(original.path) + "\n"
+            let text = "Host " + SSHConfig.configQuote(originalEntry.sshTarget) + "\n" + overrides.map { "    \($0.key) \(SSHConfig.configQuote($0.key.lowercased() == "identityfile" ? PortableSecretBridge.identity($0.value) : $0.value))\n" }.joined() + "\nHost *\nInclude " + SSHConfig.configQuote(original.path) + "\n"
             try Data(text.utf8).write(to: file, options: .atomic); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
             wrappers.insert(file); result.connectionFile = file
         }

@@ -24,7 +24,7 @@ struct KDBXVaultsView: View {
         VStack(alignment: .leading, spacing: 16) {
             if !embedded { Label("Базы KeePass", systemImage: "lock.rectangle.stack").font(.title2.bold()) }
             if let profileName { Text("Профиль: " + profileName).font(.callout).foregroundStyle(.secondary) }
-            Text("Подключи базу KeePassXC или KeePass. KDBX 4.0 и 4.1 можно редактировать; KDBX 3.1 доступен для чтения. Для совместной разблокировки можно сохранить ключи базы в Связке ключей macOS.").font(.callout).foregroundStyle(.secondary)
+            Text("Подключи базу KeePassXC или KeePass. KDBX 4.0 и 4.1 можно редактировать; KDBX 3.1 доступен для чтения. Для совместной разблокировки можно сохранить ключи внешней базы в зашифрованной базе SSH Hub.").font(.callout).foregroundStyle(.secondary)
             if vault.isLocked {
                 HStack {
                     Label("Учётные данные заблокированы", systemImage: "lock.shield")
@@ -102,7 +102,7 @@ struct KDBXUnlockView: View {
                 if keyFile != nil { Button { keyFile = nil } label: { Image(systemName: "xmark") }.help("Убрать ключевой файл") }
             }
             Toggle("Разблокировать вместе с SSH Hub", isOn: $remember).toggleStyle(.checkbox).disabled(!workspace.allowsRemembering)
-            Text(workspace.allowsRemembering ? "Ключи базы сохранятся в Связке ключей только на этом Mac. При входе по паролю приложения или Touch ID база откроется автоматически. Файл ключа должен оставаться доступным." : "Для совместной разблокировки сначала включи авторизацию SSH Hub в настройках. Без неё ключи базы не сохраняются.").font(.caption).foregroundStyle(.secondary)
+            Text(workspace.allowsRemembering ? "Ключи KeePass сохранятся в зашифрованной базе SSH Hub. После её разблокировки внешняя база KeePass откроется автоматически. Файл KeePass должен оставаться доступным." : "Для совместной разблокировки сначала включи авторизацию SSH Hub в настройках. Без неё ключи базы не сохраняются.").font(.caption).foregroundStyle(.secondary)
             if let error = workspace.error { Text(error).font(.caption).foregroundStyle(.red) }
             HStack {
                 if workspace.busy != nil { ProgressView().controlSize(.small); Text("Открываем базу…").font(.caption) }

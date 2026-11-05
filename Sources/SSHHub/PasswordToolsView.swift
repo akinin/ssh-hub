@@ -127,7 +127,7 @@ struct PasswordEntryView: View {
             if !text.isEmpty { PasswordStrengthView(assessment: PasswordTools.assess(text)) }
             else if let assessment { PasswordStrengthView(assessment: assessment) }
             if let savedPassword, text.isEmpty {
-                HStack { Text(PasswordTools.age(changedAt)); Button("Проверить надёжность") { do { if let value = try savedPassword() { assessment = PasswordTools.assess(value) } else { error = "Пароль не сохранён" } } catch { self.error = "Не удалось прочитать пароль из Связки ключей." } }.buttonStyle(.link) }.font(.caption).foregroundStyle(.secondary)
+                HStack { Text(PasswordTools.age(changedAt)); Button("Проверить надёжность") { do { if let value = try savedPassword() { assessment = PasswordTools.assess(value) } else { error = "Пароль не сохранён" } } catch { self.error = "Не удалось прочитать пароль из базы." } }.buttonStyle(.link) }.font(.caption).foregroundStyle(.secondary)
                 Text("Смена на сервере не отслеживается.").font(.caption2).foregroundStyle(.secondary)
             }
             if let error { Text(error).font(.caption).foregroundStyle(.red) }

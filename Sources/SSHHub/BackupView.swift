@@ -99,7 +99,7 @@ extension AliasStore {
                 let path = try BackupKeyPaths.expanded(path, entry: entry)
                 if path.lowercased() == "none" { return path }
                 if materials[path] == nil {
-                    let item = BackupPrivateKey(path: path, data: try PrivateMaterialFile.read(URL(fileURLWithPath: path), limit: 1_048_576))
+                    let item = BackupPrivateKey(path: path, data: try (VaultSSHKeys.identifier(path).map { try VaultSSHKeys.read($0).privateData } ?? PrivateMaterialFile.read(URL(fileURLWithPath: path), limit: 1_048_576)))
                     guard item.valid else { throw ConfigError.message("Выбранный IdentityFile не является переносимым приватным SSH-ключом.") }
                     materials[path] = item
                     guard materials.count <= 1000, materials.values.reduce(0, { $0 + $1.data.count }) <= 32_000_000 else { throw ConfigError.message("SSH-ключи превышают 32 МБ.") }
@@ -107,7 +107,7 @@ extension AliasStore {
                 return path
             }
             for index in backup.records.indices where sources[index].canSSH {
-                if BackupKeyPaths.values(backup.records[index].record).allSatisfy({ $0.isEmpty }) {
+                if !PortableSecretBridge.active && BackupKeyPaths.values(backup.records[index].record).allSatisfy({ $0.isEmpty }) {
                     let defaults = ["id_ed25519", "id_ecdsa", "id_rsa", "id_dsa"].map { NSHomeDirectory() + "/.ssh/" + $0 }.filter { FileManager.default.fileExists(atPath: $0) }
                     if let first = defaults.first { backup.records[index].record.identity = first; backup.records[index].record.extraOptions += defaults.dropFirst().map { SSHOption(key: "IdentityFile", value: $0) } }
                 }
@@ -185,7 +185,7 @@ extension AliasStore {
         profiles = restoredProfiles; persistProfiles()
         stopOperations(clear: true); _ = credentialVault(); reloadSearchMetadata()
         topologyModels.values.forEach { $0.entries = profileEntries; $0.reload() }
-        UserDefaults.standard.set(Array(favorites), forKey: "favoriteAliases.v1")
+        HubPreferences.shared.set(Array(favorites), forKey: "favoriteAliases.v1")
         notice = "Восстановлено записей: \(metadata.count), сетевых карт: \((backup.topologies ?? []).count). Существующие данные сохранены; совпадения добавлены отдельно."
     }
 }
@@ -208,7 +208,7 @@ struct BackupView: View {
         VStack(alignment: .leading, spacing: 16) {
             Label("Резервное копирование", systemImage: "externaldrive.badge.timemachine").font(.title2).bold()
             Text("Единый архив записей, логотипов, команд, папок, шаблонов, документации, вложений, сетевых карт, тегов, сценариев и настроек интеграций профилей. AES-256-GCM; ключ из пароля — PBKDF2-SHA256, 600 000 итераций. Пароль архива нигде не сохраняется.").font(.callout).foregroundStyle(.secondary)
-            Text("Пароли сохранятся в Связку ключей нового Mac, SSH-ключи — в приватную папку приложения. Используемые данные KeePass переносятся копиями. Конфигурации WireGuard и API-ключи переносятся вместе с привязками. После восстановления подключения запускаются вручную. Аппаратные и агентские SSH-ключи переносятся отдельно. Материалы — до 256 МБ.").font(.caption).foregroundStyle(.secondary)
+            Text("Пароли и SSH-ключи сохранятся в открытой зашифрованной базе. Используемые данные KeePass переносятся копиями. Конфигурации WireGuard и API-ключи переносятся вместе с привязками. После восстановления подключения запускаются вручную. Аппаратные и агентские SSH-ключи переносятся отдельно. Материалы — до 256 МБ.").font(.caption).foregroundStyle(.secondary)
             PasswordEntryView(prompt: "Пароль архива (не менее 8 символов)", text: $password, onGenerated: { confirmation = $0 }).textFieldStyle(.roundedBorder)
             if backup == nil {
                 Toggle("Включить пароли записей и общие учётные данные", isOn: $includePasswords).disabled(busy)

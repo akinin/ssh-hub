@@ -5,20 +5,20 @@ import ServiceManagement
 private enum AppSettingsSection: String, CaseIterable, Identifiable {
     case connections, appearance, wireGuard, keePass, workspace, vault, startup, updates, transfer, security
     var id: String { rawValue }
-    var title: String { switch self { case .vault: return "Хранилище и синхронизация"; case .appearance: return "Внешний вид"; case .wireGuard: return "WireGuard"; case .keePass: return "KeePass"; case .security: return "Авторизация"; case .connections: return "Подключения"; case .workspace: return "Рабочая область"; case .startup: return "Запуск"; case .updates: return "Обновления"; case .transfer: return "Перенос данных" } }
+    var title: String { switch self { case .vault: return "Синхронизация"; case .appearance: return "Внешний вид"; case .wireGuard: return "WireGuard"; case .keePass: return "KeePass"; case .security: return "Авторизация"; case .connections: return "Подключения"; case .workspace: return "Рабочая область"; case .startup: return "Запуск"; case .updates: return "Обновления"; case .transfer: return "Перенос данных" } }
     var icon: String { switch self { case .vault: return "externaldrive.badge.icloud"; case .appearance: return "paintbrush"; case .wireGuard: return "network.badge.shield.half.filled"; case .keePass: return "lock.rectangle.stack"; case .security: return "lock.shield"; case .connections: return "network"; case .workspace: return "rectangle.split.2x1"; case .startup: return "power"; case .updates: return "arrow.triangle.2.circlepath"; case .transfer: return "externaldrive" } }
 }
 
 struct AppSettingsView: View {
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) private var dismiss
-    @AppStorage(RecordSelectionDefaults.key) private var selectionColor = "gray"
-    @AppStorage(InterfaceDensity.key) private var density = InterfaceDensity.normal.rawValue
-    @AppStorage("consoleDestination.v1") private var consoleDestination = "embedded"
-    @AppStorage("restoreWorkspace.v1") private var restoreWorkspace = true
-    @AppStorage("terminalID") private var terminalID = "com.apple.Terminal"
-    @AppStorage("startInMenuBar") private var startInMenuBar = false
-    @AppStorage("checkUpdatesOnLaunch.v1") private var checkUpdates = true
+    @AppStorage(RecordSelectionDefaults.key, store: HubPreferences.shared) private var selectionColor = "gray"
+    @AppStorage(InterfaceDensity.key, store: HubPreferences.shared) private var density = InterfaceDensity.normal.rawValue
+    @AppStorage("consoleDestination.v1", store: HubPreferences.shared) private var consoleDestination = "embedded"
+    @AppStorage("restoreWorkspace.v1", store: HubPreferences.shared) private var restoreWorkspace = true
+    @AppStorage("terminalID", store: HubPreferences.shared) private var terminalID = "com.apple.Terminal"
+    @AppStorage("startInMenuBar", store: HubPreferences.shared) private var startInMenuBar = false
+    @AppStorage("checkUpdatesOnLaunch.v1", store: HubPreferences.shared) private var checkUpdates = true
     @ObservedObject private var updater = AppUpdater.shared
     @State private var loginEnabled = false
     @State private var requiresApproval = false
@@ -50,7 +50,7 @@ struct AppSettingsView: View {
                         switch selectedSection {
                         case .keePass, .wireGuard: EmptyView()
                         case .vault: VaultSettingsView(model: store.portableVault)
-                        case .security: AppAccessSettingsView()
+                        case .security: VaultAccessSettingsView(model: store.portableVault)
                         case .connections:
                             Section {
                                 Picker("Открывать SSH", selection: $consoleDestination) {

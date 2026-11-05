@@ -217,32 +217,32 @@ protocol KDBXUnlockStorage: AnyObject {
 final class KDBXUnlockKeychain: KDBXUnlockStorage {
     let scope: String
     init(scope: String) { self.scope = (Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases") + ":" + scope }
-    private func query(_ id: UUID, interactive: Bool = false) -> [String: Any] {
+    func query(_ id: UUID, interactive: Bool = false) -> [String: Any] {
         let context = LAContext(); context.interactionNotAllowed = !interactive
         return [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.olshaniki.sshhub.kdbx-unlock.v1", kSecAttrAccount as String: scope + ":" + id.uuidString.lowercased(), kSecUseAuthenticationContext as String: context]
     }
     func contains(_ id: UUID) throws -> Bool {
         var item = query(id); item[kSecReturnAttributes as String] = true
         var result: CFTypeRef?
-        let status = SecItemCopyMatching(item as CFDictionary, &result)
+        let status = HubSecretItems.copyMatching(item as CFDictionary, &result)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw SharedCredentialError.keychain }
         return status == errSecSuccess
     }
     func read(_ id: UUID) throws -> Data? {
         var item = query(id); item[kSecReturnData as String] = true
-        var result: CFTypeRef?; let status = SecItemCopyMatching(item as CFDictionary, &result)
+        var result: CFTypeRef?; let status = HubSecretItems.copyMatching(item as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = result as? Data, data.count <= 150_000 else { throw SharedCredentialError.keychain }; return data
     }
     func write(_ id: UUID, data: Data?) throws {
-        guard let data else { let status = SecItemDelete(query(id, interactive: true) as CFDictionary); guard status == errSecSuccess || status == errSecItemNotFound else { throw SharedCredentialError.keychain }; return }
+        guard let data else { let status = HubSecretItems.delete(query(id, interactive: true) as CFDictionary); guard status == errSecSuccess || status == errSecItemNotFound else { throw SharedCredentialError.keychain }; return }
         guard data.count <= 150_000 else { throw SharedCredentialError.keychain }
-        var status = SecItemUpdate(query(id, interactive: true) as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        var status = HubSecretItems.update(query(id, interactive: true) as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if status == errSecItemNotFound {
             var item = query(id, interactive: true); item[kSecValueData as String] = data
             item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
             item[kSecAttrLabel as String] = "SSH Hub · Разблокировка KeePass"
-            status = SecItemAdd(item as CFDictionary, nil)
+            status = HubSecretItems.add(item as CFDictionary, nil)
         }
         guard status == errSecSuccess else { throw SharedCredentialError.keychain }
     }

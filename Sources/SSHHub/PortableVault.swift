@@ -7,7 +7,7 @@ import Darwin
 enum VaultError: LocalizedError {
     case message(String)
     var errorDescription: String? { if case .message(let text) = self { return text }; return nil }
-    static let locked = Self.message("Хранилище заблокировано. Открой «Хранилище и синхронизация» и введи мастер-пароль.")
+    static let locked = Self.message("Хранилище заблокировано. Выбери базу и разблокируй её через Touch ID или мастер-паролем.")
 }
 
 enum VaultCrypto {
@@ -48,6 +48,8 @@ final class PortableVault: @unchecked Sendable {
     private var key: SymmetricKey?
     private let mutex = NSRecursiveLock()
     private var transactionDepth = 0
+    private var sizes: [String: Int] = [:]
+    private var totalSize = 0
     private(set) var header: VaultHeader
     var unlocked: Bool { mutex.lock(); defer { mutex.unlock() }; return key != nil }
     private struct Object: Codable { var name: String; var data: Data }
@@ -88,12 +90,22 @@ final class PortableVault: @unchecked Sendable {
         } catch { sqlite3_close(db); db = nil; if create { try? FileManager.default.removeItem(at: url) }; throw error }
     }
     deinit { sqlite3_close(db) }
-    func lock() { mutex.lock(); defer { mutex.unlock() }; key = nil }
+    func lock() { mutex.lock(); defer { mutex.unlock() }; key = nil; sizes = [:]; totalSize = 0 }
     func unlock(_ password: String) throws {
         mutex.lock(); defer { mutex.unlock() }
         let data = try VaultCrypto.open(header.wrapped, key: VaultCrypto.derive(password, salt: header.salt), aad: header.aad)
         guard data.count == 32 else { throw VaultError.message("Повреждён ключ хранилища.") }; key = SymmetricKey(data: data)
         // Authenticate every object before considering a migrated/imported DB usable.
+        do { _ = try all() } catch { key = nil; throw error }
+    }
+    var biometricAccount: String { header.id.uuidString.lowercased() + ":" + VaultCrypto.digest(Data(header.aad.utf8) + header.salt + header.wrapped) }
+    func biometricKey() throws -> Data {
+        mutex.lock(); defer { mutex.unlock() }; guard let key else { throw VaultError.locked }
+        return key.withUnsafeBytes { Data($0) }
+    }
+    func unlock(biometricKey data: Data) throws {
+        mutex.lock(); defer { mutex.unlock() }; guard data.count == 32 else { throw VaultError.locked }
+        key = SymmetricKey(data: data)
         do { _ = try all() } catch { key = nil; throw error }
     }
     func changePassword(_ password: String) throws {
@@ -116,10 +128,17 @@ final class PortableVault: @unchecked Sendable {
         mutex.lock(); defer { mutex.unlock() }; guard let key else { throw VaultError.locked }
         guard name.utf8.count <= 16384, (data?.count ?? 0) <= 350_000_052 else { throw VaultError.message("Объект хранилища слишком большой.") }
         let id = index(name, key: key)
+        let previous = sizes[name] ?? 0, next = totalSize - previous + (data?.count ?? 0)
+        guard next <= 450_000_000, data == nil || sizes[name] != nil || sizes.count < 20000 else { throw VaultError.message("База достигла допустимого объёма. Изменения не сохранены; существующие данные доступны.") }
         if let data {
             let sealed = try VaultCrypto.seal(JSONEncoder().encode(Object(name: name, data: data)), key: key, aad: header.aad + "/" + id)
             try execute("INSERT INTO objects VALUES(?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value", text: id, data: sealed)
         } else { try execute("DELETE FROM objects WHERE id=?", text: id) }
+        sizes[name] = data?.count; totalSize = next
+    }
+    func names() throws -> [String] {
+        mutex.lock(); defer { mutex.unlock() }; guard key != nil else { throw VaultError.locked }
+        return Array(sizes.keys)
     }
     func all() throws -> [String: Data] {
         mutex.lock(); defer { mutex.unlock() }; guard let key else { throw VaultError.locked }
@@ -133,10 +152,11 @@ final class PortableVault: @unchecked Sendable {
             guard index(value.name, key: key) == id, values[value.name] == nil, values.count < 20000, size <= 450_000_000 else { throw VaultError.message("Некорректный объём базы.") }
             values[value.name] = value.data; status = sqlite3_step(statement)
         }
-        guard status == SQLITE_DONE else { throw issue() }; return values
+        guard status == SQLITE_DONE else { throw issue() }; sizes = values.mapValues(\.count); totalSize = size; return values
     }
     func transaction<T>(_ body: () throws -> T) throws -> T {
         mutex.lock(); defer { mutex.unlock() }
+        let previousSizes = sizes, previousTotal = totalSize
         let depth = transactionDepth, savepoint = "vault_" + String(transactionDepth)
         try sql(depth == 0 ? "BEGIN IMMEDIATE" : "SAVEPOINT " + savepoint)
         transactionDepth += 1; defer { transactionDepth -= 1 }
@@ -144,19 +164,21 @@ final class PortableVault: @unchecked Sendable {
         catch {
             if depth == 0 { try? sql("ROLLBACK") }
             else { try? sql("ROLLBACK TO " + savepoint); try? sql("RELEASE " + savepoint) }
-            throw error
+            sizes = previousSizes; totalSize = previousTotal; throw error
         }
     }
     func backup(to target: URL) throws {
         mutex.lock(); defer { mutex.unlock() }
         let fd = Darwin.open(target.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
         guard fd >= 0 else { throw VaultError.message("Выбери новый файл резервной копии.") }; Darwin.close(fd)
+        var completed = false
+        defer { if !completed { try? FileManager.default.removeItem(at: target) } }
         var destination: OpaquePointer?
         guard sqlite3_open_v2(target.path, &destination, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else { throw issue() }
         defer { sqlite3_close(destination) }
         guard let backup = sqlite3_backup_init(destination, "main", db, "main") else { throw issue() }
         let status = sqlite3_backup_step(backup, -1), end = sqlite3_backup_finish(backup)
-        guard status == SQLITE_DONE, end == SQLITE_OK else { try? FileManager.default.removeItem(at: target); throw issue() }
+        guard status == SQLITE_DONE, end == SQLITE_OK else { throw issue() }; completed = true
     }
     private func issue() -> VaultError { .message("Не удалось прочитать или сохранить базу хранилища. Изменения не применены.") }
     private func sql(_ value: String) throws { guard sqlite3_exec(db, value, nil, nil, nil) == SQLITE_OK else { throw issue() } }

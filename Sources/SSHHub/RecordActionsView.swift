@@ -40,7 +40,7 @@ struct RecordActionsEditor: View {
 }
 
 struct GlobalRecordActionsEditor: View {
-    @AppStorage(RecordActionDefaults.key) private var data = Data()
+    @AppStorage(RecordActionDefaults.key, store: HubPreferences.shared) private var data = Data()
     var body: some View {
         RecordActionsEditor(entry: nil, stored: RecordActionDefaults.decode(data)) { styles in
             if let encoded = try? RecordActionDefaults.encode(styles) { data = encoded }
@@ -269,7 +269,7 @@ struct RecordTileCustomizationView: View {
     let inherited: [RecordActionStyle]?
     let onSave: ([RecordActionStyle]?) -> Void
     @Environment(\.dismiss) private var dismiss
-    @AppStorage(RecordActionDefaults.key) private var globalData = Data()
+    @AppStorage(RecordActionDefaults.key, store: HubPreferences.shared) private var globalData = Data()
     @State private var initialGlobalData: Data
     @State private var scope = RecordTileScope.record
     @State private var recordDraft: [RecordActionStyle]
@@ -281,7 +281,7 @@ struct RecordTileCustomizationView: View {
     @State private var error: String?
     init(entry: SSHAlias, stored: [RecordActionStyle]?, inherited: [RecordActionStyle]?, onSave: @escaping ([RecordActionStyle]?) -> Void) {
         self.entry = entry; self.stored = stored; self.inherited = inherited; self.onSave = onSave
-        _initialGlobalData = State(initialValue: UserDefaults.standard.data(forKey: RecordActionDefaults.key) ?? Data())
+        _initialGlobalData = State(initialValue: HubPreferences.shared.data(forKey: RecordActionDefaults.key) ?? Data())
         let record = RecordAction.layout(stored, global: inherited, entry: entry), global = RecordAction.catalog(inherited)
         _recordDraft = State(initialValue: record); _globalDraft = State(initialValue: global)
         _recordReset = State(initialValue: stored == nil ? record : nil); _globalReset = State(initialValue: inherited == nil ? global : nil)

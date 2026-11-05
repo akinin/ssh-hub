@@ -338,7 +338,7 @@ struct TopologyTrafficPoint { let date: Date; let rx: Double; let tx: Double }
         merge(TopologyImport(nodes: nodes))
     }
     func discover(target: String, ports: String, services: Bool) {
-        guard let executable = NmapDependency.executable("nmap", custom: UserDefaults.standard.string(forKey: "nmapExecutable.v1")) else { error = "Nmap не установлен. Установи его в разделе «Инструменты → Nmap»."; return }
+        guard let executable = NmapDependency.executable("nmap", custom: HubPreferences.shared.string(forKey: "nmapExecutable.v1")) else { error = "Nmap не установлен. Установи его в разделе «Инструменты → Nmap»."; return }
         var settings = NmapSettings(); settings.profile = .custom; settings.ports = ports; settings.services = services
         settings.totalTimeout = 120; settings.hostTimeout = 20
         let request = NmapRequest(target: target, profile: .custom, ports: ports, services: services, options: settings)

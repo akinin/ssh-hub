@@ -172,10 +172,10 @@ enum MonitoringKeyStore {
         return [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account(scope: scope, endpoint: endpoint, instanceID: instanceID), kSecUseAuthenticationContext as String: context]
     }
     static func validate(_ token: String) throws { guard (32...4096).contains(token.utf8.count), token.unicodeScalars.allSatisfy({ (33...126).contains($0.value) }) else { throw MonitoringError.token } }
-    static func has(scope: String, endpoint: MonitoringEndpoint, instanceID: UUID? = nil) -> Bool { var query = query(scope: scope, endpoint: endpoint, instanceID: instanceID); query[kSecReturnAttributes as String] = true; return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess }
+    static func has(scope: String, endpoint: MonitoringEndpoint, instanceID: UUID? = nil) -> Bool { var query = query(scope: scope, endpoint: endpoint, instanceID: instanceID); query[kSecReturnAttributes as String] = true; return HubSecretItems.copyMatching(query as CFDictionary, nil) == errSecSuccess }
     static func read(scope: String, endpoint: MonitoringEndpoint, instanceID: UUID? = nil) throws -> String? {
         var query = query(scope: scope, endpoint: endpoint, instanceID: instanceID); query[kSecReturnData as String] = true
-        var result: CFTypeRef?; let status = SecItemCopyMatching(query as CFDictionary, &result)
+        var result: CFTypeRef?; let status = HubSecretItems.copyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = result as? Data, let token = String(data: data, encoding: .utf8) else { throw MonitoringError.keychain }
         try validate(token); return token
@@ -183,14 +183,14 @@ enum MonitoringKeyStore {
     static func write(_ token: String, scope: String, endpoint: MonitoringEndpoint, instanceID: UUID? = nil) throws {
         try validate(token)
         let item = query(scope: scope, endpoint: endpoint, instanceID: instanceID); let update = [kSecValueData as String: Data(token.utf8)]
-        var status = SecItemUpdate(item as CFDictionary, update as CFDictionary)
+        var status = HubSecretItems.update(item as CFDictionary, update as CFDictionary)
         if status == errSecItemNotFound {
             var added = item; added.removeValue(forKey: kSecUseAuthenticationContext as String); added[kSecValueData as String] = Data(token.utf8); added[kSecAttrLabel as String] = "SSH Hub · Мониторинг"; added[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-            status = SecItemAdd(added as CFDictionary, nil)
+            status = HubSecretItems.add(added as CFDictionary, nil)
         }
         guard status == errSecSuccess else { throw MonitoringError.keychain }
     }
-    static func remove(scope: String, endpoint: MonitoringEndpoint, instanceID: UUID? = nil) throws { let status = SecItemDelete(query(scope: scope, endpoint: endpoint, instanceID: instanceID) as CFDictionary); guard status == errSecSuccess || status == errSecItemNotFound else { throw MonitoringError.keychain } }
+    static func remove(scope: String, endpoint: MonitoringEndpoint, instanceID: UUID? = nil) throws { let status = HubSecretItems.delete(query(scope: scope, endpoint: endpoint, instanceID: instanceID) as CFDictionary); guard status == errSecSuccess || status == errSecItemNotFound else { throw MonitoringError.keychain } }
 }
 
 // Each request retains its drain registration until URLSession invalidates.

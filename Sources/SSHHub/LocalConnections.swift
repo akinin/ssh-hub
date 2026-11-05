@@ -105,7 +105,7 @@ struct LocalConnectionRecord: Codable, Identifiable, Equatable {
             options += draft.rawOptions.map { line in let parts = SSHConfig.tokens(line); return SSHOption(key: parts[0], value: parts.dropFirst().joined(separator: " ")) }
         }
         return SSHAlias(name: aliasName ?? title, source: config, line: 0, options: options,
-                        localID: id, connectionFile: alias == nil ? privateConfig : nil, recordKind: kind, website: website, recordAlias: aliasName, serial: serial, transport: transport, originIdentity: originIdentity)
+                        localID: id, connectionFile: alias == nil ? privateConfig : nil, recordKind: kind, website: website, recordAlias: aliasName, serial: serial, transport: transport, originIdentity: originIdentity, preparedSSHTarget: alias == nil && PortableSecretBridge.active ? (aliasName ?? originIdentity?.name ?? "connection") : nil)
     }
 }
 
@@ -122,7 +122,10 @@ struct LocalConnectionRepository {
         self.root = base.appendingPathComponent(scope)
     }
     var file: URL { root.appendingPathComponent("records.json") }
-    func privateConfig(_ id: UUID) -> URL { root.appendingPathComponent(id.uuidString + ".conf") }
+    func privateConfig(_ id: UUID) -> URL {
+        if portable && PortableSecretBridge.active { return PortableSecretBridge.file("ssh-config", config.standardizedFileURL.path + "/" + id.uuidString, "config") }
+        return root.appendingPathComponent(id.uuidString + ".conf")
+    }
     func load() throws -> [LocalConnectionRecord] {
         if portable && PortableSecretBridge.active {
             let records = try PortableSecretBridge.read("records", config.standardizedFileURL.path).map { try JSONDecoder().decode([LocalConnectionRecord].self, from: $0) } ?? []
@@ -172,17 +175,24 @@ struct LocalConnectionRepository {
     }
     private func refreshPortableConfigs(_ records: [LocalConnectionRecord]) throws {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        func block(_ record: LocalConnectionRecord, name: String) -> String {
+            var local = record.draft; local.name = name
+            let extras = record.extraOptions.map { "    \($0.key) \(SSHConfig.configQuote($0.key.lowercased() == "identityfile" ? PortableSecretBridge.identity($0.value) : $0.value))\n" }.joined()
+            let noDefaultIdentity = (record.identity.isEmpty && !record.extraOptions.contains { $0.key.lowercased() == "identityfile" } && !record.draft.rawOptions.contains { SSHConfig.tokens($0).first?.lowercased() == "identityfile" }) ? "    IdentityFile none\n" : ""
+            return local.block + extras + noDefaultIdentity + "    IdentityAgent none\n"
+        }
         for record in records where record.kind == .ssh {
-            var local = record.draft; local.name = record.originIdentity?.name ?? "connection"
-            let extras = record.extraOptions.map { "    \($0.key) \(SSHConfig.configQuote($0.value))\n" }.joined()
-            let text = local.block + extras + "\nHost *\nInclude \(SSHConfig.configQuote(config.path))\nInclude /etc/ssh/ssh_config\n"
-            let file = privateConfig(record.id)
-            try Data(text.utf8).write(to: file, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+            let name = record.aliasName ?? record.originIdentity?.name ?? "connection"
+            let gateways = records.filter { $0.kind == .ssh && $0.id != record.id && ($0.aliasName ?? $0.originIdentity?.name) != nil }.map { block($0, name: $0.aliasName ?? $0.originIdentity!.name) }.joined(separator: "\n")
+            let text = block(record, name: name) + "\n" + gateways + "\nHost *\nInclude /etc/ssh/ssh_config\n"
+            try PortableSecretBridge.write("ssh-config", config.standardizedFileURL.path + "/" + record.id.uuidString, Data(text.utf8))
+            _ = privateConfig(record.id)
         }
     }
     private func validate(_ records: [LocalConnectionRecord]) throws {
         guard records.count <= 1000, Set(records.map(\.id)).count == records.count else { throw ConfigError.message("Можно хранить до 1000 отдельных записей.") }
+        let names = records.compactMap { $0.aliasName?.lowercased() }
+        guard Set(names).count == names.count else { throw ConfigError.message("В базе уже есть SSH-алиас с таким именем.") }
         let identities = records.compactMap { $0.originIdentity?.key }
         guard Set(identities).count == identities.count else { throw ConfigError.message("Исходная SSH-запись уже добавлена.") }
         for record in records {

@@ -34,7 +34,7 @@ import AppKit
     func resetResults() { if task == nil { hosts = []; selected = nil; status = ""; error = nil } }
     func refresh() {
         networks = RecordLocalNetwork.available(); if target.isEmpty { target = networks.first?.cidr ?? "" }
-        executable = NmapDependency.executable("nmap", custom: UserDefaults.standard.string(forKey: "nmapExecutable.v1"))
+        executable = NmapDependency.executable("nmap", custom: HubPreferences.shared.string(forKey: "nmapExecutable.v1"))
     }
     func stop(clear: Bool = false) {
         worker?.cancel(); task?.cancel()
@@ -129,6 +129,6 @@ struct RecordDiscoveryView: View {
     }
     private func chooseExecutable() {
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.title = "Выбрать Nmap"
-        if panel.runModal() == .OK, let url = panel.url, FileManager.default.isExecutableFile(atPath: url.path) { UserDefaults.standard.set(url.path, forKey: "nmapExecutable.v1"); model.refresh() }
+        if panel.runModal() == .OK, let url = panel.url, FileManager.default.isExecutableFile(atPath: url.path) { HubPreferences.shared.set(url.path, forKey: "nmapExecutable.v1"); model.refresh() }
     }
 }

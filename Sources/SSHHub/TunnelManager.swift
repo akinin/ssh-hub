@@ -7,10 +7,12 @@ import Combine
     @Published private(set) var reports: [UUID: TunnelReport] = [:]
     private var sessions: [UUID: (token: UUID, session: TunnelSession)] = [:]
     private let defaults: UserDefaults
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = HubPreferences.shared) {
         self.defaults = defaults
         profiles = TunnelProfile.decode(defaults.data(forKey: "tunnelProfiles.v1"))
     }
+    func reloadForDatabase() { profiles = TunnelProfile.decode(defaults.data(forKey: "tunnelProfiles.v1")); reports = [:] }
+    func clearForDatabaseLock() { stopAll(); profiles = []; reports = [:] }
     var activeCount: Int { reports.values.filter { $0.phase == .active }.count }
     var hasSessions: Bool { !sessions.isEmpty }
     func report(_ id: UUID) -> TunnelReport { reports[id] ?? TunnelReport(phase: .stopped) }

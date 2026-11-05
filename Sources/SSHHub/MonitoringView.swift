@@ -167,7 +167,7 @@ private struct MonitoringConfigurationView: View {
                 Picker("Обновлять на Mac", selection: $interval) { ForEach([10, 30, 60, 300, 900, 3600], id: \.self) { Text("Каждые \($0) с").tag($0) } }
                 Toggle("Уведомлять об изменении доступности и WAN", isOn: $notifications)
             }.textFieldStyle(.roundedBorder)
-            Text("Токен хранится в Связке ключей отдельно для профиля, SSH-конфига и адреса коллектора. Настройка не запускает сбор на Mac; нажми «Подключиться» после сохранения. Уведомления приходят при открытом приложении и включённом обновлении.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text("Токен хранится в зашифрованной базе отдельно для профиля, SSH-конфига и адреса коллектора. Настройка не запускает сбор на Mac; нажми «Подключиться» после сохранения. Уведомления приходят при открытом приложении и включённом обновлении.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Link("Инструкция и серверный коллектор", destination: URL(string: "https://github.com/akinin/ssh-hub/tree/main/MonitoringCollector")!)
             if let error = model.error { Text(error).font(.caption).foregroundStyle(.orange) }
             HStack {

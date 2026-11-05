@@ -90,7 +90,7 @@ struct RecordSSHConnectionFields: View {
             RecordFieldRow("Пароль") {
                 HStack(alignment: .top, spacing: 8) {
                     if keyOnly {
-                        LeadingSecureField(prompt: reusePassword ? "Сохранён в Связке ключей" : "Пароль не сохранён", text: $password).frame(height: 26).disabled(true)
+                        LeadingSecureField(prompt: reusePassword ? "Сохранён в базе" : "Пароль не сохранён", text: $password).frame(height: 26).disabled(true)
                     } else {
                         PasswordEntryView(prompt: reusePassword && !removePassword ? "Сохранён · оставь пустым" : "Запросить при подключении", text: $password, changedAt: changedAt, savedPassword: reusePassword && !removePassword ? savedPassword : nil).disabled(usesExternalCredentials)
                     }
@@ -102,12 +102,12 @@ struct RecordSSHConnectionFields: View {
             if keyOnly {
                 Text("Пароль сохраняется для копирования и не используется для входа по SSH-ключу.").font(.caption).foregroundStyle(.secondary)
             } else {
-                Toggle("Сохранить в Связке ключей macOS", isOn: $keepPassword).toggleStyle(.switch).disabled(usesExternalCredentials)
+                Toggle("Сохранить в базе", isOn: $keepPassword).toggleStyle(.switch).disabled(usesExternalCredentials)
                 if reusePassword && !removePassword && !usesExternalCredentials { Button("Удалить сохранённый пароль") { removePassword = true } }
             }
             if let copyError { Text(copyError).font(.caption).foregroundStyle(.red) }
             RecordFieldRow("Порт") { TextField("22", text: $port).accessibilityIdentifier(identifier + "Port") }
-            SSHJumpPicker(jump: $jump, entries: store.rawAliases.filter { $0.host != host || $0.user != user || $0.port != port })
+            SSHJumpPicker(jump: $jump, entries: store.jumpAliases.filter { $0.host != host || $0.user != user || $0.port != port })
         }.textFieldStyle(.roundedBorder)
             .onAppear { if keyOnly { keepPassword = true; removePassword = false } }
             .onChange(of: authentication) { _, mode in
@@ -134,7 +134,7 @@ struct RecordSSHConnectionFields: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 30) { if board.changeCount == stamp { board.clearContents() } }
             passwordCopied = true; copyError = nil
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { passwordCopied = false }
-        } catch { copyError = "Не удалось прочитать пароль. Проверь доступ к Связке ключей или KeePass." }
+        } catch { copyError = "Не удалось прочитать пароль. Проверь, что база SSH Hub или KeePass разблокирована." }
     }
 }
 struct SSHJumpPicker: View {
@@ -225,7 +225,15 @@ struct LocalRecordChange {
 extension AliasStore {
     func aliasNameReservations(excluding recordID: UUID? = nil) -> [SSHAlias] {
         rawAliases + localRecords.filter { $0.id != recordID }.compactMap { record in
-            record.originIdentity.map { SSHAlias(name: $0.name, source: $0.source, line: 0) }
+            if let alias = record.aliasName { return SSHAlias(name: alias, source: record.aliasSource ?? config.url, line: 0) }
+            return record.originIdentity.map { SSHAlias(name: $0.name, source: $0.source, line: 0) }
+        }
+    }
+    var jumpAliases: [SSHAlias] {
+        if !PortableSecretBridge.active { return rawAliases }
+        return aliases.filter(\.canSSH).compactMap { entry in
+            guard let name = entry.recordAlias ?? entry.originIdentity?.name else { return nil }
+            return SSHAlias(name: name, source: entry.source, line: 0, options: entry.options)
         }
     }
     var localRepository: LocalConnectionRepository { LocalConnectionRepository(config: config.url) }
@@ -256,7 +264,7 @@ extension AliasStore {
             let trashed = try captureTrash(entry)
             var ssh: ConfigChange?
             do {
-            if let name = entry.recordAlias, let alias = try config.load().aliases.first(where: { $0.name == name && $0.source == localRecords.first(where: { $0.id == id })?.aliasSource }) {
+            if !PortableSecretBridge.active, let name = entry.recordAlias, let alias = try config.load().aliases.first(where: { $0.name == name && $0.source == localRecords.first(where: { $0.id == id })?.aliasSource }) {
                 ssh = try config.delete(config.editSnapshot(alias))
             }
             do { try localRepository.write(after, expected: before) }
@@ -280,9 +288,9 @@ extension AliasStore {
                 throw error
             }
             appearances = change.appearances; groups = change.groups; favorites = change.favorites
-            UserDefaults.standard.set(Array(favorites).sorted(), forKey: "favoriteAliases.v1")
-            UserDefaults.standard.set(try JSONEncoder().encode(appearances), forKey: "connectionAppearance.v1")
-            UserDefaults.standard.set(groups, forKey: "aliasGroups.v1")
+            HubPreferences.shared.set(Array(favorites).sorted(), forKey: "favoriteAliases.v1")
+            HubPreferences.shared.set(try JSONEncoder().encode(appearances), forKey: "connectionAppearance.v1")
+            HubPreferences.shared.set(groups, forKey: "aliasGroups.v1")
             clearUndo(); reload(); notice = "Изменение записи отменено."
         } catch {
             var detail = error.localizedDescription
@@ -430,7 +438,7 @@ struct RecordEditorView: View {
             RecordAddressFields(address: $record.website, appearance: $appearance, isURL: true)
             RecordFieldRow("Логин") { TextField("Имя пользователя или email", text: $record.user).textFieldStyle(.roundedBorder).accessibilityIdentifier("recordWebUser") }
             RecordFieldRow("Пароль") { PasswordEntryView(prompt: reusePassword && !removePassword ? "Сохранён · оставь пустым" : "Пароль сайта", text: $password, changedAt: passwordDate, savedPassword: passwordReader).accessibilityIdentifier("recordWebPassword").disabled(usesSharedCredential) }
-            Toggle("Сохранить пароль в Связке ключей macOS", isOn: $keepPassword).disabled(usesSharedCredential)
+            Toggle("Сохранить пароль в базе", isOn: $keepPassword).disabled(usesSharedCredential)
             if reusePassword && !removePassword && !usesSharedCredential { Button("Удалить сохранённый пароль") { removePassword = true; settings.wrappedValue.webAutoLogin = false } }
             Divider()
             Toggle("Входить автоматически", isOn: Binding(get: { settings.wrappedValue.webAutoLogin == true }, set: { settings.wrappedValue.webAutoLogin = $0 })).accessibilityIdentifier("recordWebAutoLogin")
@@ -474,7 +482,7 @@ struct RecordEditorView: View {
         }
         if kind.hasPassword {
             PasswordEntryView(prompt: reusePassword && !removePassword ? "Сохранён · оставь пустым" : "Ввести при подключении", text: $password, changedAt: passwordDate, savedPassword: passwordReader).disabled(usesSharedCredential)
-            Toggle("Сохранить в Связке ключей macOS", isOn: $keepPassword).disabled(usesSharedCredential)
+            Toggle("Сохранить в базе", isOn: $keepPassword).disabled(usesSharedCredential)
             if reusePassword && !removePassword && !usesSharedCredential { Button("Удалить сохранённый пароль") { removePassword = true } }
         }
         if kind == .rdp {
@@ -492,7 +500,7 @@ struct RecordEditorView: View {
         if kind == .ftp || kind == .ftps { TextField("Начальная папка", text: settings.path).textFieldStyle(.roundedBorder) }
         if kind == .ftps { Toggle("Неявный TLS (обычно порт 990)", isOn: settings.ftpsImplicit).onChange(of: settings.wrappedValue.ftpsImplicit) { _, enabled in if record.port == "21" || record.port == "990" { record.port = enabled ? "990" : "21" } } }
         if kind == .ftps || kind == .webdav {
-            HStack { TextField("Сертификат центра CA (PEM, необязательно)", text: settings.certificateAuthority).textFieldStyle(.roundedBorder); Button("Выбрать…") { let panel = NSOpenPanel(); panel.title = "Доверенный центр сертификации"; if panel.runModal() == .OK, let url = panel.url { settings.wrappedValue.certificateAuthority = url.path } } }
+            HStack { TextField("Сертификат центра CA (PEM, необязательно)", text: settings.certificateAuthority).textFieldStyle(.roundedBorder); Button("Выбрать…") { let panel = NSOpenPanel(); panel.title = "Доверенный центр сертификации"; if panel.runModal() == .OK, let url = panel.url { do { settings.wrappedValue.certificateAuthority = PortableSecretBridge.active ? try VaultFileAssets.importFile(url) : url.path } catch { self.error = error.localizedDescription } } } }
         }
         if kind == .adb {
             TextField("ID устройства (пусто — единственное устройство)", text: settings.device).textFieldStyle(.roundedBorder)
@@ -553,7 +561,7 @@ struct RecordEditorView: View {
             if kind == .serial && record.serial == nil { record.serial = SerialSettings() }
             expected = try store.localRepository.load(); expectedConfig = store.data
             if let original {
-                if let name = original.aliasName, let alias = try store.config.load().aliases.first(where: { $0.name == name && $0.source == original.aliasSource }) {
+                if !PortableSecretBridge.active, let name = original.aliasName, let alias = try store.config.load().aliases.first(where: { $0.name == name && $0.source == original.aliasSource }) {
                     aliasSnapshot = try store.config.editSnapshot(alias)
                     if let aliasSnapshot { try record.preserveOptions(from: aliasSnapshot, draft: AliasDraft(entry: alias)) }
                     record.host = alias.host; record.user = alias.user; record.port = alias.port
@@ -590,7 +598,7 @@ struct RecordEditorView: View {
     private func chooseKey() {
         let panel = NSOpenPanel(); panel.title = "Приватный SSH-ключ"; panel.showsHiddenFiles = true; panel.canChooseDirectories = false
         panel.directoryURL = store.config.sshDirectory
-        if panel.runModal() == .OK, let url = panel.url { record.identity = url.path }
+        if panel.runModal() == .OK, let url = panel.url { do { record.identity = PortableSecretBridge.active ? try VaultSSHKeys.importFile(url) : url.path } catch { self.error = error.localizedDescription } }
     }
     private func save() {
         guard validation == nil else { return }
@@ -612,10 +620,10 @@ struct RecordEditorView: View {
                 previousPassword = try SSHPasswordStore.storedPassword(for: target, config: store.config.url)
                 try SSHPasswordStore.set(keepPassword && !removePassword && !password.isEmpty ? password : nil, for: target, config: store.config.url); credentialChanged = true
             }
-            if createAlias {
+            if createAlias && !PortableSecretBridge.active {
                 if let aliasSnapshot { ssh = try store.config.update(aliasSnapshot, draft: candidate.draft) }
                 else { ssh = try store.config.importAliases([candidate.draft], expectedData: expectedConfig) }
-            } else if let aliasSnapshot { ssh = try store.config.delete(aliasSnapshot) }
+            } else if !PortableSecretBridge.active, let aliasSnapshot { ssh = try store.config.delete(aliasSnapshot) }
             if let blueprint {
                 let commandFile = store.savedCommands.repository.file(target.favoriteID), documentFile = DocumentationRepository().url(for: target.favoriteID)
                 guard !FileManager.default.fileExists(atPath: commandFile.path), !FileManager.default.fileExists(atPath: documentFile.path) else { throw ConfigError.message("Материалы с таким ID уже существуют. Открой создание заново.") }
@@ -635,7 +643,7 @@ struct RecordEditorView: View {
             if !recordCommitted { do { try undoTOTP?() } catch { detail += "\nНе удалось откатить MFA: " + error.localizedDescription } }
             if !recordCommitted { for url in stagedTemplateURLs { try? FileManager.default.removeItem(at: url) } }
             if let ssh { do { _ = try store.config.undo(ssh) } catch { detail += "\nНе удалось откатить SSH-конфиг: " + error.localizedDescription } }
-            if credentialChanged { do { try SSHPasswordStore.set(previousPassword, for: target, config: store.config.url) } catch { detail += "\nНе удалось восстановить пароль в Связке ключей." } }
+            if credentialChanged { do { try SSHPasswordStore.set(previousPassword, for: target, config: store.config.url) } catch { detail += "\nНе удалось восстановить пароль в базе." } }
             if !recordCommitted { do { try store.rollbackCredentialEdit(bindingChange) } catch { detail += "\nНе удалось откатить привязку учётных данных: " + error.localizedDescription } }
             self.error = detail
         }

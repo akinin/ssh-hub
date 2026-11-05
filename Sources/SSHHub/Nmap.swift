@@ -238,6 +238,7 @@ struct NmapTemplateRepository {
     let file: URL
     init(file: URL? = nil) { self.file = file ?? HubPaths.applicationSupport.appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases").appendingPathComponent("NmapTemplates.json") }
     func load() throws -> [NmapTemplate] {
+        if HubPrivateFiles.key(file) != nil { let values = try HubPrivateFiles.read(file, limit: 8_000_000).map { try JSONDecoder().decode([NmapTemplate].self, from: $0) } ?? []; try NmapTemplates.validate(values); return values }
         guard FileManager.default.fileExists(atPath: file.path) else { return [] }
         let info = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard info.isRegularFile == true, info.isSymbolicLink != true, (info.fileSize ?? 0) <= 2_000_000 else { throw ConfigError.message("Некорректный файл шаблонов Nmap.") }
@@ -245,9 +246,10 @@ struct NmapTemplateRepository {
     }
     func write(_ values: [NmapTemplate]) throws {
         try NmapTemplates.validate(values)
-        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let data = try JSONEncoder().encode(values)
         guard data.count <= 2_000_000 else { throw ConfigError.message("Шаблоны Nmap больше 2 МБ.") }
+        if HubPrivateFiles.key(file) != nil { try HubPrivateFiles.write(data, to: file); return }
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try data.write(to: file, options: .atomic); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
 }

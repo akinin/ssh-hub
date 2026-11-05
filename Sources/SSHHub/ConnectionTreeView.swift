@@ -6,20 +6,20 @@ extension AliasStore {
     var collapsedFolderIDs: [String] {
         get {
             let key = "collapsedFolders.v2." + profilesKey + "." + profiles.active.uuidString
-            let data = UserDefaults.standard.data(forKey: key) ?? UserDefaults.standard.data(forKey: "collapsedFolders.v1") ?? Data()
+            let data = HubPreferences.shared.data(forKey: key) ?? HubPreferences.shared.data(forKey: "collapsedFolders.v1") ?? Data()
             return (try? JSONDecoder().decode([String].self, from: data)) ?? []
         }
-        set { UserDefaults.standard.set(try? JSONEncoder().encode(newValue), forKey: "collapsedFolders.v2." + profilesKey + "." + profiles.active.uuidString) }
+        set { HubPreferences.shared.set(try? JSONEncoder().encode(newValue), forKey: "collapsedFolders.v2." + profilesKey + "." + profiles.active.uuidString) }
     }
     private var sidebarOrderKey: String { "sidebarOrder.v1." + profilesKey + "." + profiles.active.uuidString }
-    var sidebarOrder: [String: [String]] { UserDefaults.standard.dictionary(forKey: sidebarOrderKey) as? [String: [String]] ?? [:] }
+    var sidebarOrder: [String: [String]] { HubPreferences.shared.dictionary(forKey: sidebarOrderKey) as? [String: [String]] ?? [:] }
     func applyFolderRename(_ plan: FolderRenamePlan) {
         let remapID: (String) -> String = { $0.hasPrefix("folder:") ? "folder:" + plan.path(String($0.dropFirst(7))) : $0 }
         let collapsed = collapsedFolderIDs.map(remapID)
         let order = Dictionary(sidebarOrder.map { (plan.path($0.key), $0.value.map(remapID)) }, uniquingKeysWith: { first, _ in first })
         profiles = plan.profiles; groups = plan.groups
-        persistProfiles(); UserDefaults.standard.set(groups, forKey: "aliasGroups.v1")
-        collapsedFolderIDs = collapsed; UserDefaults.standard.set(order, forKey: sidebarOrderKey)
+        persistProfiles(); HubPreferences.shared.set(groups, forKey: "aliasGroups.v1")
+        collapsedFolderIDs = collapsed; HubPreferences.shared.set(order, forKey: sidebarOrderKey)
         if groupFilter != "all" { groupFilter = plan.path(groupFilter) }
         sidebarRevision += 1
     }
@@ -30,16 +30,16 @@ extension AliasStore {
         var order = sidebarOrder
         order[source] = ConnectionTree.siblings(in: tree, parent: source).map(\.orderID).filter { $0 != entry.favoriteID }
         order[destination] = ConnectionTree.movedOrder(ConnectionTree.siblings(in: tree, parent: destination).map(\.orderID), moving: entry.favoriteID, before: anchor)
-        UserDefaults.standard.set(order, forKey: sidebarOrderKey)
+        HubPreferences.shared.set(order, forKey: sidebarOrderKey)
         setGroup(destination, for: entry); sidebarRevision += 1; reveal(entry)
     }
     func moveSidebarOrder(from old: String, to new: String) {
         guard old != new else { return }
         for profile in profiles.profiles {
             let key = "sidebarOrder.v1." + profilesKey + "." + profile.id.uuidString
-            guard var order = UserDefaults.standard.dictionary(forKey: key) as? [String: [String]] else { continue }
+            guard var order = HubPreferences.shared.dictionary(forKey: key) as? [String: [String]] else { continue }
             for parent in Array(order.keys) { order[parent] = order[parent]?.map { $0 == old ? new : $0 } }
-            UserDefaults.standard.set(order, forKey: key)
+            HubPreferences.shared.set(order, forKey: key)
         }
         sidebarRevision += 1
     }
@@ -64,10 +64,10 @@ private final class TreeScrollView: NSScrollView {
 }
 
 struct ConnectionTreeView: NSViewRepresentable {
-    @AppStorage(RecordSelectionDefaults.key) private var selectionColor = "gray"
-    @AppStorage(RecordReminderDefaults.key) private var reminderStyleData = Data()
-    @AppStorage(RecordRowBadgeSettings.key) private var rowBadgeData = Data()
-    @AppStorage(InterfaceDensity.key) private var densityValue = InterfaceDensity.normal.rawValue
+    @AppStorage(RecordSelectionDefaults.key, store: HubPreferences.shared) private var selectionColor = "gray"
+    @AppStorage(RecordReminderDefaults.key, store: HubPreferences.shared) private var reminderStyleData = Data()
+    @AppStorage(RecordRowBadgeSettings.key, store: HubPreferences.shared) private var rowBadgeData = Data()
+    @AppStorage(InterfaceDensity.key, store: HubPreferences.shared) private var densityValue = InterfaceDensity.normal.rawValue
     @EnvironmentObject var store: AliasStore
     func makeCoordinator() -> Coordinator { Coordinator(store: store) }
     func makeNSView(context: Context) -> NSScrollView {
@@ -127,8 +127,8 @@ struct ConnectionTreeView: NSViewRepresentable {
             updating = true; defer { updating = false }
             let nodes = ConnectionTree.build(entries: store.filtered, groups: store.groups,
                                          folders: store.query.isEmpty && store.groupFilter == "all" ? store.folders : [], order: store.sidebarOrder, title: store.title)
-            var presentation = [UserDefaults.standard.string(forKey: RecordSelectionDefaults.key) ?? "gray", store.profiles.active.uuidString, store.query, store.groupFilter, density.rawValue, UserDefaults.standard.data(forKey: RecordReminderDefaults.key)?.base64EncodedString() ?? ""]
-            presentation.append(UserDefaults.standard.data(forKey: RecordRowBadgeSettings.key)?.base64EncodedString() ?? "")
+            var presentation = [HubPreferences.shared.string(forKey: RecordSelectionDefaults.key) ?? "gray", store.profiles.active.uuidString, store.query, store.groupFilter, density.rawValue, HubPreferences.shared.data(forKey: RecordReminderDefaults.key)?.base64EncodedString() ?? ""]
+            presentation.append(HubPreferences.shared.data(forKey: RecordRowBadgeSettings.key)?.base64EncodedString() ?? "")
             func describe(_ nodes: [ConnectionTreeNode]) {
                 for node in nodes {
                     presentation += [node.id, node.title]
@@ -246,7 +246,7 @@ struct ConnectionTreeView: NSViewRepresentable {
             }
             if let entry = item.node.entry {
                 let notices = RecordReminderNotice.collect(store.appearance(entry).reminders)
-                let style = store.appearance(entry).reminderAppearance ?? RecordReminderDefaults.decode(UserDefaults.standard.data(forKey: RecordReminderDefaults.key))
+                let style = store.appearance(entry).reminderAppearance ?? RecordReminderDefaults.decode(HubPreferences.shared.data(forKey: RecordReminderDefaults.key))
                 if !notices.isEmpty, style.showIcon || style.showCount {
                     let color = RecordReminderColors.native(style.color(notices[0].level))
 
@@ -284,7 +284,7 @@ struct ConnectionTreeView: NSViewRepresentable {
                 status.translatesAutoresizingMaskIntoConstraints = false; status.widthAnchor.constraint(equalToConstant: 12).isActive = true; status.heightAnchor.constraint(equalToConstant: 12).isActive = true
                 rowBadges[.certificate] = status
             }
-            let settings = RecordRowBadgeSettings.decode(UserDefaults.standard.data(forKey: RecordRowBadgeSettings.key))
+            let settings = RecordRowBadgeSettings.decode(HubPreferences.shared.data(forKey: RecordRowBadgeSettings.key))
             if let entry = item.node.entry, settings.contains(where: { $0.id == RecordRowBadge.mfa.id && $0.visible }), RecordTOTPStore.has(RecordTOTPStore.account(config: store.config.url, record: entry.favoriteID)) {
                 let badge = NSImageView(); badge.image = NSImage(systemSymbolName: RecordRowBadge.mfa.icon, accessibilityDescription: "MFA настроен")
                 badge.contentTintColor = .secondaryLabelColor; badge.toolTip = "MFA · TOTP настроен"; badge.setAccessibilityLabel("MFA · TOTP настроен")
@@ -304,9 +304,9 @@ struct ConnectionTreeView: NSViewRepresentable {
         }
         func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
             let row = RecordReminderRowView()
-            row.selectionTint = RecordSelectionDefaults.tint(UserDefaults.standard.string(forKey: RecordSelectionDefaults.key))
+            row.selectionTint = RecordSelectionDefaults.tint(HubPreferences.shared.string(forKey: RecordSelectionDefaults.key))
             if let entry = (item as? TreeItem)?.node.entry, let notice = RecordReminderNotice.collect(store.appearance(entry).reminders).first {
-                row.style = store.appearance(entry).reminderAppearance ?? RecordReminderDefaults.decode(UserDefaults.standard.data(forKey: RecordReminderDefaults.key))
+                row.style = store.appearance(entry).reminderAppearance ?? RecordReminderDefaults.decode(HubPreferences.shared.data(forKey: RecordReminderDefaults.key))
                 row.tint = RecordReminderColors.native(row.style.color(notice.level))
                 row.selectionHighlightStyle = row.style.tintSelection != false ? .none : .regular
             }
@@ -368,7 +368,7 @@ struct ConnectionTreeView: NSViewRepresentable {
             }
             if contextItem?.node.isFolder != true { if menu.items.count > 0 { menu.addItem(.separator()) }; add("Новая запись…", "record") }
             add("Новая папка…", "folder")
-            if contextItem?.node.entry != nil { CustomMenuLayout.apply(to: menu, data: UserDefaults.standard.data(forKey: CustomMenuSurface.record.key) ?? Data()) }
+            if contextItem?.node.entry != nil { CustomMenuLayout.apply(to: menu, data: HubPreferences.shared.data(forKey: CustomMenuSurface.record.key) ?? Data()) }
         }
         @objc func menuAction(_ sender: NSMenuItem) {
             let action = sender.representedObject as? String ?? ""

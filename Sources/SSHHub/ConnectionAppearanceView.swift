@@ -22,11 +22,11 @@ struct RecordRowBadgesEditor: View {
                 Spacer()
                 Button("Отмена", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Сохранить") {
-                    guard (UserDefaults.standard.data(forKey: RecordRowBadgeSettings.key) ?? Data()) == expected else { error = "Настройки изменились. Открой окно заново."; return }
-                    if let data = try? JSONEncoder().encode(items) { UserDefaults.standard.set(data, forKey: RecordRowBadgeSettings.key); dismiss() }
+                    guard (HubPreferences.shared.data(forKey: RecordRowBadgeSettings.key) ?? Data()) == expected else { error = "Настройки изменились. Открой окно заново."; return }
+                    if let data = try? JSONEncoder().encode(items) { HubPreferences.shared.set(data, forKey: RecordRowBadgeSettings.key); dismiss() }
                 }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
             }.padding(16)
-        }.frame(width: 570, height: 640).onAppear { expected = UserDefaults.standard.data(forKey: RecordRowBadgeSettings.key) ?? Data(); items = RecordRowBadgeSettings.decode(expected) }
+        }.frame(width: 570, height: 640).onAppear { expected = HubPreferences.shared.data(forKey: RecordRowBadgeSettings.key) ?? Data(); items = RecordRowBadgeSettings.decode(expected) }
     }
 }
 

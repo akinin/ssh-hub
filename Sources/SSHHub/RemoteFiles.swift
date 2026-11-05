@@ -85,7 +85,7 @@ struct RemoteFilesClient {
         let config = Data(("user = \"" + escape(entry.user + ":" + password) + "\"\n").utf8)
         let tls = entry.recordKind == .ftps ? ["--ssl-reqd"] : []
         let ca = entry.transport?.certificateAuthority ?? ""
-        let trust = ca.isEmpty ? [] : ["--cacert", ca]
+        let trust = ca.isEmpty ? [] : ["--cacert", VaultFileAssets.runtime(ca)]
         let proxy = entry.networkProxyPort.map { ["--proxy", "socks5h://127.0.0.1:" + String($0), "--noproxy", ""] } ?? []
         return try await CommandTask().run("/usr/bin/curl", ["--disable", "--config", "-", "--silent", "--show-error", "--fail", "--connect-timeout", "15", "--max-time", "300", "--globoff", "--proto", "=ftp,ftps,http,https", "--url", url.absoluteString] + tls + trust + proxy + extra, input: config)
     }

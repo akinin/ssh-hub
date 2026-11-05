@@ -152,7 +152,7 @@ struct TopologyUniFiView: View {
             TextField("Контроллер: https://unifi.example",text:$settings.baseURL)
             Picker("Приложение",selection:$settings.apiPath) { Text("UniFi OS / Console").tag("/proxy/network/integration/v1"); Text("Network Server").tag("/integration/v1") }
             SecureField(hasKey ? "Новый API-ключ (сохранённый скрыт)" : "API-ключ Network → Integrations",text:$key)
-            if hasKey { Label("Ключ сохранён в Связке ключей",systemImage:"key.fill").font(.caption).foregroundStyle(.secondary) }
+            if hasKey { Label("Ключ сохранён в базе",systemImage:"key.fill").font(.caption).foregroundStyle(.secondary) }
             HStack {
                 TextField("ID сайта",text:$settings.siteID)
                 if !sites.isEmpty { Menu("Выбрать") { ForEach(sites,id:\.id) { site in Button(site.name) { settings.siteID = site.id } } } }

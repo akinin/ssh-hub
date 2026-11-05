@@ -33,7 +33,7 @@ import UniformTypeIdentifiers
     }
     func remove(_ template: NmapTemplate) { do { let values = customTemplates.filter { $0.id != template.id }; try repository.write(values); customTemplates = values } catch { self.error = error.localizedDescription } }
     func refresh() {
-        executable = NmapDependency.executable("nmap", custom: UserDefaults.standard.string(forKey: "nmapExecutable.v1"))
+        executable = NmapDependency.executable("nmap", custom: HubPreferences.shared.string(forKey: "nmapExecutable.v1"))
         brew = NmapDependency.executable("brew")
         if executable != nil { installationStarted = false }
     }
@@ -76,7 +76,7 @@ import UniformTypeIdentifiers
         let panel = NSOpenPanel(); panel.title = "Выбрать исполняемый файл Nmap"; panel.canChooseDirectories = false; panel.showsHiddenFiles = true
         guard panel.runModal() == .OK, let url = panel.url else { return }
         guard FileManager.default.isExecutableFile(atPath: url.path) else { error = "Выбранный файл не является исполняемым."; return }
-        UserDefaults.standard.set(url.path, forKey: "nmapExecutable.v1"); refresh()
+        HubPreferences.shared.set(url.path, forKey: "nmapExecutable.v1"); refresh()
     }
     func install() {
         let command = NmapDependency.installCommand(brew: brew)

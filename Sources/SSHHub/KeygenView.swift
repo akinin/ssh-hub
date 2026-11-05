@@ -10,7 +10,7 @@ struct GenerateKeyView: View {
     @State private var generating = false
     @State private var error: String?
     @State private var copied = false
-    private var validation: String? { draft.validation(in: directory) }
+    private var validation: String? { draft.validation(in: PortableSecretBridge.active ? FileManager.default.temporaryDirectory.appendingPathComponent("ssh-hub-key-validation") : directory) }
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack(spacing: 12) {
@@ -67,7 +67,7 @@ struct GenerateKeyView: View {
                 }.formStyle(.grouped).frame(height: 300).disabled(generating)
                 Text(directory.appendingPathComponent(draft.filename).path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
                     .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled)
-                Text("При пустом пароле ключ будет без парольной защиты. Существующие файлы не перезаписываются.")
+                Text(PortableSecretBridge.active ? "Ключ сохраняется внутри зашифрованной базы. Дополнительная парольная фраза ключа необязательна." : "При пустом пароле ключ будет без парольной защиты. Существующие файлы не перезаписываются.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if let message = error ?? validation {
                     Label(message, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.red)
@@ -87,16 +87,22 @@ struct GenerateKeyView: View {
         generating = true
         error = nil
         let keyDraft = draft
-        let keyDirectory = directory
+        let builtin = PortableSecretBridge.active
+        let revision = AppAccess.shared.authorizationRevision
+        let keyDirectory = builtin ? FileManager.default.temporaryDirectory.appendingPathComponent("ssh-hub-keygen-" + UUID().uuidString) : directory
         let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/SSHAskpass")
         Task {
+            defer { if builtin { try? FileManager.default.removeItem(at: keyDirectory) } }
             do {
-                let key = try await Task.detached(priority: .userInitiated) {
+                var key = try await Task.detached(priority: .userInitiated) {
                     try KeyGenerator.generate(keyDraft, directory: keyDirectory, helper: helper)
                 }.value
-                draft.passphrase = ""
-                draft.confirmation = ""
-                result = key
+                guard !AppAccess.shared.locked, AppAccess.shared.authorizationRevision == revision else { throw VaultError.locked }
+                if builtin {
+                    let reference = try VaultSSHKeys.importFile(key.privateURL)
+                    key = GeneratedKey(privateURL: URL(fileURLWithPath: reference), publicURL: URL(fileURLWithPath: reference + ".pub"), publicKey: key.publicKey, fingerprint: key.fingerprint)
+                }
+                draft.passphrase = ""; draft.confirmation = ""; result = key
             } catch { self.error = error.localizedDescription }
             generating = false
         }

@@ -8,6 +8,7 @@ import UniformTypeIdentifiers
     @Published private var records: [String: ConnectionDocument] = [:]
     @Published var error: String?
     private var failed: Set<String> = []
+    func clearForDatabaseLock() { records = [:]; failed = []; error = nil }
     func document(_ key: String) -> ConnectionDocument { records[key] ?? ConnectionDocument() }
     func load(_ key: String) {
         guard records[key] == nil else { return }

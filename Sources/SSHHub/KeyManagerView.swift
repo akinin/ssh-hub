@@ -29,6 +29,7 @@ struct RecordSSHKeyFields: View {
     var password = ""
     @EnvironmentObject var store: AliasStore
     @State private var accesses: [SSHInstalledAccess] = []
+    @State private var databaseKeys: [VaultSSHKeyLabel] = []
     @State private var generating = false
     @State private var installation: KeyInstallationRequest?
     @State private var error: String?
@@ -36,8 +37,15 @@ struct RecordSSHKeyFields: View {
         VStack(alignment: .leading, spacing: 8) {
             RecordFieldRow("Ключ входа") {
                 HStack {
-                    TextField("Путь к приватному ключу", text: $identity).textFieldStyle(.roundedBorder).labelsHidden().accessibilityIdentifier("recordSSHKey")
-                    Button("Выбрать…") { choose() }
+                    TextField("SSH-ключ", text: Binding(get: { PortableSecretBridge.active ? VaultSSHKeys.displayName(identity) : identity }, set: { identity = $0 })).disabled(PortableSecretBridge.active).textFieldStyle(.roundedBorder).labelsHidden().accessibilityIdentifier("recordSSHKey")
+                    if PortableSecretBridge.active {
+                        Menu("Выбрать…") {
+                            ForEach(databaseKeys) { key in Button(key.title) { identity = VaultSSHKeys.prefix + key.id } }
+                            if !databaseKeys.isEmpty { Divider() }
+                            Button("Импортировать из файла…") { choose() }
+                            Button("Без ключа") { identity = "" }
+                        }.fixedSize()
+                    } else { Button("Выбрать…") { choose() } }
                     Button { generating = true } label: { Image(systemName: "key.fill") }.help("Создать SSH-ключ").accessibilityLabel("Создать SSH-ключ")
                 }
             }
@@ -63,14 +71,14 @@ struct RecordSSHKeyFields: View {
             if entry == nil { Text("Для установки ключа сначала сохрани адрес, пользователя, порт и ProxyJump записи.").font(.caption).foregroundStyle(.secondary) }
             if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
         }
-        .onAppear { loadAccesses() }
+        .onAppear { loadAccesses(); databaseKeys = (try? VaultSSHKeys.labels()) ?? [] }
         .onReceive(NotificationCenter.default.publisher(for: .sshInstalledAccessChanged)) { _ in loadAccesses() }
         .onChange(of: historyEntry?.favoriteID) { _, _ in loadAccesses() }
         .onChange(of: historyEntry?.host) { _, _ in loadAccesses() }
         .onChange(of: historyEntry?.port) { _, _ in loadAccesses() }
         .onChange(of: store.config.url) { _, _ in loadAccesses() }
         .onChange(of: store.profiles.active) { _, _ in loadAccesses() }
-        .sheet(isPresented: $generating) { GenerateKeyView(directory: store.config.sshDirectory) { identity = $0.path } }
+        .sheet(isPresented: $generating) { GenerateKeyView(directory: store.config.sshDirectory) { identity = $0.path; databaseKeys = (try? VaultSSHKeys.labels()) ?? [] } }
         .sheet(item: $installation) { request in
             InstallationReviewView(entry: request.entry, key: request.key, password: password, verifyOnly: request.verifyOnly).environmentObject(store)
         }
@@ -133,7 +141,7 @@ struct RecordSSHKeyFields: View {
     private func choose() {
         let panel = NSOpenPanel(); panel.title = "Приватный SSH-ключ"; panel.showsHiddenFiles = true
         panel.directoryURL = store.config.sshDirectory; panel.canChooseDirectories = false
-        if panel.runModal() == .OK, let url = panel.url { identity = (url.pathExtension == "pub" ? url.deletingPathExtension() : url).path }
+        if panel.runModal() == .OK, let url = panel.url { do { let file = url.pathExtension == "pub" ? url.deletingPathExtension() : url; identity = PortableSecretBridge.active ? try VaultSSHKeys.importFile(file) : file.path; databaseKeys = (try? VaultSSHKeys.labels()) ?? [] } catch { self.error = error.localizedDescription } }
     }
 }
 
@@ -156,6 +164,7 @@ struct KeyManagerView: View {
                 Label("SSH-ключи", systemImage: "key.fill").font(.title2).bold()
                 Spacer()
                 Button("Обновить", systemImage: "arrow.clockwise") { refresh() }.disabled(loading)
+                Button("Импортировать ключ…", systemImage: "square.and.arrow.down") { importKey() }
                 Button("Новый ключ", systemImage: "plus") { generating = true }
             }
             HStack(alignment: .top, spacing: 20) {
@@ -172,12 +181,12 @@ struct KeyManagerView: View {
                         VStack(alignment: .leading, spacing: 16) {
                             Text(key.name).font(.title3).bold().textSelection(.enabled)
                             Text(key.fingerprint).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                            Text(key.url.path.replacingOccurrences(of: NSHomeDirectory(), with: "~")).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                            Text(VaultSSHKeys.identifier(key.privateURL.path) != nil ? "Хранится в открытой зашифрованной базе" : key.url.path.replacingOccurrences(of: NSHomeDirectory(), with: "~")).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                             let users = key.usedBy(store.aliases)
                             Text(users.isEmpty ? "В алиасах нет явного пути к этому ключу" : "Указан в алиасах: " + users.joined(separator: ", "))
                                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                             Button("Копировать команду установки", systemImage: "doc.on.doc") { store.copy(key.installCommand) }
-                            Button("Показать в Finder", systemImage: "folder") { NSWorkspace.shared.activateFileViewerSelecting([key.url]) }
+                            if VaultSSHKeys.identifier(key.privateURL.path) == nil { Button("Показать в Finder", systemImage: "folder") { NSWorkspace.shared.activateFileViewerSelecting([key.url]) } }
                             Divider()
                             Text("Установить публичный ключ на сервер").font(.headline)
                             Picker("Подключение", selection: $target) {
@@ -196,7 +205,7 @@ struct KeyManagerView: View {
                     VStack(spacing: 14) {
                         if loading { ProgressView() }
                         Text(loading ? "Читаем публичные ключи…" : "Публичные ключи не найдены").font(.headline)
-                        Text("Ищем .pub в папке SSH и рядом с ключами, указанными в алиасах.").font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        Text(PortableSecretBridge.active ? "Создай SSH-ключ в базе или импортируй существующий приватный ключ." : "Ищем .pub в папке SSH и рядом с ключами, указанными в алиасах.").font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }.frame(height: 390)
@@ -213,6 +222,12 @@ struct KeyManagerView: View {
             .sheet(item: $installation) { request in
                 InstallationReviewView(entry: request.entry, key: request.key).environmentObject(store)
             }
+    }
+    private func importKey() {
+        let panel = NSOpenPanel(); panel.title = "Импортировать приватный SSH-ключ в базу"; panel.showsHiddenFiles = true; panel.canChooseDirectories = false
+        if panel.runModal() == .OK, let file = panel.url {
+            do { _ = try VaultSSHKeys.importFile(file); refresh() } catch { self.error = error.localizedDescription }
+        }
     }
     private func refresh() {
         loading = true

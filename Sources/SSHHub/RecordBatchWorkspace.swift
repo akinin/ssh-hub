@@ -39,7 +39,7 @@ extension AliasStore {
         try plan.validate(records: current, groups: groups, search: search, credentials: vault.document, scope: vault.repository.scope, undo: undo)
         try RecordBatchTransaction.apply(plan, searchFile: file, vault: vault, undo: undo)
         groups = undo ? plan.groupsBefore : plan.groupsAfter
-        UserDefaults.standard.set(groups, forKey: "aliasGroups.v1")
+        HubPreferences.shared.set(groups, forKey: "aliasGroups.v1")
         searchMetadata = undo ? plan.searchBefore : plan.searchAfter
         if !undo { clearUndo(); undoBatchChange = (plan, target) } else { undoBatchChange = nil }
         sidebarRevision += 1; refreshFeatureTags()

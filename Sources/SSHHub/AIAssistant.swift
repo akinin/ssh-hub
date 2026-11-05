@@ -183,16 +183,16 @@ enum AssistantKeychain {
     static func query(_ account: String) -> [String: Any] { [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.olshaniki.sshhub.assistant.v1", kSecAttrAccount as String: account] }
     static func read(_ account: String) throws -> String? {
         var q = query(account); q[kSecReturnData as String] = true; var result: CFTypeRef?
-        let status = SecItemCopyMatching(q as CFDictionary, &result)
+        let status = HubSecretItems.copyMatching(q as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = result as? Data, let value = String(data: data, encoding: .utf8) else { throw ConfigError.message("Ключ ИИ недоступен в Связке ключей.") }; return value
     }
     static func set(_ value: String?, account: String) throws {
         let q = query(account)
-        guard let value, !value.isEmpty else { let status = SecItemDelete(q as CFDictionary); guard status == errSecSuccess || status == errSecItemNotFound else { throw ConfigError.message("Не удалось удалить ключ ИИ.") }; return }
+        guard let value, !value.isEmpty else { let status = HubSecretItems.delete(q as CFDictionary); guard status == errSecSuccess || status == errSecItemNotFound else { throw ConfigError.message("Не удалось удалить ключ ИИ.") }; return }
         try AssistantAPI.validateKey(value)
-        var status = SecItemUpdate(q as CFDictionary, [kSecValueData as String: Data(value.utf8)] as CFDictionary)
-        if status == errSecItemNotFound { var item = q; item[kSecValueData as String] = Data(value.utf8); item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly; status = SecItemAdd(item as CFDictionary, nil) }
+        var status = HubSecretItems.update(q as CFDictionary, [kSecValueData as String: Data(value.utf8)] as CFDictionary)
+        if status == errSecItemNotFound { var item = q; item[kSecValueData as String] = Data(value.utf8); item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly; status = HubSecretItems.add(item as CFDictionary, nil) }
         guard status == errSecSuccess else { throw ConfigError.message("Не удалось сохранить ключ ИИ.") }
     }
 }

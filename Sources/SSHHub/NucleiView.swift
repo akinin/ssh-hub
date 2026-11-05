@@ -29,7 +29,7 @@ import AppKit
     var templates: URL { directory.appendingPathComponent("templates") }
     init() { refresh() }
     func refresh() {
-        executable = NmapDependency.executable("nuclei", custom: UserDefaults.standard.string(forKey: "nucleiExecutable.v1"))
+        executable = NmapDependency.executable("nuclei", custom: HubPreferences.shared.string(forKey: "nucleiExecutable.v1"))
             ?? NmapDependency.executable("nuclei", custom: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("go/bin/nuclei").path)
         templatesReady = NucleiTemplates.available(templates)
     }
@@ -48,7 +48,7 @@ import AppKit
     func chooseExecutable() {
         let panel = NSOpenPanel(); panel.title = "Выбрать Nuclei"; panel.canChooseDirectories = false
         guard !busy, panel.runModal() == .OK, let url = panel.url, FileManager.default.isExecutableFile(atPath: url.path) else { return }
-        UserDefaults.standard.set(url.path, forKey: "nucleiExecutable.v1"); refresh()
+        HubPreferences.shared.set(url.path, forKey: "nucleiExecutable.v1"); refresh()
     }
     private func prepare() throws -> URL {
         // Keep CLI config, caches and templates separate from the user's Nuclei setup.

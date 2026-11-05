@@ -47,6 +47,10 @@ extension AliasStore {
         popover.contentSize = NSSize(width: 440, height: 560)
         popover.contentViewController = NSHostingController(rootView: QuickAccessView(controller: self).environmentObject(store))
     }
+    func resetDatabase() {
+        close(); popover.contentViewController = nil
+        if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }; statusItem = nil; showMain = nil
+    }
     @objc private func toggle() { if popover.isShown { close() } else { show() } }
     func show() {
         guard !AppAccess.shared.locked else { openMain(); return }

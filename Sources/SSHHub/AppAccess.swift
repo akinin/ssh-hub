@@ -68,7 +68,7 @@ struct AppAccessKeychain: AppAccessStorage {
     // Explicit dependency injection for owned runtime tests; production has no
     // setting/environment switch that bypasses application authorization.
     static var testingInstance: AppAccess?
-    private static let standard = AppAccess(storage: AppAccessKeychain(), deferredLoad: true)
+    private static let standard = AppAccess(storage: AppAccessKeychain(), databaseGate: true)
     static var shared: AppAccess { testingInstance ?? standard }
     @Published private(set) var locked = false
     @Published private(set) var enabled = false
@@ -87,8 +87,9 @@ struct AppAccessKeychain: AppAccessStorage {
     var supportsTouchID: Bool { biometricAvailable() }
     var usesTouchID: Bool { verifier?.touchID == true && supportsTouchID }
     var needsKeychainRetry: Bool { enabled && verifier == nil && !readingKeychain }
-    init(storage: AppAccessStorage, deferredLoad: Bool = false, biometricAvailable: @escaping () -> Bool = { let context = LAContext(); return context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) && context.biometryType == .touchID }, biometricEvaluate: (() async throws -> Bool)? = nil) {
+    init(storage: AppAccessStorage, deferredLoad: Bool = false, databaseGate: Bool = false, biometricAvailable: @escaping () -> Bool = { let context = LAContext(); return context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) && context.biometryType == .touchID }, biometricEvaluate: (() async throws -> Bool)? = nil) {
         self.storage = storage; self.biometricAvailable = biometricAvailable; self.biometricEvaluate = biometricEvaluate
+        if databaseGate { enabled = true; locked = true; return }
         if deferredLoad {
             // The login Keychain can block in securityd even with UI disabled.
             // Show the closed gate first; never construct the record store while waiting.
@@ -118,6 +119,10 @@ struct AppAccessKeychain: AppAccessStorage {
             guard data.count <= 2048, let value = try? JSONDecoder().decode(AppPasswordVerifier.self, from: data), value.valid else { throw AppAccessError.invalid }
             verifier = value
         } catch { enabled = true; locked = true; self.error = error.localizedDescription }
+    }
+    func authorizeDatabase() {
+        generation = UUID(); context?.invalidate(); context = nil; readingKeychain = false
+        enabled = true; locked = false; busy = false; error = nil
     }
     func lock() {
         guard enabled else { return }

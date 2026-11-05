@@ -15,7 +15,7 @@ struct SharedCredentialsView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
                 Image(systemName: "person.badge.key.fill").font(.title).foregroundStyle(.blue)
-                VStack(alignment: .leading, spacing: 4) { Text("Общие учётные данные").font(.title2.bold()); Text("Наборы профиля · Связка ключей macOS и KeePass").font(.callout).foregroundStyle(.secondary) }
+                VStack(alignment: .leading, spacing: 4) { Text("Общие учётные данные").font(.title2.bold()); Text("Наборы профиля · Встроенная база и KeePass").font(.callout).foregroundStyle(.secondary) }
                 Spacer()
                 if vault.document.requiresAuthentication {
                     Button { if vault.isLocked { unlock() } else { vault.lock() } } label: { Label(vault.isLocked ? "Разблокировать" : "Заблокировать", systemImage: vault.isLocked ? "lock.open" : "lock") }.disabled(vault.authenticating)
@@ -112,14 +112,14 @@ private struct SharedCredentialEditor: View {
                 GridRow { Text("Пароль"); PasswordEntryView(prompt: "Оставь пустым, чтобы сохранить прежний", text: $password, changedAt: vault.runtime.passwordChangedAt(draft.id), savedPassword: vault.document.presets.contains(where: { $0.id == draft.id }) ? { try vault.runtime.readSecret(draft.id) } : nil).disabled(removePassword) }
                 GridRow { Text(""); Toggle("Удалить пароль набора", isOn: $removePassword) }
                 } else {
-                    GridRow { Text("KeePass"); Text("Логин и пароль из базы, без копирования в Связку ключей").font(.caption).foregroundStyle(.secondary) }
+                    GridRow { Text("KeePass"); Text("Логин и пароль из внешней базы KeePass").font(.caption).foregroundStyle(.secondary) }
                 }
-                GridRow { Text("Ключ набора"); HStack { TextField("Путь к приватному ключу", text: $draft.identityFile); Button("Выбрать…") { let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false; panel.message = "Выбери приватный SSH-ключ. Файл остаётся на своём месте."; if panel.runModal() == .OK, let url = panel.url { draft.identityFile = url.path } } } }
+                GridRow { Text("Ключ набора"); HStack { TextField("SSH-ключ", text: Binding(get: { PortableSecretBridge.active ? VaultSSHKeys.displayName(draft.identityFile) : draft.identityFile }, set: { draft.identityFile = $0 })).disabled(PortableSecretBridge.active); if PortableSecretBridge.active { Menu("Из базы…") { ForEach((try? VaultSSHKeys.labels()) ?? []) { key in Button(key.title) { draft.identityFile = VaultSSHKeys.prefix + key.id } }; Button("Без ключа") { draft.identityFile = "" } }.fixedSize() }; Button("Импортировать…") { let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false; panel.message = "Выбери приватный SSH-ключ. Ключ будет скопирован в открытую зашифрованную базу."; if panel.runModal() == .OK, let url = panel.url { do { draft.identityFile = PortableSecretBridge.active ? try VaultSSHKeys.importFile(url) : url.path } catch { self.error = error.localizedDescription } } } } }
             }.textFieldStyle(.roundedBorder)
             if let kdbx {
                 HStack {
                     Button("Выбрать запись KeePass…", systemImage: "key") { choosingKDBX = true }
-                    if draft.kdbx != nil { Button("Использовать Связку ключей") { draft.kdbx = nil; password = ""; removePassword = false } }
+                    if draft.kdbx != nil { Button("Хранить в базе SSH Hub") { draft.kdbx = nil; password = ""; removePassword = false } }
                 }
                 if let reference = draft.kdbx {
                     let link = vault.document.kdbxDatabases?.first { $0.id == reference.databaseID }
@@ -128,7 +128,7 @@ private struct SharedCredentialEditor: View {
                 }
             }
             Text("Добавляется к ключам SSH-конфига; они тоже могут использоваться при входе.").font(.caption).foregroundStyle(.secondary)
-            Text(draft.kdbx == nil ? "Пароль хранится отдельно в Связке ключей macOS. Приватный ключ не копируется. Пустое имя пользователя сохраняет пользователя выбранной записи." : "Логин и пароль читаются из назначенной записи KeePass. Приватный SSH-ключ не копируется.").font(.caption).foregroundStyle(.secondary)
+            Text(draft.kdbx == nil ? "Пароль и выбранный SSH-ключ хранятся в зашифрованной базе SSH Hub. Пустое имя пользователя сохраняет пользователя выбранной записи." : "Логин и пароль читаются из назначенной записи внешней базы KeePass. SSH-ключ хранится в базе SSH Hub.").font(.caption).foregroundStyle(.secondary)
             if let error { Text(error).foregroundStyle(.red).font(.callout) }
             HStack { Spacer(); Button("Отмена") { password = ""; dismiss() }.keyboardShortcut(.cancelAction); Button("Сохранить") {
                 do { try vault.save(draft, password: removePassword ? nil : password, changePassword: removePassword || !password.isEmpty); password = ""; dismiss() } catch { self.error = error.localizedDescription }

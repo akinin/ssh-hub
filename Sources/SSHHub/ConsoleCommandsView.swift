@@ -5,6 +5,7 @@ import AppKit
     let repository = SavedCommandsRepository()
     @Published private(set) var records: [String: SavedCommandSet] = [:]
     @Published var error: String?
+    func clearForDatabaseLock() { records = [:]; error = nil }
     func load(_ key: String) {
         guard records[key] == nil else { return }
         do { records[key] = try repository.load(key) } catch { self.error = error.localizedDescription }

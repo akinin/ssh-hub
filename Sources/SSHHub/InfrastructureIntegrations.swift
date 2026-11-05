@@ -212,30 +212,30 @@ enum InfrastructureKeyStore {
     }
     static func read(configURL: URL, profileID: UUID, connection: InfrastructureConnection) throws -> String? {
         var item = try query(configURL: configURL, profileID: profileID, connection: connection); item[kSecReturnData as String] = true
-        var value: CFTypeRef?; let status = SecItemCopyMatching(item as CFDictionary, &value)
+        var value: CFTypeRef?; let status = HubSecretItems.copyMatching(item as CFDictionary, &value)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = value as? Data, let key = String(data: data, encoding: .utf8) else { throw keychainError() }
         try InfrastructureAPIClient.validateCredential(key, for: connection); return key
     }
     static func hasKey(configURL: URL, profileID: UUID, connection: InfrastructureConnection) -> Bool {
         guard var item = try? query(configURL: configURL, profileID: profileID, connection: connection) else { return false }
-        item[kSecReturnAttributes as String] = true; return SecItemCopyMatching(item as CFDictionary, nil) == errSecSuccess
+        item[kSecReturnAttributes as String] = true; return HubSecretItems.copyMatching(item as CFDictionary, nil) == errSecSuccess
     }
     static func write(_ key: String, configURL: URL, profileID: UUID, connection: InfrastructureConnection) throws {
         try InfrastructureAPIClient.validateCredential(key, for: connection)
         let item = try query(configURL: configURL, profileID: profileID, connection: connection)
         let update = [kSecValueData as String: Data(key.utf8)]
-        var status = SecItemUpdate(item as CFDictionary, update as CFDictionary)
+        var status = HubSecretItems.update(item as CFDictionary, update as CFDictionary)
         if status == errSecItemNotFound {
             var added = item; added[kSecValueData as String] = Data(key.utf8)
             added[kSecAttrLabel as String] = "SSH Hub · " + connection.provider.title
             added[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-            status = SecItemAdd(added as CFDictionary, nil)
+            status = HubSecretItems.add(added as CFDictionary, nil)
         }
         guard status == errSecSuccess else { throw keychainError() }
     }
     static func remove(configURL: URL, profileID: UUID, connection: InfrastructureConnection) throws {
-        let status = SecItemDelete(try query(configURL: configURL, profileID: profileID, connection: connection) as CFDictionary)
+        let status = HubSecretItems.delete(try query(configURL: configURL, profileID: profileID, connection: connection) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw keychainError() }
     }
     private static func keychainError() -> NSError { NSError(domain: "SSHHub.Infrastructure.Keychain", code: 1, userInfo: [NSLocalizedDescriptionKey: "Не удалось обратиться к токену в Связке ключей macOS."]) }

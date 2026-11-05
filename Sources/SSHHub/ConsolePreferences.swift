@@ -9,14 +9,14 @@ import SwiftTerm
     @Published var foreground: String { didSet { persist() } }
     @Published var background: String { didSet { persist() } }
     init() {
-        let defaults = UserDefaults.standard
+        let defaults = HubPreferences.shared
         fontName = defaults.string(forKey: "console.font.v1") ?? "Menlo"
         fontSize = min(32, max(8, defaults.object(forKey: "console.fontSize.v1") as? Double ?? 12))
         foreground = defaults.string(forKey: "console.foreground.v1") ?? "E0E6ED"
         background = defaults.string(forKey: "console.background.v1") ?? "0E1115"
     }
     private func persist() {
-        let defaults = UserDefaults.standard
+        let defaults = HubPreferences.shared
         defaults.set(fontName, forKey: "console.font.v1"); defaults.set(fontSize, forKey: "console.fontSize.v1")
         defaults.set(foreground, forKey: "console.foreground.v1"); defaults.set(background, forKey: "console.background.v1")
     }

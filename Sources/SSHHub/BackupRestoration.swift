@@ -22,6 +22,7 @@ enum BackupRestoration {
         return copy
     }
     private static func topologyFileExists(_ repository: TopologyRepository, _ mapID: UUID) throws -> Bool {
+        if HubPrivateFiles.key(repository.url(for: mapID)) != nil { return try HubPrivateFiles.read(repository.url(for: mapID), limit: 64_000_000) != nil }
         var metadata = stat()
         if lstat(repository.url(for: mapID).path, &metadata) == 0 { return true }
         guard errno == ENOENT else { throw TopologyError.invalidFile }; return false
@@ -87,6 +88,25 @@ enum BackupRestoration {
                         validateWireGuard: ((BackupWireGuard) throws -> Void)? = nil,
                         installWireGuard: ((BackupWireGuard, WireGuardProfile) throws -> (() throws -> Void))? = nil,
                         installAPISecret: ((String, BackupAPIBinding) throws -> (() throws -> Void))? = nil) throws -> [(BackupRecord, SSHAlias)] {
+        var result: [(BackupRecord, SSHAlias)] = []
+        try PortableSecretBridge.atomic {
+            result = try installContents(backup, selected: selected, localRepository: localRepository, documents: documents, commands: commands, attachments: attachments, templates: templates, writeTemplates: writeTemplates, library: library, writeLibrary: writeLibrary, nmapTemplates: nmapTemplates, writeNmapTemplates: writeNmapTemplates, inventory: inventory, winbox: winbox, licenses: licenses, topology: topology, topologyProfileMap: topologyProfileMap, installPassword: installPassword, installSharedPassword: installSharedPassword, wireGuardFile: wireGuardFile, validateWireGuard: validateWireGuard, installWireGuard: installWireGuard, installAPISecret: installAPISecret)
+        }
+        return result
+    }
+    private static func installContents(_ backup: HubBackup, selected: Set<UUID>, localRepository: LocalConnectionRepository,
+                        documents: DocumentationRepository, commands: SavedCommandsRepository, attachments: AttachmentsRepository,
+                        templates: [RecordTemplate], writeTemplates: ([RecordTemplate]) throws -> Void,
+                        library: [SavedConsoleCommand], writeLibrary: ([SavedConsoleCommand]) throws -> Void,
+                        nmapTemplates: [NmapTemplate], writeNmapTemplates: ([NmapTemplate]) throws -> Void,
+                        inventory: InventoryRepository?, winbox: WinboxRepository?,
+                        licenses: RecordLicenseRepository?, topology: TopologyRepository?, topologyProfileMap: [UUID: UUID],
+                        installPassword: ((String, SSHAlias) throws -> (() throws -> Void))?,
+                        installSharedPassword: ((String, UUID, UUID) throws -> (() throws -> Void))?,
+                        wireGuardFile: HubFeatureFile?,
+                        validateWireGuard: ((BackupWireGuard) throws -> Void)?,
+                        installWireGuard: ((BackupWireGuard, WireGuardProfile) throws -> (() throws -> Void))?,
+                        installAPISecret: ((String, BackupAPIBinding) throws -> (() throws -> Void))?) throws -> [(BackupRecord, SSHAlias)] {
         try backup.validate()
         var backup = backup
         let materialRoot = documents.root.deletingLastPathComponent()
@@ -106,7 +126,10 @@ enum BackupRestoration {
         var restoredMaps: [UUID: TopologyDocument] = [:]
         let keyRoot = documents.root.deletingLastPathComponent().appendingPathComponent("SSHKeys")
         let keyFolders = Dictionary(uniqueKeysWithValues: (backup.privateKeys ?? []).map { ($0.path, keyRoot.appendingPathComponent(UUID().uuidString)) })
-        let keyPaths = keyFolders.mapValues { $0.appendingPathComponent("identity").path }
+        var keyPaths = keyFolders.mapValues { $0.appendingPathComponent("identity").path }
+        if PortableSecretBridge.active {
+            for key in backup.privateKeys ?? [] { keyPaths[key.path] = try VaultSSHKeys.install(VaultSSHKeys.encode(key.data, title: URL(fileURLWithPath: key.path).lastPathComponent)) }
+        }
         for index in backup.records.indices { backup.records[index].record = BackupKeyPaths.rewriting(backup.records[index].record) { keyPaths[$0] ?? $0 } }
         var credentialIDs: [UUID: [UUID: UUID]] = [:]
         for index in (backup.operations ?? []).indices {
@@ -187,7 +210,7 @@ enum BackupRestoration {
         }
         try NmapTemplates.validate(newNmapTemplates)
         do {
-            if !(backup.privateKeys ?? []).isEmpty {
+            if !PortableSecretBridge.active && !(backup.privateKeys ?? []).isEmpty {
                 try PrivateMaterialFile.directory(keyRoot.deletingLastPathComponent()); try PrivateMaterialFile.directory(keyRoot)
                 for key in backup.privateKeys ?? [] {
                     let folder = keyFolders[key.path]!
@@ -213,6 +236,11 @@ enum BackupRestoration {
                     installed.append(winbox.file(entry.favoriteID)); try winbox.write(settings, key: entry.favoriteID)
                 }
                 if !value.attachments.isEmpty {
+                    if PortableSecretBridge.active {
+                        for file in value.attachments { try PortableSecretBridge.write("attachment", entry.favoriteID + "/" + file.metadata.id.uuidString, file.data) }
+                        try PortableSecretBridge.write("attachment-index", entry.favoriteID, JSONEncoder().encode(value.attachments.map(\.metadata)))
+                        _ = try attachments.load(entry.favoriteID)
+                    } else {
                     let folder = attachments.folder(entry.favoriteID); installed.append(folder)
                     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
                     for file in value.attachments {
@@ -224,6 +252,7 @@ enum BackupRestoration {
                     try JSONEncoder().encode(value.attachments.map(\.metadata)).write(to: index, options: .atomic)
                     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: index.path)
                     _ = try attachments.load(entry.favoriteID)
+                    }
                 }
             }
             for map in backup.topologies ?? [] {

@@ -159,7 +159,7 @@ struct WireGuardProfilesView: View {
             }.frame(minHeight: 200, maxHeight: .infinity)
             if let error = error ?? workspace.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
             HStack { Button("Импортировать .conf…", systemImage: "plus") { importing = true }.disabled(workspace.busy || workspace.document.profiles.count >= 32); if workspace.busy { ProgressView().controlSize(.small) }; Spacer() }
-            Text("Ключи остаются в Связке ключей на этом Mac. Счётчики — за запуск туннеля. Отключение прервёт все подключения записей через этот VPN.").font(.caption).foregroundStyle(.secondary)
+            Text("Ключи хранятся в зашифрованной базе SSH Hub. Счётчики — за запуск туннеля. Отключение прервёт все подключения записей через этот VPN.").font(.caption).foregroundStyle(.secondary)
         }.padding(20)
             .sheet(isPresented: $importing) { WireGuardImportView(workspace: workspace) }
             .sheet(item: $editing) { WireGuardImportView(workspace: workspace, profile: $0) }

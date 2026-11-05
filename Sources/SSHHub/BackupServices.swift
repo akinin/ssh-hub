@@ -94,7 +94,7 @@ enum BackupAPIKeychain {
         var q = try binding.query(config: config); q[kSecReturnData as String] = true
         // Export is explicit; permit the normal macOS item-access prompt.
         q[kSecUseAuthenticationContext as String] = LAContext()
-        var result: CFTypeRef?; let status = SecItemCopyMatching(q as CFDictionary, &result)
+        var result: CFTypeRef?; let status = HubSecretItems.copyMatching(q as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = result as? Data, data.count <= 16384, let value = String(data: data, encoding: .utf8) else { throw ConfigError.message("Не удалось прочитать API-ключ для архива из Связки ключей.") }
         try binding.validate(value); return value
@@ -103,8 +103,8 @@ enum BackupAPIKeychain {
         try binding.validate(value)
         var q = try binding.query(config: config); q.removeValue(forKey: kSecUseAuthenticationContext as String)
         var item = q; item[kSecValueData as String] = Data(value.utf8); item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly; item[kSecAttrLabel as String] = "SSH Hub · API (из архива)"
-        guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else { throw ConfigError.message("Не удалось добавить API-ключ. Существующий ключ не заменён.") }
-        return { guard SecItemDelete(q as CFDictionary) == errSecSuccess else { throw ConfigError.message("Не удалось удалить новый API-ключ после ошибки восстановления.") } }
+        guard HubSecretItems.add(item as CFDictionary, nil) == errSecSuccess else { throw ConfigError.message("Не удалось добавить API-ключ. Существующий ключ не заменён.") }
+        return { guard HubSecretItems.delete(q as CFDictionary) == errSecSuccess else { throw ConfigError.message("Не удалось удалить новый API-ключ после ошибки восстановления.") } }
     }
 }
 

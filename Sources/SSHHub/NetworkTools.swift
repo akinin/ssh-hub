@@ -48,7 +48,7 @@ enum NetworkTool: String, CaseIterable, Identifiable {
     @Published var iperfExecutable: URL?
     init() { refreshIperf() }
     var iperfRequest: IperfRequest { IperfRequest(host:host,port:speedPort,seconds:speedSeconds,streams:speedStreams,udp:speedUDP,reverse:speedReverse,bandwidth:speedBandwidth) }
-    func refreshIperf() { iperfExecutable = NmapDependency.executable("iperf3",custom:UserDefaults.standard.string(forKey:"iperfExecutable.v1")) }
+    func refreshIperf() { iperfExecutable = NmapDependency.executable("iperf3",custom:HubPreferences.shared.string(forKey:"iperfExecutable.v1")) }
     private var sessions: [NetworkTool: ToolkitSession] = [:]
     var runner: ToolkitSession {
         if let value = sessions[section] { return value }; let value = ToolkitSession(); sessions[section] = value; return value

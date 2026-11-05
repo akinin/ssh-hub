@@ -126,7 +126,7 @@ struct RecordTOTPFields: View {
                 RecordFieldRow("Период, с") { TextField("30", value: $draft.period, format: .number).textFieldStyle(.roundedBorder).frame(width: 100) }
             }
             if let validation = draft.validation { Text(validation).font(.caption).foregroundStyle(.orange) }
-            Text("Применяется кнопкой сохранения записи. Секрет хранится только в Связке ключей macOS; в JSON и резервный архив пока не включается. TOTP не включается на сервере автоматически и не подставляется в форму входа.").font(.caption).foregroundStyle(.secondary)
+            Text("Применяется кнопкой сохранения записи. Секрет хранится в зашифрованной базе и включается в её резервную копию. В обычный JSON-экспорт не включается. TOTP не включается на сервере автоматически и не подставляется в форму входа.").font(.caption).foregroundStyle(.secondary)
         }
     }
 }

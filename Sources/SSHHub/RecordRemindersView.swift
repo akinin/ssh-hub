@@ -90,7 +90,7 @@ struct ReminderAppearanceFields: View {
     }
 }
 struct GlobalReminderAppearanceSettings: View {
-    @AppStorage(RecordReminderDefaults.key) private var data = Data()
+    @AppStorage(RecordReminderDefaults.key, store: HubPreferences.shared) private var data = Data()
     private var value: Binding<RecordReminderAppearance> { Binding(get: { RecordReminderDefaults.decode(data) }, set: { if $0.valid, let encoded = try? JSONEncoder().encode($0) { data = encoded } }) }
     var body: some View {
         Section("Индикаторы сроков") {
@@ -226,7 +226,7 @@ private struct ReminderAppearanceEditor: View {
 struct RecordReminderDraftFields: View {
     var kind: RecordReminderKind
     @Binding var appearance: ConnectionAppearance
-    @AppStorage(RecordReminderDefaults.key) private var globalData = Data()
+    @AppStorage(RecordReminderDefaults.key, store: HubPreferences.shared) private var globalData = Data()
     var body: some View {
         RecordReminderFields(reminders: Binding(get: { appearance.reminders ?? [] }, set: { appearance.reminders = $0.isEmpty ? nil : $0 }), kind: kind,
             useGlobal: Binding(get: { appearance.reminderAppearance == nil }, set: { appearance.reminderAppearance = $0 ? nil : RecordReminderDefaults.decode(globalData) }),
@@ -244,7 +244,7 @@ struct RecordRemindersView: View {
     let kind: RecordReminderKind
     @EnvironmentObject var store: AliasStore
     @Environment(\.dismiss) private var dismiss
-    @AppStorage(RecordReminderDefaults.key) private var globalData = Data()
+    @AppStorage(RecordReminderDefaults.key, store: HubPreferences.shared) private var globalData = Data()
     @State private var reminders: [RecordReminder] = []
     @StateObject private var licenseFiles = LicenseFileDrafts()
     @State private var initialReminders: [RecordReminder] = []

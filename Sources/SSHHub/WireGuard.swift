@@ -34,20 +34,20 @@ protocol WireGuardSecretStorage {
 }
 struct WireGuardKeychain: WireGuardSecretStorage {
     let scope: String
-    private func query(_ id: UUID) -> [String: Any] { [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.olshaniki.sshhub.wireguard.v1", kSecAttrAccount as String: scope + ":" + id.uuidString] }
+    func query(_ id: UUID) -> [String: Any] { [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.olshaniki.sshhub.wireguard.v1", kSecAttrAccount as String: scope + ":" + id.uuidString] }
     func read(_ id: UUID) throws -> String {
         var q = query(id); q[kSecReturnData as String] = true
         let context = LAContext(); q[kSecUseAuthenticationContext as String] = context
         var value: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &value) == errSecSuccess, let data = value as? Data, data.count <= 65536, let text = String(data: data, encoding: .utf8) else { throw ConfigError.message("Конфигурация WireGuard недоступна в Связке ключей. Импортируй профиль заново.") }
+        guard HubSecretItems.copyMatching(q as CFDictionary, &value) == errSecSuccess, let data = value as? Data, data.count <= 65536, let text = String(data: data, encoding: .utf8) else { throw ConfigError.message("Конфигурация WireGuard недоступна в Связке ключей. Импортируй профиль заново.") }
         return text
     }
     func write(_ text: String, id: UUID) throws {
         guard text.utf8.count <= 65536 else { throw ConfigError.message("Конфигурация WireGuard больше 64 КиБ.") }
         var q = query(id); q[kSecValueData as String] = Data(text.utf8); q[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly; q[kSecAttrLabel as String] = "SSH Hub · WireGuard"
-        guard SecItemAdd(q as CFDictionary, nil) == errSecSuccess else { throw ConfigError.message("Не удалось сохранить ключ WireGuard в Связке ключей.") }
+        guard HubSecretItems.add(q as CFDictionary, nil) == errSecSuccess else { throw ConfigError.message("Не удалось сохранить ключ WireGuard в Связке ключей.") }
     }
-    func remove(_ id: UUID) throws { let status = SecItemDelete(query(id) as CFDictionary); guard status == errSecSuccess || status == errSecItemNotFound else { throw ConfigError.message("Не удалось удалить ключ WireGuard из Связки ключей.") } }
+    func remove(_ id: UUID) throws { let status = HubSecretItems.delete(query(id) as CFDictionary); guard status == errSecSuccess || status == errSecItemNotFound else { throw ConfigError.message("Не удалось удалить ключ WireGuard из Связки ключей.") } }
 }
 
 // Private stdin/stdout RPC. Only sanitized responses, no configuration in argv/files/logs.
