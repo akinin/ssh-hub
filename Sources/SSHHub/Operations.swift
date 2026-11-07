@@ -110,6 +110,7 @@ extension AliasStore {
         }
     }
     func stopOperations(clear: Bool = false) {
+        mcp?.cancelJobs()
         RecordDiscoveryModel.stopAll(); certificates.stop()
         scanner.cancel(clear: true); tools.audits.stop(clear: true); tools.nuclei.cancel(clear: true)
         wireGuard?.suspend()

@@ -1,6 +1,8 @@
 import SwiftUI
 import AppKit
 
+typealias InventoryCollectionRunner = (InventoryCollector, SSHAlias, URL) async throws -> ToolkitResult
+
 @MainActor final class InventoryModel: ObservableObject {
     private static let models = NSHashTable<InventoryModel>.weakObjects()
     static var pending: Bool { models.allObjects.contains { !$0.running.isEmpty } }
@@ -15,6 +17,7 @@ import AppKit
     @Published var error: String?
     @Published var notice = ""
     @Published var selected = Set<InventoryField>()
+    private let runCollection: InventoryCollectionRunner?
     private var task: Task<Void, Never>?
     private var worker: ToolkitProcess?
     private var login: SSHLoginServer?
@@ -23,8 +26,8 @@ import AppKit
     var canCollect: Bool { entry.canSSH || entry.recordKind == .localShell }
     var isLocal: Bool { entry.recordKind == .localShell }
     var key: String { entry.favoriteID }
-    init(entry: SSHAlias, config: URL, repository: InventoryRepository = InventoryRepository()) {
-        self.entry = entry; self.config = config; self.repository = repository
+    init(entry: SSHAlias, config: URL, repository: InventoryRepository = InventoryRepository(), runCollection: InventoryCollectionRunner? = nil) {
+        self.entry = entry; self.config = config; self.repository = repository; self.runCollection = runCollection
         collector = entry.recordKind == .localShell ? .macOS : .linux
         Self.models.add(self)
         reload()
@@ -83,19 +86,22 @@ import AppKit
             guard let self else { return }
             defer { running.remove(token) }
             do {
-                let entry = try SSHPasswordStore.preparedConnection(for: self.entry, config: config)
-                let process = ToolkitProcess(); worker = process
                 let result: ToolkitResult
-                if isLocal { result = try await process.run("/bin/sh", ["-c", InventoryCollection.command(.macOS)], timeout: 25) }
+                if let runCollection { result = try await runCollection(source, self.entry, config) }
                 else {
-                    let mayAutofill = entry.authentication.usesPassword ? await SSHLoginPolicy.permitsSavedPassword(for: entry, config: config) : false
-                    try Task.checkCancellation()
-                    let password = mayAutofill ? try SSHPasswordStore.password(for: entry, config: entry.credentialConfig(fallback: config)) : nil
-                    let server = try SSHLoginServer(password: password, destination: "Инвентаризация · \(entry.user)@\(entry.host)")
-                    guard let helper = Bundle.main.url(forAuxiliaryExecutable: "SSHLoginAskpass") else { server.stop(); throw ConfigError.message("Не найден помощник входа SSH.") }
-                    login = server
-                    let environment = ["SSH_ASKPASS_REQUIRE": "force", "SSH_ASKPASS": helper.path, "SSH_HUB_LOGIN_SOCKET": server.path]
-                    result = try await process.ssh(InventoryCollection.command(source), entry: entry, config: config, environment: environment, timeout: 30)
+                    let entry = try SSHPasswordStore.preparedConnection(for: self.entry, config: config)
+                    let process = ToolkitProcess(); worker = process
+                    if isLocal { result = try await process.run("/bin/sh", ["-c", InventoryCollection.command(.macOS)], timeout: 25) }
+                    else {
+                        let mayAutofill = entry.authentication.usesPassword ? await SSHLoginPolicy.permitsSavedPassword(for: entry, config: config) : false
+                        try Task.checkCancellation()
+                        let password = mayAutofill ? try SSHPasswordStore.password(for: entry, config: entry.credentialConfig(fallback: config)) : nil
+                        let server = try SSHLoginServer(password: password, destination: "Инвентаризация · \(entry.user)@\(entry.host)")
+                        guard let helper = Bundle.main.url(forAuxiliaryExecutable: "SSHLoginAskpass") else { server.stop(); throw ConfigError.message("Не найден помощник входа SSH.") }
+                        login = server
+                        let environment = ["SSH_ASKPASS_REQUIRE": "force", "SSH_ASKPASS": helper.path, "SSH_HUB_LOGIN_SOCKET": server.path]
+                        result = try await process.ssh(InventoryCollection.command(source), entry: entry, config: config, environment: environment, timeout: 30)
+                    }
                 }
                 try Task.checkCancellation()
                 guard !result.timedOut, result.status == 0 else {
@@ -103,7 +109,8 @@ import AppKit
                 }
                 let snapshot = try InventoryCollection.parse(result.output, collector: source)
                 guard generation == token else { return }
-                var updated = record; updated.append(snapshot)
+                // Another inventory view or MCP collection may have saved fields while SSH was running.
+                var updated = try repository.load(key); updated.append(snapshot)
                 try repository.write(updated, for: key); record = updated
                 selected = Set(snapshot.facts.populated); notice = "Снимок сохранён. Выбери поля и нажми «Сохранить»; ручные данные пока не изменены."
             } catch { if generation == token { self.error = error is CancellationError ? "Сбор отменён" : error.localizedDescription } }

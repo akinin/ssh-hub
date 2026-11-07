@@ -20,7 +20,7 @@ fi
 export SDKROOT="$sdk_dir"
 export CLANG_MODULE_CACHE_PATH="$build_dir/module-cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$build_dir/module-cache"
-swift test --scratch-path "$build_dir/vault-tests" --cache-path "$build_dir/swiftpm-cache" --disable-sandbox --filter 'PortableVaultTests|MandatoryVaultTests|VaultRenderingTests'
+swift test --scratch-path "$build_dir/vault-tests" --cache-path "$build_dir/swiftpm-cache" --disable-sandbox --filter 'PortableVaultTests|MandatoryVaultTests|VaultRenderingTests|MCPTests'
 swiftc -parse-as-library -swift-version 5 -sdk "$sdk_dir" -module-cache-path "$build_dir/module-cache" Sources/SSHHub/ApplicationDefaults.swift Tests/ApplicationDefaultsTests.swift -o "$build_dir/defaults-tests"
 "$build_dir/defaults-tests"
 swiftc -swift-version 5 -module-cache-path "$build_dir/module-cache" Sources/SSHHub/SSHConfig.swift Tests/Tests.swift -o "$build_dir/config-tests"

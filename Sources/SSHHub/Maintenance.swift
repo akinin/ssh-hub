@@ -143,7 +143,10 @@ struct MaintenancePlan: Identifiable {
                 return MaintenancePlannedStep(step: step, command: text)
             }
             let original = entry.preparedConfigSource ?? entry.connectionConfig(fallback: config ?? entry.source)
-            let snapshot = try MaintenanceConfigSnapshot.capture(roots: [entry.source, config ?? entry.source, original])
+            // In database mode source/config are logical scope identifiers, not canonical files.
+            // Review the actual generated transport and every Include it uses.
+            let roots = PortableSecretBridge.active ? [original] : [entry.source, config ?? entry.source, original]
+            let snapshot = try MaintenanceConfigSnapshot.capture(roots: roots)
             return MaintenanceTargetPlan(entry: entry, title: title, fingerprint: Self.fingerprint(entry), steps: steps, configSnapshot: snapshot)
         }
     }

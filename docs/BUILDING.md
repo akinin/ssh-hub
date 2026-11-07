@@ -52,6 +52,14 @@ swiftc -parse-as-library -swift-version 5 Sources/SSHHub/ApplicationDefaults.swi
 /private/tmp/ssh-hub-defaults-tests
 ```
 
+Проверка локального MCP на временной базе и собственном loopback-сервере:
+
+```sh
+swift test --disable-sandbox --filter MCPTests
+```
+
+Для отрисовки его настроек и окна подтверждения добавь `SSH_HUB_RENDER_VAULT_QA=1`. В тестах используются синтетические секреты и внедрённый исполнитель SSH; пользовательские базы и серверы не затрагиваются. [Подключение агента и инструменты MCP](MCP.md).
+
 Проверка подписанной универсальной сборки:
 
 ```sh

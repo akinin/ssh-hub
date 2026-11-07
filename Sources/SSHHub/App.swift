@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 import ConsoleSupport
 
 @MainActor final class AliasStore: ObservableObject {
+    var mcp: MCPController?
     var portableVault: VaultWorkspace!
     @Published var profiles = HubProfiles()
     @Published var showingProfiles = false
@@ -640,6 +641,7 @@ import ConsoleSupport
         updates = value.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         store = value
         if let issue = value.error { vault.lock(); vault.error = issue; return }
+        value.mcpController().resume()
         if vault.required { UserDefaults.standard.set(vault.url.path, forKey: Self.selectedDatabaseKey) }
     }
     func finishPasswordUnlock(rememberBiometrics: Bool) {
