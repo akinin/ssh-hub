@@ -237,11 +237,15 @@ extension AliasStore {
         }
     }
     var localRepository: LocalConnectionRepository { LocalConnectionRepository(config: config.url) }
-    func commitRecord(_ record: LocalConnectionRecord, expected: [LocalConnectionRecord], appearance: ConnectionAppearance, group: String, ssh: ConfigChange?, template: SSHAlias?) throws {
+    func commitRecord(_ record: LocalConnectionRecord, expected: [LocalConnectionRecord], appearance: ConnectionAppearance, group: String, ssh: ConfigChange?, template: SSHAlias?, prepare: (() throws -> Void)? = nil) throws {
         var records = expected
         if let index = records.firstIndex(where: { $0.id == record.id }) { records[index] = record } else { records.append(record) }
         let oldAppearances = appearances, oldGroups = groups
-        try localRepository.write(records, expected: expected)
+        if let prepare {
+            guard PortableSecretBridge.active, portableVault?.unlocked == true else { throw VaultError.locked }
+            // Credential import and record creation commit together; UI caches change only after commit.
+            try PortableSecretBridge.atomic { try prepare(); try localRepository.write(records, expected: expected) }
+        } else { try localRepository.write(records, expected: expected) }
         clearUndo(); localRecords = records; reload()
         guard let entry = aliases.first(where: { $0.localID == record.id }) else { return }
         setAppearance(appearance, for: entry); setGroup(group, for: entry)

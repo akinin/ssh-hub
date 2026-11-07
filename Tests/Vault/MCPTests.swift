@@ -69,6 +69,143 @@ final class MCPTests: XCTestCase {
     @MainActor private func wait(_ job: MCPJob) async throws {
         for _ in 0..<300 { if !job.active { return }; try await Task.sleep(for: .milliseconds(20)) }; XCTFail("Job did not finish")
     }
+    private func privateKey(_ root: URL, name: String = "owned-mcp-key", passphrase: String = "") throws -> String {
+        let file = root.appendingPathComponent(name), process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen"); process.arguments = ["-q", "-t", "ed25519", "-N", passphrase, "-C", "owned-mcp-fixture", "-f", file.path]
+        process.standardInput = FileHandle.nullDevice; process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        try process.run(); process.waitUntilExit(); XCTAssertEqual(process.terminationStatus, 0)
+        return try String(contentsOf: file, encoding: .utf8)
+    }
+    @MainActor private func creation(_ store: AliasStore, _ values: [String: Any]) -> [String: Any] {
+        var arguments: [String: Any] = ["profile_id": store.profiles.active.uuidString.lowercased(), "title": "Credential fixture", "kind": "ssh", "host": "192.0.2.20", "user": "fixture"]
+        for (key, value) in values { arguments[key] = value }; return arguments
+    }
+    @MainActor func testCreatesPasswordRecordAtomicallyAfterApprovalWithoutDisclosure() async throws {
+        try await fixture { _, store, mcp, root in
+            permissions(mcp); let password = "Owned-password-" + UUID().uuidString
+            let response = try call(mcp, "records_create", creation(store, ["password": password]))
+            let job = try XCTUnwrap(mcp.jobs.last)
+            XCTAssertFalse(job.preview.contains(password)); XCTAssertTrue(job.preview.contains("Пароль"))
+            XCTAssertFalse(String(decoding: try JSONSerialization.data(withJSONObject: response), as: UTF8.self).contains(password))
+            XCTAssertTrue(store.localRecords.isEmpty)
+            let before = try store.portableVault.database!.all(); XCTAssertFalse(before.values.contains(Data(password.utf8)))
+            mcp.approve(job.id); try await wait(job); XCTAssertEqual(job.status, "completed")
+            let entry = try XCTUnwrap(store.aliases.first)
+            XCTAssertEqual(entry.authentication, .password); XCTAssertEqual(try SSHPasswordStore.storedPassword(for: entry, config: store.config.url), password)
+            for value in [try call(mcp, "records_get", arguments(store, entry)), try call(mcp, "jobs_get", ["job_id": job.id.uuidString.lowercased()])] {
+                XCTAssertFalse(String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self).contains(password))
+            }
+            for file in ["vault.sqlite3", "vault.sqlite3-wal"] where FileManager.default.fileExists(atPath: root.appendingPathComponent(file).path) {
+                XCTAssertNil(try Data(contentsOf: root.appendingPathComponent(file)).range(of: Data(password.utf8)))
+            }
+        }
+    }
+    @MainActor func testImportsSSHKeyAndKeepsOptionalPasswordInactive() async throws {
+        try await fixture { _, store, mcp, root in
+            permissions(mcp); let key = try privateKey(root), password = "Owned-inactive-" + UUID().uuidString
+            _ = try call(mcp, "records_create", creation(store, ["ssh_private_key": key, "ssh_key_name": "Owned imported key", "password": password, "authentication": "key"]))
+            let job = try XCTUnwrap(mcp.jobs.last)
+            XCTAssertFalse(job.preview.contains(key)); XCTAssertFalse(job.preview.contains(password)); XCTAssertTrue(job.preview.contains("не использовать"))
+            XCTAssertTrue(try PortableSecretBridge.names("ssh-key").isEmpty)
+            mcp.approve(job.id); try await wait(job); XCTAssertEqual(job.status, "completed")
+            let entry = try XCTUnwrap(store.aliases.first), id = try XCTUnwrap(VaultSSHKeys.identifier(entry.value("IdentityFile") ?? ""))
+            XCTAssertEqual(entry.authentication, .key); XCTAssertFalse(entry.authentication.usesPassword)
+            XCTAssertEqual(try VaultSSHKeys.read(id).privateData, Data(key.utf8)); XCTAssertEqual(try VaultSSHKeys.read(id).title, "Owned imported key")
+            XCTAssertEqual(try SSHPasswordStore.storedPassword(for: entry, config: store.config.url), password)
+            let output = try call(mcp, "records_get", arguments(store, entry))
+            let text = String(decoding: try JSONSerialization.data(withJSONObject: output), as: UTF8.self)
+            XCTAssertFalse(text.contains(key)); XCTAssertFalse(text.contains(password)); XCTAssertFalse(text.contains(VaultSSHKeys.prefix))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: store.config.url.path))
+        }
+    }
+    @MainActor func testReuseKeyFromActiveProfileAndPreserveExistingKeyOnDeduplication() async throws {
+        try await fixture { _, store, mcp, root in
+            permissions(mcp); let text = try privateKey(root), key = try VaultSSHKeys.encode(Data(text.utf8), title: "Original key name")
+            let reference = try VaultSSHKeys.install(key)
+            var source = LocalConnectionRecord(); source.title = "Key source"; source.host = "192.0.2.10"; source.user = "fixture"; source.identity = reference; source.authentication = .key
+            try store.commitRecord(source, expected: store.localRepository.load(), appearance: ConnectionAppearance(name: source.title), group: "", ssh: nil, template: nil)
+            let entry = try XCTUnwrap(store.aliases.first)
+            _ = try call(mcp, "records_create", creation(store, ["ssh_key_record_id": MCPController.recordID(entry)]))
+            let reused = try XCTUnwrap(mcp.jobs.last); XCTAssertTrue(reused.preview.contains("Key source")); mcp.approve(reused.id); try await wait(reused)
+            XCTAssertEqual(reused.status, "completed"); XCTAssertEqual(store.localRecords.last?.identity, reference); XCTAssertEqual(store.localRecords.last?.authentication, .key)
+            _ = try call(mcp, "records_create", creation(store, ["ssh_private_key": text, "ssh_key_name": "Do not rename the existing key", "password": "owned-both-modes"]))
+            let duplicate = try XCTUnwrap(mcp.jobs.last); mcp.approve(duplicate.id); try await wait(duplicate)
+            XCTAssertEqual(duplicate.status, "completed"); XCTAssertEqual(store.localRecords.last?.authentication, .keyAndPassword)
+            XCTAssertEqual(try VaultSSHKeys.read(key.id).title, "Original key name"); XCTAssertEqual(try PortableSecretBridge.names("ssh-key").count, 1)
+            store.switchProfile(HubProfiles.workID)
+            XCTAssertNotNil(try call(mcp, "records_create", creation(store, ["ssh_key_record_id": MCPController.recordID(entry)]))["error"])
+        }
+    }
+    @MainActor func testCredentialCreationRollbackWhenRecordChangedDuringReview() async throws {
+        try await fixture { _, store, mcp, root in
+            permissions(mcp); let text = try privateKey(root), key = try VaultSSHKeys.encode(Data(text.utf8), title: "Rollback key"), password = "owned-rollback-" + UUID().uuidString
+            _ = try call(mcp, "records_create", creation(store, ["ssh_private_key": text, "password": password]))
+            let pending = try XCTUnwrap(mcp.jobs.last)
+            _ = try add(store, title: "Concurrent record")
+            mcp.approve(pending.id); try await wait(pending)
+            XCTAssertEqual(pending.status, "failed"); XCTAssertEqual(store.localRecords.count, 1); XCTAssertEqual(store.localRecords.first?.title, "Concurrent record")
+            XCTAssertNil(try PortableSecretBridge.read("ssh-key", key.id))
+            XCTAssertFalse(try store.portableVault.database!.all().values.contains(Data(password.utf8)))
+        }
+    }
+    @MainActor func testSourceKeyChangeInvalidatesPendingCreation() async throws {
+        try await fixture { _, store, mcp, root in
+            permissions(mcp)
+            let first = try VaultSSHKeys.encode(Data(privateKey(root).utf8), title: "First owned key")
+            let second = try VaultSSHKeys.encode(Data(privateKey(root, name: "second-owned-key").utf8), title: "Second owned key")
+            var source = LocalConnectionRecord(); source.title = "Changing source"; source.host = "192.0.2.1"; source.user = "fixture"; source.authentication = .key; source.identity = try VaultSSHKeys.install(first)
+            try store.commitRecord(source, expected: store.localRepository.load(), appearance: ConnectionAppearance(name: source.title), group: "", ssh: nil, template: nil)
+            let sourceEntry = try XCTUnwrap(store.aliases.first)
+            _ = try call(mcp, "records_create", creation(store, ["ssh_key_record_id": MCPController.recordID(sourceEntry), "password": "owned-not-persisted"]))
+            let pending = try XCTUnwrap(mcp.jobs.last)
+            let expected = try store.localRepository.load(); source.identity = try VaultSSHKeys.install(second)
+            try store.commitRecord(source, expected: expected, appearance: ConnectionAppearance(name: source.title), group: "", ssh: nil, template: nil)
+            mcp.approve(pending.id); try await wait(pending)
+            XCTAssertEqual(pending.status, "failed"); XCTAssertEqual(store.localRecords.count, 1)
+            XCTAssertFalse(try store.portableVault.database!.all().values.contains(Data("owned-not-persisted".utf8)))
+        }
+    }
+    @MainActor func testWebsitePasswordAndEncryptedOpenSSHKeyCreation() async throws {
+        try await fixture { _, store, mcp, root in
+            permissions(mcp)
+            _ = try call(mcp, "records_create", creation(store, ["kind": "website", "url": "https://device.example.invalid", "password": "owned-web-password"]))
+            let web = try XCTUnwrap(mcp.jobs.last); mcp.approve(web.id); try await wait(web)
+            XCTAssertEqual(web.status, "completed"); let website = try XCTUnwrap(store.aliases.first)
+            XCTAssertEqual(try SSHPasswordStore.storedPassword(for: website, config: store.config.url), "owned-web-password")
+            let encrypted = try privateKey(root, passphrase: "owned-fixture-key-passphrase")
+            _ = try call(mcp, "records_create", creation(store, ["ssh_private_key": encrypted]))
+            let key = try XCTUnwrap(mcp.jobs.last); mcp.approve(key.id); try await wait(key)
+            XCTAssertEqual(key.status, "completed")
+            let saved = try XCTUnwrap(store.localRecords.last); XCTAssertEqual(saved.authentication, .key)
+            let id = try XCTUnwrap(VaultSSHKeys.identifier(saved.identity))
+            XCTAssertEqual(try VaultSSHKeys.read(id).privateData, Data(encrypted.utf8))
+        }
+    }
+    @MainActor func testRejectsInvalidCredentialCombinationsAndCancelsPendingSecrets() async throws {
+        try await fixture { session, store, mcp, root in
+            permissions(mcp); let text = try privateKey(root), key = try VaultSSHKeys.encode(Data(text.utf8), title: "Cancelled key")
+            let invalid: [[String: Any]] = [
+                ["password": ""], ["password": "line\nbreak"], ["password": String(repeating: "x", count: 16385)],
+                ["authentication": "key"], ["authentication": "password"], ["password": "owned", "authentication": "automatic"],
+                ["ssh_private_key": "/Users/somebody/.ssh/private-key"], ["ssh_private_key": "ssh-ed25519 public-key"],
+                ["ssh_private_key": text, "authentication": "password", "password": "owned"],
+                ["ssh_private_key": text, "ssh_key_record_id": UUID().uuidString], ["ssh_private_key": text, "ssh_key_name": "line\nbreak"],
+                ["ssh_key_name": "no key"], ["ssh_private_key": text, "kind": "website", "url": "https://example.invalid"],
+                ["password": "owned", "kind": "information"], ["password": "owned", "user": ""]
+            ]
+            for value in invalid { XCTAssertNotNil(try call(mcp, "records_create", creation(store, value))["error"]) }
+            XCTAssertTrue(mcp.jobs.isEmpty); XCTAssertTrue(store.localRecords.isEmpty)
+            _ = try call(mcp, "records_create", creation(store, ["ssh_private_key": text, "password": "owned-cancelled-password"]))
+            let rejected = try XCTUnwrap(mcp.jobs.last); mcp.cancel(rejected.id); mcp.approve(rejected.id)
+            XCTAssertTrue(store.localRecords.isEmpty); XCTAssertNil(rejected.action)
+            _ = try call(mcp, "records_create", creation(store, ["ssh_private_key": text, "password": "owned-locked-password"]))
+            let locked = try XCTUnwrap(mcp.jobs.last); session.vault.lock(); mcp.approve(locked.id)
+            XCTAssertTrue(mcp.jobs.isEmpty); XCTAssertNil(locked.action)
+            try session.vault.open("synthetic-owned-mcp-password")
+            XCTAssertNil(try PortableSecretBridge.read("ssh-key", key.id))
+            XCTAssertTrue(try store.localRepository.load().isEmpty)
+        }
+    }
     @MainActor func testAuthenticationOriginHostAndProtocolNegotiation() async throws {
         try await fixture { _, _, mcp, _ in
             let initialized = mcp.handle(try request(mcp, method: "initialize", params: ["protocolVersion": "2025-11-25", "capabilities": [:]]))
@@ -121,7 +258,7 @@ final class MCPTests: XCTestCase {
             XCTAssertEqual(job.status, "completed"); XCTAssertEqual(store.localRecords.count, 1); XCTAssertNil(store.localRecords.first?.aliasName)
             XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("config").path))
             var invalid = args; invalid["kind"] = "localShell"; XCTAssertNotNil(try call(mcp, "records_create", invalid)["error"])
-            var extra = args; extra["password"] = "MUST-NOT-ACCEPT"; XCTAssertNotNil(try call(mcp, "records_create", extra)["error"])
+            var extra = args; extra["unsupported_secret"] = "MUST-NOT-ACCEPT"; XCTAssertNotNil(try call(mcp, "records_create", extra)["error"])
             _ = try call(mcp, "records_create", args); let pending = try XCTUnwrap(mcp.jobs.last)
             mcp.cancel(pending.id, status: "rejected"); mcp.approve(pending.id); XCTAssertEqual(store.localRecords.count, 1)
         }
@@ -265,7 +402,7 @@ final class MCPTests: XCTestCase {
         guard ProcessInfo.processInfo.environment["SSH_HUB_RENDER_VAULT_QA"] == "1" else { throw XCTSkip("Explicit visual QA only") }
         try await fixture { _, store, mcp, _ in
             permissions(mcp)
-            let args: [String: Any] = ["profile_id": store.profiles.active.uuidString.lowercased(), "title": "Демонстрационный сервер", "kind": "ssh", "host": "192.0.2.20", "user": "admin"]
+            let args: [String: Any] = ["profile_id": store.profiles.active.uuidString.lowercased(), "title": "Демонстрационный сервер", "kind": "ssh", "host": "192.0.2.20", "user": "admin", "password": "owned-render-hidden-password"]
             _ = try call(mcp, "records_create", args); let job = try XCTUnwrap(mcp.jobs.last)
             @MainActor func render<V: View>(_ name: String, _ content: V, width: CGFloat, height: CGFloat) throws {
                 let view = NSHostingView(rootView: content.frame(width: width, height: height).preferredColorScheme(.dark)); view.frame = NSRect(x: 0, y: 0, width: width, height: height)

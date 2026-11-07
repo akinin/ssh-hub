@@ -145,7 +145,7 @@ import IOKit
             let rule = properties[key] as! [String: Any]
             switch rule["type"] as? String {
             case "string":
-                guard let text = value as? String, text.utf8.count <= (key == "markdown" ? 50_000 : key == "command" ? 4096 : 2048), !text.contains("\0") else { throw MCPFailure.message("Invalid text argument: " + key) }
+                guard let text = value as? String, text.utf8.count <= (key == "ssh_private_key" ? 262144 : key == "password" ? 16384 : key == "markdown" ? 50_000 : key == "command" ? 4096 : 2048), !text.contains("\0") else { throw MCPFailure.message("Invalid text argument: " + key) }
                 if let choices = rule["enum"] as? [String], !choices.contains(text) { throw MCPFailure.message("Invalid choice: " + key) }
             case "integer":
                 guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue == Double(number.intValue), number.intValue >= (rule["minimum"] as? Int ?? 0), number.intValue <= (rule["maximum"] as? Int ?? 100_000) else { throw MCPFailure.message("Invalid number: " + key) }
@@ -238,12 +238,16 @@ import IOKit
             record.host = arguments["host"] as? String ?? ""; record.user = arguments["user"] as? String ?? ""; record.port = (arguments["port"] as? Int).map(String.init) ?? record.kind.defaultPort
             record.website = arguments["url"] as? String ?? ""
             let group = arguments["group"] as? String ?? ""
+            let credentials = try MCPCreationCredentials(arguments: arguments, record: record, store: store)
+            record.authentication = credentials.authentication; record.identity = credentials.identity
             guard record.validation == nil, group.isEmpty || ConnectionTree.validPath(group) else { throw MCPFailure.message("Invalid record fields. SSH records require host and user; web records require a full HTTP(S) URL.") }
             let expected = try store.localRepository.load(), saved = record
-            preview = "Создать запись · \(record.kind.rawValue)\n\(record.title)\n\(record.user)@\(record.host):\(record.port)\n\(record.website)\nГруппа: \(group)"
+            preview = "Создать запись · \(record.kind.rawValue)\n\(record.title)\n\(record.user)@\(record.host):\(record.port)\n\(record.website)\nГруппа: \(group)\n\n" + credentials.preview
             action = { [weak store] in
                 guard let store else { throw VaultError.locked }
-                try store.commitRecord(saved, expected: expected, appearance: ConnectionAppearance(name: saved.title), group: group, ssh: nil, template: nil)
+                try credentials.validateSource(store: store)
+                let target = saved.entry(config: store.config.url, privateConfig: store.config.url)
+                try store.commitRecord(saved, expected: expected, appearance: ConnectionAppearance(name: saved.title), group: group, ssh: nil, template: nil, prepare: { try credentials.install(for: target, store: store) })
                 return ["record_id": saved.id.uuidString.lowercased(), "created": true]
             }
         } else {
