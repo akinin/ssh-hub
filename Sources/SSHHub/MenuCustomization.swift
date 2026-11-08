@@ -8,6 +8,7 @@ struct MenuCustomizationView: View {
     @State private var initial: Data
     @State private var draft: [CustomMenuItem]
     @State private var error: String?
+    @State private var dragScope = UUID()
     init(surface: CustomMenuSurface) {
         self.surface = surface
         let data = HubPreferences.shared.data(forKey: surface.key) ?? Data()
@@ -19,13 +20,20 @@ struct MenuCustomizationView: View {
             HubSheetHeader(title: surface.title, subtitle: "Общие настройки для всех профилей", icon: surface.icon)
             Text(instructions)
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            MenuCustomizationRows(draft: $draft, definitions: surface.definitions, groupsToolbar: surface == .toolbar).frame(maxHeight: .infinity)
+            if surface == .toolbar {
+                HStack(spacing: 14) {
+                    toolbarPanel("Первая панель", secondary: false)
+                    toolbarPanel("Вторая панель", secondary: true)
+                }.frame(maxHeight: .infinity)
+            } else {
+                MenuCustomizationRows(draft: $draft, definitions: surface.definitions).frame(maxHeight: .infinity)
+            }
             Text("Включено: \(draft.filter { $0.visible && !$0.isDivider }.count)" + (surface == .toolbar ? ". При нехватке места остальные кнопки доступны через «Ещё»." : ""))
                 .font(.caption).foregroundStyle(.secondary)
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
             HStack {
                 Button("По умолчанию") { draft = CustomMenuLayout.items(ApplicationDefaults.values[surface.key] as? Data ?? Data(), for: surface); error = nil }
-                if surface != .toolbar { Button("Разделитель", systemImage: "plus") { draft.append(.init(id: "divider:" + UUID().uuidString)) }.disabled(draft.count >= 64) }
+                if surface != .toolbar { addDivider() }
                 Spacer()
                 Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Сохранить") {
@@ -34,11 +42,26 @@ struct MenuCustomizationView: View {
                     catch { self.error = "Не удалось сохранить настройки меню." }
                 }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
             }
-        }.padding(20).frame(width: 600, height: 640)
+        }.padding(20).frame(width: surface == .toolbar ? 780 : 600, height: 640)
+    }
+    private func toolbarPanel(_ title: String, secondary: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.headline).accessibilityAddTraits(.isHeader)
+            MenuCustomizationRows(draft: $draft, definitions: surface.definitions, secondary: secondary, dragScope: dragScope)
+                .frame(maxHeight: .infinity)
+                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                .accessibilityLabel(title)
+            addDivider(secondary: secondary)
+        }.frame(maxWidth: .infinity)
+    }
+    private func addDivider(secondary: Bool = false) -> some View {
+        Button("Добавить разделитель", systemImage: "plus") {
+            draft.append(.init(id: "divider:" + UUID().uuidString, secondary: secondary ? true : nil))
+        }.disabled(draft.count >= 64)
     }
     private var instructions: String {
         switch surface {
-        case .toolbar: return "Перетаскивай строки, чтобы менять порядок. Отметь «Группа 2» у значка, чтобы перенести его в соседнюю группу справа."
+        case .toolbar: return "Перетаскивай значки внутри списка и между панелями. Флажок управляет видимостью значка."
         case .record: return "Перетаскивай строки и включай нужные пункты. В меню видны только действия, доступные выбранному типу записи."
         case .tools: return "Перетаскивай строки за название или ручку. Флажок добавляет пункт. Изменения применятся после сохранения."
         }
@@ -47,11 +70,16 @@ struct MenuCustomizationView: View {
 struct MenuCustomizationRows: NSViewRepresentable {
     @Binding var draft: [CustomMenuItem]
     let definitions: [CustomMenuDefinition]
-    var groupsToolbar = false
+    var secondary: Bool? = nil
+    var dragScope: UUID? = nil
+    var rows: [CustomMenuItem] {
+        guard let secondary else { return draft }
+        return draft.filter { ($0.secondary == true) == secondary }
+    }
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSScrollView {
         let table = DragTable(); table.headerView = nil; table.rowHeight = 40; table.intercellSpacing = .zero
-        table.controlWidth = groupsToolbar ? 146 : 60
+        table.dragScope = dragScope
         let column = NSTableColumn(identifier: .init("command")); column.minWidth = 1; column.resizingMask = .autoresizingMask
         table.addTableColumn(column); table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle; table.autoresizingMask = [.width]
         table.style = .plain; table.backgroundColor = .clear; table.selectionHighlightStyle = .none
@@ -67,8 +95,9 @@ struct MenuCustomizationRows: NSViewRepresentable {
         context.coordinator.parent = self
         guard let table = context.coordinator.table else { return }
         let width = max(1, scroll.contentSize.width); table.tableColumns.first?.width = width
-        if context.coordinator.snapshot != draft || abs(context.coordinator.width - width) > 1 {
-            context.coordinator.snapshot = draft; context.coordinator.width = width; table.reloadData()
+        let rows = self.rows
+        if context.coordinator.snapshot != rows || abs(context.coordinator.width - width) > 1 {
+            context.coordinator.snapshot = rows; context.coordinator.width = width; table.reloadData()
         }
     }
     private final class VerticalClip: NSClipView {
@@ -76,7 +105,8 @@ struct MenuCustomizationRows: NSViewRepresentable {
         override func constrainBoundsRect(_ value: NSRect) -> NSRect { var value = super.constrainBoundsRect(value); value.origin.x = 0; return value }
     }
     private final class DragTable: NSTableView {
-        var controlWidth: CGFloat = 60
+        var dragScope: UUID?
+        private let controlWidth: CGFloat = 60
         override func canDragRows(with rowIndexes: IndexSet, at mouseDownPoint: NSPoint) -> Bool {
             !rowIndexes.isEmpty && rowIndexes.allSatisfy { $0 >= 0 && $0 < numberOfRows } && mouseDownPoint.x < bounds.width - controlWidth
         }
@@ -92,10 +122,16 @@ struct MenuCustomizationRows: NSViewRepresentable {
         var snapshot: [CustomMenuItem] = []; var width: CGFloat = 0
         weak var table: NSTableView?
         init(_ parent: MenuCustomizationRows) { self.parent = parent }
-        func numberOfRows(in tableView: NSTableView) -> Int { parent.draft.count }
+        func numberOfRows(in tableView: NSTableView) -> Int { max(1, parent.rows.count) }
         func tableView(_ tableView: NSTableView, viewFor column: NSTableColumn?, row: Int) -> NSView? {
-            guard parent.draft.indices.contains(row) else { return nil }
-            let item = parent.draft[row], definition = parent.definitions.first { $0.id == item.id }
+            let rows = parent.rows
+            guard rows.indices.contains(row) else {
+                let label = NSTextField(labelWithString: "Перетащи сюда значки")
+                label.textColor = .secondaryLabelColor
+                label.alignment = .center
+                return label
+            }
+            let item = rows[row], definition = parent.definitions.first { $0.id == item.id }
             let value = HStack(spacing: 12) {
                 Image(systemName: "line.3.horizontal").foregroundStyle(.tertiary).font(.caption).frame(width: 14)
                 Image(systemName: item.isDivider ? "minus" : definition?.icon ?? "circle").frame(width: 22).foregroundStyle(.secondary)
@@ -104,17 +140,6 @@ struct MenuCustomizationRows: NSViewRepresentable {
                 if item.isDivider {
                     Button { self.parent.draft.removeAll { $0.id == item.id } } label: { Image(systemName: "trash") }.help("Убрать разделитель").frame(width: 36)
                 } else {
-                    if parent.groupsToolbar {
-                        Toggle("Группа 2", isOn: Binding(
-                            get: { self.parent.draft.first { $0.id == item.id }?.secondary == true },
-                            set: { value in
-                                if let index = self.parent.draft.firstIndex(where: { $0.id == item.id }) { self.parent.draft[index].secondary = value ? true : nil }
-                            }
-                        ))
-                        .toggleStyle(.checkbox).controlSize(.small).frame(width: 80, alignment: .leading)
-                        .accessibilityLabel("Вторая группа для «" + (definition?.title ?? item.id) + "»")
-                        .help("Перенести «" + (definition?.title ?? item.id) + "» во вторую группу")
-                    }
                     Toggle("Показать " + (definition?.title ?? item.id), isOn: Binding(get: { self.parent.draft.first { $0.id == item.id }?.visible == true }, set: { value in if let index = self.parent.draft.firstIndex(where: { $0.id == item.id }) { self.parent.draft[index].visible = value } }))
                         .labelsHidden().toggleStyle(.checkbox).frame(width: 36)
                 }
@@ -122,23 +147,33 @@ struct MenuCustomizationRows: NSViewRepresentable {
             let hosting = NSHostingView(rootView: value); hosting.sizingOptions = []; return hosting
         }
         func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
-            guard parent.draft.indices.contains(row) else { return nil }
-            let item = NSPasteboardItem(); item.setString(parent.draft[row].id, forType: Self.type); return item
+            let rows = parent.rows
+            guard rows.indices.contains(row) else { return nil }
+            let item = NSPasteboardItem(); item.setString(rows[row].id, forType: Self.type); return item
         }
-        private func source(_ info: NSDraggingInfo) -> Int? {
-            guard let source = info.draggingSource as? NSTableView, source === table, let id = info.draggingPasteboard.string(forType: Self.type) else { return nil }
-            return parent.draft.firstIndex { $0.id == id }
+        private func source(_ info: NSDraggingInfo) -> String? {
+            guard let source = info.draggingSource as? DragTable,
+                  source === table || (parent.dragScope != nil && source.dragScope == parent.dragScope),
+                  let id = info.draggingPasteboard.string(forType: Self.type),
+                  parent.draft.contains(where: { $0.id == id }) else { return nil }
+            return id
         }
         func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation operation: NSTableView.DropOperation) -> NSDragOperation {
             guard source(info) != nil else { return [] }
-            var row = row
-            if operation == .on, tableView.convert(info.draggingLocation, from: nil).y > tableView.rect(ofRow: row).midY { row += 1 }
-            guard (0...parent.draft.count).contains(row) else { return [] }
+            let count = parent.rows.count
+            var row = min(row, count)
+            if operation == .on, (0..<count).contains(row), tableView.convert(info.draggingLocation, from: nil).y > tableView.rect(ofRow: row).midY { row += 1 }
+            guard (0...count).contains(row) else { return [] }
             tableView.setDropRow(row, dropOperation: .above); return .move
         }
         func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
-            guard dropOperation == .above, let source = source(info), (0...parent.draft.count).contains(row) else { return false }
-            parent.draft = CustomMenuLayout.move(parent.draft, from: source, to: row); return true
+            guard dropOperation == .above, let id = source(info), (0...parent.rows.count).contains(row) else { return false }
+            if let secondary = parent.secondary {
+                parent.draft = CustomMenuLayout.moveToolbar(parent.draft, id: id, to: row, secondary: secondary)
+            } else if let index = parent.draft.firstIndex(where: { $0.id == id }) {
+                parent.draft = CustomMenuLayout.move(parent.draft, from: index, to: row)
+            }
+            return true
         }
     }
 }

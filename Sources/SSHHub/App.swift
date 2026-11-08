@@ -117,6 +117,7 @@ import ConsoleSupport
     @Published var groupFilter = "all"
     @Published var groupingAlias: SSHAlias?
     @Published var showingSettings = false
+    var opensAuthorization = false
     @Published var showingKeys = false
     @Published var showingHistory = false
     @Published var showingTunnels = false
@@ -976,6 +977,7 @@ struct MainView: View {
         case "palette": store.showingPalette = true
         case "maps": store.openTopology()
         case "settings": store.showingSettings = true
+        case "account": store.opensAuthorization = true; store.showingSettings = true
         case "assistant": if store.assistantVisible || store.assistantExpanded { store.closeAssistant() } else { store.presentAssistant() }
         case "lock": if access.enabled { store.lockApplication() }
         case "record": store.newRecord()
@@ -1018,32 +1020,59 @@ struct MainView: View {
         }
         return result.isEmpty ? [.init(title: "Нет выбранных инструментов", enabled: false)] : result
     }
-    private func toolbarOverflow(_ definitions: ArraySlice<CustomMenuDefinition>) -> [ToolbarMenuAction] {
-        definitions.flatMap { definition in
-            definition.id == "tools" ? toolsMenuActions : [menuAction(definition)]
-        }
-    }
-    private var customizedToolbar: some View {
+    @ToolbarContentBuilder private var customizedToolbar: some ToolbarContent {
         let groups = CustomMenuLayout.toolbarGroups(toolbarData)
         let hasBothGroups = !groups.primary.isEmpty && !groups.secondary.isEmpty
-        let width = toolbarWindowWidth - toolbarSidebarWidth - (compactToolbar ? 220 : 300) - 120 - (hasBothGroups ? 21 : 0)
-        let capacity = max(1, min(12, Int(width / 36)))
-        let visible = groups.primary.count + groups.secondary.count <= capacity ? capacity : capacity - 1
-        let primaryCount = min(visible, groups.primary.count)
-        let secondaryCount = min(visible - primaryCount, groups.secondary.count)
-        let primaryOverflow = toolbarOverflow(groups.primary.dropFirst(primaryCount))
-        let secondaryOverflow = toolbarOverflow(groups.secondary.dropFirst(secondaryCount))
-        let overflow = primaryOverflow + (primaryOverflow.isEmpty || secondaryOverflow.isEmpty ? [] : [.divider]) + secondaryOverflow
+        let primaryButtons = groups.primary.filter { !$0.isDivider }.count
+        let secondaryButtons = groups.secondary.filter { !$0.isDivider }.count
+        let dividers = groups.primary.count + groups.secondary.count - primaryButtons - secondaryButtons
+        let width = toolbarWindowWidth - toolbarSidebarWidth - (compactToolbar ? 220 : 300) - 120
+            - (hasBothGroups ? 28 : 0) - CGFloat(dividers) * 13
+        let capacity = max(hasBothGroups ? 2 : 1, min(12, Int(width / 36)))
+        let primaryCapacity = hasBothGroups ? min(primaryButtons, max((capacity + 1) / 2, capacity - secondaryButtons)) : capacity
+        let secondaryCapacity = hasBothGroups ? capacity - primaryCapacity : capacity
+        if !groups.primary.isEmpty {
+            ToolbarItem(id: "customizedActions", placement: .primaryAction) {
+                toolbarPanel(groups.primary, capacity: primaryCapacity)
+            }
+        }
+        if !groups.secondary.isEmpty {
+            if #available(macOS 26.0, *), hasBothGroups { ToolbarSpacer(.fixed, placement: .primaryAction) }
+            ToolbarItem(id: "customizedActionsSecondary", placement: .primaryAction) {
+                toolbarPanel(groups.secondary, capacity: secondaryCapacity)
+            }
+        }
+    }
+    private func toolbarPanel(_ rows: [CustomMenuItem], capacity: Int) -> some View {
+        let definitions = CustomMenuSurface.toolbar.definitions
+        let panel = CustomMenuLayout.toolbarSplit(rows, capacity: capacity)
+        let overflow = panel.overflow.flatMap { row -> [ToolbarMenuAction] in
+            if row.isDivider { return [.divider] }
+            if row.id == "tools" { return toolsMenuActions }
+            return definitions.first { $0.id == row.id }.map { [menuAction($0)] } ?? []
+        }
         return HStack(spacing: 8) {
-            ForEach(groups.primary.prefix(primaryCount)) { customizedToolbarButton($0) }
-            if primaryCount > 0 && secondaryCount > 0 { Divider().frame(height: 16).padding(.horizontal, 2) }
-            ForEach(groups.secondary.prefix(secondaryCount)) { customizedToolbarButton($0) }
-            if !overflow.isEmpty { ToolbarActionsMenu(title: "Ещё", symbol: "ellipsis", actions: overflow).frame(width: 28, height: 28) }
+            ForEach(panel.visible) { row in
+                if row.isDivider { Divider().frame(height: 16) }
+                else if let definition = definitions.first(where: { $0.id == row.id }) { customizedToolbarButton(definition) }
+            }
+            if !overflow.isEmpty {
+                ToolbarActionsMenu(title: "Ещё", symbol: "ellipsis", actions: overflow).frame(width: 28, height: 28)
+            }
+        }
+        .padding(.horizontal, 10).fixedSize(horizontal: true, vertical: true)
+        .background {
+            if #unavailable(macOS 26.0) { Capsule().fill(.regularMaterial) }
+        }
+        .contextMenu {
+            Button("Настроить верхнюю панель…", systemImage: "slider.horizontal.3") { customizingToolbar = true }
         }
     }
     @ViewBuilder private func customizedToolbarButton(_ definition: CustomMenuDefinition) -> some View {
         if definition.id == "tools" {
             ToolbarActionsMenu(actions: toolsMenuActions).frame(width: 28, height: 28)
+        } else if definition.id == "account" {
+            ToolbarCloudAccount(model: store.portableVault) { runGlobalAction(definition.id) }
         } else if definition.id == "maps" {
             toolbarButton(definition.title, symbol: definition.icon, help: "Сетевые карты · ПКМ — выбрать карту") { store.openTopology() }
                 .contextMenu { ForEach(store.topologyMapIndex) { map in Button(map.name) { store.openTopology(mapID: map.id) } } }
@@ -1141,7 +1170,9 @@ struct MainView: View {
                 .onChange(of: store.assistantVisible) { _, visible in if !visible && !store.assistantExpanded { store.assistant?.stop() } }
         }
         .frame(minWidth: 780, minHeight: 550)
-        .onAppear { updateToolbarMode() }
+        .onAppear { updateToolbarMode(); store.reloadTopologyMapIndex() }
+        .onChange(of: store.profiles.active) { _, _ in store.reloadTopologyMapIndex() }
+        .onChange(of: store.config.url) { _, _ in store.reloadTopologyMapIndex() }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification)) { updateToolbarMode($0) }
         .onReceive(NotificationCenter.default.publisher(for: NSSplitView.didResizeSubviewsNotification)) { _ in updateToolbarMode() }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { updateToolbarMode($0) }
@@ -1150,14 +1181,7 @@ struct MainView: View {
         .toolbar {
             sidebarToolbar
             if #available(macOS 26.0, *) { ToolbarSpacer(.flexible, placement: .primaryAction) }
-            // One toolbar item keeps button order stable during split-view transitions.
-            ToolbarItem(id: "customizedActions", placement: .primaryAction) {
-                customizedToolbar.padding(.horizontal, 10).fixedSize(horizontal: true, vertical: true)
-                    .contextMenu { Button("Настроить верхнюю панель…", systemImage: "slider.horizontal.3") { customizingToolbar = true } }
-                    .onAppear { store.reloadTopologyMapIndex() }
-                    .onChange(of: store.profiles.active) { _, _ in store.reloadTopologyMapIndex() }
-                    .onChange(of: store.config.url) { _, _ in store.reloadTopologyMapIndex() }
-            }
+            customizedToolbar
         }
         .sheet(isPresented: $customizingToolbar) { MenuCustomizationView(surface: .toolbar) }
         .sheet(item: $store.stylingFolder) { FolderAppearanceView(path: $0.path).environmentObject(store) }
@@ -1183,7 +1207,9 @@ struct MainView: View {
         .sheet(item: $store.loginNotifications) { model in LoginNotificationsView(model: model).onDisappear { model.close() } }
         .sheet(isPresented: $store.assistantExpanded, onDismiss: { if !store.assistantVisible { store.assistant?.stop() } }) { AssistantHostView(expanded: true).environmentObject(store).frame(width: 900, height: 720) }
         .sheet(item: $store.infrastructureImport) { InfrastructureRecordCreation(value: $0.value).environmentObject(store) }
-        .sheet(isPresented: $store.showingSettings) { AppSettingsView().environmentObject(store) }
+        .sheet(isPresented: $store.showingSettings, onDismiss: { store.opensAuthorization = false }) {
+            AppSettingsView(openAuthorization: store.opensAuthorization).environmentObject(store)
+        }
         .sheet(isPresented: $store.showingKeys) { KeyManagerView().environmentObject(store) }
         .sheet(isPresented: $store.showingHistory) { HistoryView().environmentObject(store) }
         .sheet(isPresented: $store.showingTunnels) { TunnelsView().environmentObject(store) }

@@ -10,12 +10,12 @@ enum CustomMenuSurface: String, CaseIterable, Identifiable {
     var defaults: [CustomMenuItem] {
         let ids: [String]
         switch self {
-        case .toolbar: ids = ["reload", "palette", "tools", "maps", "settings", "assistant", "lock", "record"]
+        case .toolbar: ids = ["reload", "palette", "tools", "maps", "settings", "assistant", "lock", "record", "account"]
         case .tools: ids = ["commands", "trash", "divider:network", "network", "nuclei", "lynis", "trivy", "checks", "maps", "integrations", "monitoring", "maintenance", "divider:ssh", "generateKey", "keys", "history", "tunnels"]
         case .record: ids = ["website", "browser", "connect", "sftp", "external", "loginNotify", "dashboard", "divider:copy", "copyUsername", "copyPassword", "copyTOTP", "divider:materials", "documentation", "attachments", "edit", "appearance", "group", "favorite", "template", "duplicate", "copy", "export", "keePass", "divider:delete", "delete", "divider:create", "record", "folder"]
         }
         let optional = definitions.map(\.id).filter { !ids.contains($0) }
-        return ids.map { CustomMenuItem(id: $0) } + optional.map { CustomMenuItem(id: $0, visible: false) }
+        return ids.map { CustomMenuItem(id: $0, secondary: $0 == "account" ? true : nil) } + optional.map { CustomMenuItem(id: $0, visible: false) }
     }
     var definitions: [CustomMenuDefinition] {
         if self == .record {
@@ -36,6 +36,7 @@ enum CustomMenuSurface: String, CaseIterable, Identifiable {
             .init("reload", "Обновить", "arrow.clockwise"), .init("palette", "Палитра действий", "command"), .init("tools", "Инструменты", "wrench.and.screwdriver"),
             .init("maps", "Сетевые карты", "point.3.connected.trianglepath.dotted"), .init("settings", "Настройки", "gearshape"), .init("assistant", "ИИ-помощник", "sparkles"),
             .init("lock", "Заблокировать", "lock"), .init("record", "Новая запись", "plus"), .init("folder", "Новая папка", "folder.badge.plus"),
+            .init("account", "Облачная учётная запись", "person.crop.circle"),
             .init("commands", "Библиотека команд", "books.vertical"), .init("trash", "Корзина записей", "trash"), .init("network", "Сетевые инструменты", "wrench.and.screwdriver"),
             .init("nuclei", "Проверка уязвимостей · Nuclei", "shield.checkered"),
             .init("lynis", "Аудит системы · Lynis", "checkmark.shield"), .init("trivy", "Проверка пакетов · Trivy", "shippingbox"), .init("checks", "История проверок", "clock.badge.checkmark"),
@@ -44,7 +45,7 @@ enum CustomMenuSurface: String, CaseIterable, Identifiable {
             .init("credentials", "Общие учётные данные", "person.badge.key.fill"), .init("profiles", "Профили", "person.crop.rectangle.stack"), .init("templates", "Шаблоны записей", "square.stack"),
             .init("availability", "Статус доступности", "waveform.path.ecg"), .init("backup", "Резервное копирование", "externaldrive"), .init("import", "Импорт записей", "square.and.arrow.down"), .init("export", "Экспорт записей", "square.and.arrow.up")
         ]
-        return self == .toolbar ? global : global.filter { !["tools", "settings", "assistant"].contains($0.id) }
+        return self == .toolbar ? global : global.filter { !["tools", "settings", "assistant", "account"].contains($0.id) }
     }
 }
 struct CustomMenuDefinition: Identifiable {
@@ -62,21 +63,49 @@ enum CustomMenuLayout {
         guard !data.isEmpty, data.count <= 32_768, let decoded = try? JSONDecoder().decode([CustomMenuItem].self, from: data), decoded.count <= 64,
               Set(decoded.map(\.id)).count == decoded.count else { return surface.defaults }
         let allowed = Set(surface.definitions.map(\.id))
-        var result = decoded.filter { allowed.contains($0.id) || surface != .toolbar && $0.isDivider && $0.id.utf8.count <= 80 }
+        var result = decoded.filter { allowed.contains($0.id) || $0.isDivider && $0.id.utf8.count <= 80 }
         let present = Set(result.map(\.id))
         result += surface.defaults.filter { !$0.isDivider && !present.contains($0.id) }
         return result
     }
     static func visible(_ data: Data, for surface: CustomMenuSurface) -> [CustomMenuItem] { items(data, for: surface).filter(\.visible) }
-    static func toolbarGroups(_ data: Data) -> (primary: [CustomMenuDefinition], secondary: [CustomMenuDefinition]) {
-        let definitions = CustomMenuSurface.toolbar.definitions
-        var primary: [CustomMenuDefinition] = [], secondary: [CustomMenuDefinition] = []
-        for item in visible(data, for: .toolbar) {
-            guard let definition = definitions.first(where: { $0.id == item.id }) else { continue }
-            if item.secondary == true { secondary.append(definition) }
-            else { primary.append(definition) }
+    static func toolbarGroups(_ data: Data) -> (primary: [CustomMenuItem], secondary: [CustomMenuItem]) {
+        let rows = visible(data, for: .toolbar)
+        return (trimDividers(rows.filter { $0.secondary != true }), trimDividers(rows.filter { $0.secondary == true }))
+    }
+    static func trimDividers(_ items: [CustomMenuItem]) -> [CustomMenuItem] {
+        var result: [CustomMenuItem] = [], divider: CustomMenuItem?
+        for item in items {
+            if item.isDivider {
+                if !result.isEmpty { divider = divider ?? item }
+            } else {
+                if let divider { result.append(divider) }
+                result.append(item)
+                divider = nil
+            }
         }
-        return (primary, secondary)
+        return result
+    }
+    static func moveToolbar(_ items: [CustomMenuItem], id: String, to row: Int, secondary: Bool) -> [CustomMenuItem] {
+        guard let from = items.firstIndex(where: { $0.id == id }) else { return items }
+        let target = items.filter { ($0.secondary == true) == secondary }
+        guard (0...target.count).contains(row) else { return items }
+        let next = row < target.count ? target[row].id : nil
+        guard next != id else { return items }
+        var result = items
+        var item = result.remove(at: from)
+        item.secondary = secondary ? true : nil
+        let index = next.flatMap { id in result.firstIndex { $0.id == id } }
+            ?? result.lastIndex { ($0.secondary == true) == secondary }.map { $0 + 1 }
+            ?? result.count
+        result.insert(item, at: index)
+        return result
+    }
+    static func toolbarSplit(_ items: [CustomMenuItem], capacity: Int) -> (visible: [CustomMenuItem], overflow: [CustomMenuItem]) {
+        let buttons = items.indices.filter { !items[$0].isDivider }
+        guard buttons.count > capacity else { return (items, []) }
+        let index = capacity > 1 ? buttons[capacity - 2] + 1 : 0
+        return (Array(items.prefix(index)), trimDividers(Array(items.dropFirst(index))))
     }
     static func move(_ items: [CustomMenuItem], from: Int, to: Int) -> [CustomMenuItem] {
         guard items.indices.contains(from), (0...items.count).contains(to) else { return items }

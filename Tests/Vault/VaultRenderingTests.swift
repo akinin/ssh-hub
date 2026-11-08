@@ -33,6 +33,16 @@ final class VaultRenderingTests: XCTestCase {
             let window = NSWindow(contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false)
             window.appearance = NSAppearance(named: .darkAqua)
             window.contentView = view; view.layoutSubtreeIfNeeded()
+            if name == "toolbar-editor" {
+                func rows(in view: NSView) -> [Int] {
+                    if let table = view as? NSTableView { return [table.numberOfRows] }
+                    return view.subviews.flatMap(rows(in:))
+                }
+                let counts = rows(in: view)
+                XCTAssertEqual(counts.count, 2)
+                XCTAssertTrue(counts.contains(1), "The account starts on the second panel")
+                XCTAssertTrue(counts.contains { $0 > 1 })
+            }
             guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw VaultError.locked }
             view.cacheDisplay(in: view.bounds, to: bitmap)
             guard let data = bitmap.representation(using: .png, properties: [:]) else { throw VaultError.locked }
@@ -52,6 +62,14 @@ final class VaultRenderingTests: XCTestCase {
         model.endpoint.enabled = true
         try model.renameDatabase("Рабочая база")
         try render("login", Form { VaultAccessSettingsView(model: model); VaultSettingsView(model: model) }.formStyle(.grouped).environmentObject(store))
+        let endpoint = VaultSyncEndpoint(enabled: true, address: "https://fixture.invalid", username: "demo")
+        let account = VaultCloudSession(server: endpoint.address, token: "synthetic-token", username: "demo", role: "admin", vault: endpoint.vault, expiresAt: Date().timeIntervalSince1970 + 3600)
+        try model.database?.set("sync/endpoint", VaultCollection.encode(endpoint))
+        try model.database?.set("cloud/session", VaultCollection.encode(account))
+        try model.hydrate(store)
+        try render("signed-in", Form { VaultSettingsView(model: model) }.formStyle(.grouped).environmentObject(store))
+        try render("toolbar-editor", MenuCustomizationView(surface: .toolbar).background(Color(nsColor: .windowBackgroundColor)),
+                   width: 780, height: 640)
         try model.database?.set("app/storage-version", VaultCollection.encode(1))
         model.lock()
         for _ in 0..<200 where session.closing { try await Task.sleep(for: .milliseconds(10)) }

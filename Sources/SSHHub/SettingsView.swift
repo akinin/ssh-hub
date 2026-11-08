@@ -26,7 +26,10 @@ struct AppSettingsView: View {
     @State private var showingActionTiles = false
     @State private var showingRowBadges = false
     @State private var customizingMenu: CustomMenuSurface?
-    @State private var selectedSection = AppSettingsSection.connections
+    @State private var selectedSection: AppSettingsSection
+    init(openAuthorization: Bool = false) {
+        _selectedSection = State(initialValue: openAuthorization ? .security : .connections)
+    }
     var body: some View {
         VStack(spacing: 0) {
             HubSheetHeader(title: "Настройки", subtitle: "Подключения, рабочая область и авторизация", icon: "gearshape").padding(20)

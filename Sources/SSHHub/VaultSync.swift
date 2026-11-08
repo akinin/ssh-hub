@@ -131,27 +131,38 @@ protocol VaultSyncTransport: AnyObject {
 final class VaultSyncClient: VaultSyncTransport, @unchecked Sendable {
     let endpoint: VaultSyncEndpoint
     let token: String?
+    private let timeout: TimeInterval
     private var transport: VaultCloudRequest?
     private let mutex = NSLock()
     private static let registryLock = NSLock()
     private static var registry: [UUID: VaultCloudRequest] = [:]
     static var pending: Bool { registryLock.lock(); defer { registryLock.unlock() }; return !registry.isEmpty }
     static func stopAll() { registryLock.lock(); let jobs = Array(registry.values); registryLock.unlock(); jobs.forEach { $0.cancel() } }
-    init(endpoint: VaultSyncEndpoint, token: String? = nil) throws { try endpoint.validate(); self.endpoint = endpoint; self.token = token }
+    init(endpoint: VaultSyncEndpoint, token: String? = nil, timeout: TimeInterval = 60) throws {
+        try endpoint.validate()
+        self.endpoint = endpoint; self.token = token; self.timeout = timeout
+    }
     func cancel() { mutex.lock(); let current = transport; mutex.unlock(); current?.cancel() }
     private func register(_ id: UUID, _ request: VaultCloudRequest?) {
         Self.registryLock.lock(); Self.registry[id] = request; Self.registryLock.unlock()
         mutex.lock(); transport = request; mutex.unlock()
     }
-    func api(_ path: String, fields: [String: Any]) async throws -> [String: Any] {
+    func api(_ path: String, fields: [String: Any]?) async throws -> [String: Any] {
         try Task.checkCancellation()
         let request = VaultCloudRequest(), id = UUID(); register(id, request)
         defer { register(id, nil) }
         guard let url = URL(string: endpoint.address)?.appendingPathComponent(path) else { throw VaultError.message("Некорректный адрес сервера.") }
-        let input = try JSONSerialization.data(withJSONObject: fields)
-        guard input.count <= 6 * 1024 * 1024 else { throw VaultError.message("Запрос слишком большой.") }
-        let data = try await request.run(url: url, token: token, data: input)
+        let input = try fields.map { try JSONSerialization.data(withJSONObject: $0) }
+        guard (input?.count ?? 0) <= 6 * 1024 * 1024 else { throw VaultError.message("Запрос слишком большой.") }
+        let data = try await request.run(url: url, token: token, data: input, timeout: timeout)
         guard let response = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw VaultError.message("Некорректный ответ сервера.") }; return response
+    }
+    func checkConnection() async throws {
+        guard token != nil else { throw VaultCloudAuthenticationRequired() }
+        let account = try await api("api/v1/me", fields: nil)
+        guard let vault = account["vault"] as? String, UUID(uuidString: vault) == endpoint.vault else {
+            throw VaultCloudAuthenticationRequired()
+        }
     }
     func login(username: String, password: String) async throws -> VaultCloudSession {
         let response = try await api("api/v1/login", fields: ["username": username, "password": password, "device": "SSH Hub · macOS"])

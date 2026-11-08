@@ -113,6 +113,11 @@ struct VaultCollection: Codable, Equatable {
 }
 
 @MainActor final class VaultWorkspace: ObservableObject {
+    enum SyncPasswordPrompt: String, Identifiable {
+        case firstUpload, existingSnapshot
+        var id: Self { self }
+    }
+
     private struct SavedSyncKey: Codable {
         let server: String
         let vault: UUID
@@ -137,6 +142,7 @@ struct VaultCollection: Codable, Equatable {
     @Published private(set) var cloudSession: VaultCloudSession?
     @Published private var savedSyncKey: SavedSyncKey?
     @Published private var syncKeyNeedsPassword = false
+    @Published var syncPasswordPrompt: SyncPasswordPrompt?
     var clientFactory: (VaultSyncEndpoint, String) throws -> any VaultSyncTransport = { try VaultSyncClient(endpoint: $0, token: $1) }
     private var pending: (VaultCollection, VaultCollection, VaultCollection, Int)?
     private var task: Task<Void, Never>?
@@ -179,6 +185,7 @@ struct VaultCollection: Codable, Equatable {
         onWillLock?(); biometricContext?.invalidate(); biometricContext = nil
         generation = UUID(); task?.cancel(); client?.cancel(); client = nil; busy = false; pending = nil; conflicts = []
         database?.lock(); unlocked = false; customDatabaseName = nil; cloudSession = nil; savedSyncKey = nil; syncKeyNeedsPassword = false
+        syncPasswordPrompt = nil
         endpoint = VaultSyncEndpoint(); error = nil; status = nil; runtimeCache.clear()
         NotificationCenter.default.post(name: RecordTOTPStore.changed, object: nil)
     }
@@ -419,6 +426,7 @@ struct VaultCollection: Codable, Equatable {
         do { try database.transaction { try database.set("cloud/session", nil); try database.set("sync/endpoint", VaultCollection.encode(targetEndpoint)) } }
         catch { self.error = error.localizedDescription; return }
         endpoint = targetEndpoint; cloudSession = nil; conflicts = []; pending = nil
+        syncPasswordPrompt = nil
         // Local sign-out succeeds even while offline. Revoke remotely if reachable;
         // administrator disable/reset revokes all device sessions immediately.
         let target = VaultSyncEndpoint(enabled: false, address: session.server, username: session.username, vault: session.vault)
@@ -440,6 +448,7 @@ struct VaultCollection: Codable, Equatable {
         try database.set("sync/key", VaultCollection.encode(saved))
         savedSyncKey = saved
         syncKeyNeedsPassword = false
+        syncPasswordPrompt = nil
     }
     func collect(_ store: AliasStore) throws -> VaultCollection {
         guard let database, unlocked else { throw VaultError.locked }
@@ -496,19 +505,24 @@ struct VaultCollection: Codable, Equatable {
             do {
                 guard self.endpoint.enabled, let db = self.database, self.unlocked, !AppAccess.shared.locked else { throw VaultError.locked }
                 guard let session = self.activeCloudSession, session.server == self.endpoint.address, session.vault == self.endpoint.vault else { throw VaultError.message("Войди в облачную учётную запись.") }
-                let authorization: VaultSyncAuthorization
-                if let password, !password.isEmpty { authorization = .password(password) }
-                else if !self.syncPasswordRequired, let saved = self.savedSyncKey { authorization = .saved(saved.key) }
-                else { throw VaultSyncPasswordRequired() }
                 try store.requireVaultIdle()
                 let auth = AppAccess.shared.authorizationRevision, local = try self.collect(store)
-                var base = try db.get("sync/base").map { try JSONDecoder().decode(VaultCollection.self, from: $0) } ?? VaultCollection()
-                try base.discardGeneratedRuntime()
                 let lastSeen = try db.get("sync/revision").map { try JSONDecoder().decode(Int.self, from: $0) } ?? 0
                 let client = try self.clientFactory(self.endpoint, session.token); self.client = client
                 let revision = try await client.head()
                 guard self.generation == operation, !AppAccess.shared.locked, auth == AppAccess.shared.authorizationRevision else { throw VaultError.locked }
                 guard revision >= lastSeen else { throw VaultError.message("На сервере более старая ревизия. Автоматическая перезапись остановлена.") }
+                let prompt: SyncPasswordPrompt = revision == 0 ? .firstUpload : .existingSnapshot
+                if let currentPrompt = self.syncPasswordPrompt, currentPrompt != prompt {
+                    self.syncPasswordPrompt = prompt
+                    return
+                }
+                let authorization: VaultSyncAuthorization
+                if let password, !password.isEmpty { authorization = .password(password) }
+                else if !self.syncPasswordRequired, let saved = self.savedSyncKey { authorization = .saved(saved.key) }
+                else { self.syncPasswordPrompt = prompt; return }
+                var base = try db.get("sync/base").map { try JSONDecoder().decode(VaultCollection.self, from: $0) } ?? VaultCollection()
+                try base.discardGeneratedRuntime()
                 var remote: VaultCollection
                 let key: VaultSyncKey
                 if revision == 0 {
@@ -542,10 +556,15 @@ struct VaultCollection: Codable, Equatable {
                 self.conflicts = []; self.pending = nil; self.status = "Синхронизировано · ревизия \(saved)."
             } catch {
                 if self.generation == operation {
-                    if error is VaultSyncPasswordRequired { self.syncKeyNeedsPassword = true }
+                    if error is VaultSyncPasswordRequired {
+                        self.syncKeyNeedsPassword = true
+                        self.syncPasswordPrompt = .existingSnapshot
+                        return
+                    }
                     if error is VaultCloudAuthenticationRequired, let db = self.database {
                         do { try db.set("cloud/session", nil); self.cloudSession = nil }
                         catch { self.error = error.localizedDescription; return }
+                        self.syncPasswordPrompt = nil
                     }
                     self.error = error.localizedDescription
                 }

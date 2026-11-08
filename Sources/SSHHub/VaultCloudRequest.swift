@@ -16,7 +16,7 @@ final class VaultCloudRequest: NSObject, URLSessionDataDelegate, @unchecked Send
     private var cancelled = false
     private var oversized = false
     func cancel() { mutex.lock(); cancelled = true; let task = task; mutex.unlock(); task?.cancel() }
-    func run(url: URL, token: String?, data: Data) async throws -> Data {
+    func run(url: URL, token: String?, data: Data?, timeout: TimeInterval = 60) async throws -> Data {
         try await withTaskCancellationHandler(operation: {
             try Task.checkCancellation()
             return try await withCheckedThrowingContinuation { continuation in
@@ -24,11 +24,14 @@ final class VaultCloudRequest: NSObject, URLSessionDataDelegate, @unchecked Send
                 guard !cancelled else { continuation.resume(throwing: CancellationError()); return }
                 let config = URLSessionConfiguration.ephemeral
                 config.httpShouldSetCookies = false; config.httpCookieStorage = nil; config.urlCredentialStorage = nil; config.urlCache = nil
-                config.timeoutIntervalForRequest = 45; config.timeoutIntervalForResource = 60
+                config.timeoutIntervalForRequest = min(45, timeout); config.timeoutIntervalForResource = timeout
                 let session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
                 self.session = session; self.continuation = continuation
-                var request = URLRequest(url: url); request.httpMethod = "POST"; request.httpBody = data
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                var request = URLRequest(url: url)
+                if let data {
+                    request.httpMethod = "POST"; request.httpBody = data
+                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                }
                 request.setValue("application/json", forHTTPHeaderField: "Accept")
                 if let token { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
                 let task = session.dataTask(with: request); self.task = task; task.resume()

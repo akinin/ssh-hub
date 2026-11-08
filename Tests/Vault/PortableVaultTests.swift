@@ -201,8 +201,10 @@ final class PortableVaultTests: XCTestCase {
             XCTFail("Sync did not finish")
         }
         XCTAssertTrue(model.syncPasswordRequired)
+        XCTAssertNil(model.syncPasswordPrompt, "Signing in must not display an encryption prompt")
+        try await sync(); XCTAssertEqual(model.syncPasswordPrompt, .firstUpload); XCTAssertEqual(cloud.revision, 0)
         try await sync(password: cloudPassword); XCTAssertNil(model.error); XCTAssertEqual(cloud.revision, 1)
-        XCTAssertFalse(model.syncPasswordRequired)
+        XCTAssertFalse(model.syncPasswordRequired); XCTAssertNil(model.syncPasswordPrompt)
         let (_, key) = try VaultSyncCrypto.manifest(cloud.packet, authorization: .password(cloudPassword), vault: cloud.id)
         model.lock(); XCTAssertTrue(model.syncPasswordRequired)
         try model.unlock(password, store: store); XCTAssertFalse(model.syncPasswordRequired)
@@ -232,7 +234,8 @@ final class PortableVaultTests: XCTestCase {
         // never apply the new revision until its password is confirmed again.
         let oldClientKey = try VaultSyncKey(password: cloudPassword)
         _ = try await cloud.push(VaultCollection.encode(stable), key: oldClientKey, expected: cloud.revision)
-        try await sync(); XCTAssertTrue(model.syncPasswordRequired); XCTAssertEqual(try model.collect(store), stable)
+        try await sync(); XCTAssertTrue(model.syncPasswordRequired); XCTAssertEqual(model.syncPasswordPrompt, .existingSnapshot)
+        XCTAssertNil(model.error); XCTAssertEqual(try model.collect(store), stable)
         try await sync(password: password); XCTAssertNotNil(model.error); XCTAssertTrue(model.syncPasswordRequired)
         try await sync(password: cloudPassword); XCTAssertNil(model.error); XCTAssertFalse(model.syncPasswordRequired)
         cloud.offline = true
