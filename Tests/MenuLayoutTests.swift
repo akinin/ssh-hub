@@ -24,6 +24,14 @@ import AppKit
         check(CustomMenuLayout.move(input, from: 0, to: 1) == input && CustomMenuLayout.move(input, from: -1, to: 0) == input && CustomMenuLayout.move(input, from: 1, to: 9) == input, "same and invalid insertion preserve order")
         let duplicate = try JSONEncoder().encode([CustomMenuItem(id: "reload"), .init(id: "reload")])
         check(CustomMenuLayout.items(duplicate, for: .toolbar) == CustomMenuSurface.toolbar.defaults, "duplicate IDs rejected")
+        let grouped = try JSONEncoder().encode([
+            CustomMenuItem(id: "tools", secondary: true), .init(id: "reload"), .init(id: "maps", secondary: true),
+            .init(id: "assistant", visible: false, secondary: true)
+        ])
+        let groups = CustomMenuLayout.toolbarGroups(grouped)
+        check(groups.primary.first?.id == "reload" && groups.secondary.map(\.id) == ["tools", "maps"], "second toolbar group preserves order and visibility")
+        check(Set(groups.primary.map(\.id)).isDisjoint(with: groups.secondary.map(\.id)), "each toolbar action is shown at most once")
+        check(CustomMenuLayout.toolbarGroups(Data()).secondary.isEmpty, "existing toolbar layouts use one group")
         let unknown = try JSONEncoder().encode([CustomMenuItem(id: "unrecognized-command")])
         check(!CustomMenuLayout.items(unknown, for: .toolbar).contains { $0.id == "unrecognized-command" }, "unknown command never becomes executable")
         check(!CustomMenuSurface.tools.defaults.filter(\.visible).contains { ["settings", "assistant"].contains($0.id) }, "no duplicate settings or AI in tools")

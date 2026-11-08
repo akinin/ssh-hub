@@ -3,10 +3,10 @@ import AppKit
 import ServiceManagement
 
 private enum AppSettingsSection: String, CaseIterable, Identifiable {
-    case connections, appearance, wireGuard, keePass, workspace, vault, mcp, startup, updates, transfer, security
+    case connections, appearance, wireGuard, keePass, workspace, mcp, startup, updates, transfer, security
     var id: String { rawValue }
-    var title: String { switch self { case .mcp: return "MCP"; case .vault: return "Синхронизация"; case .appearance: return "Внешний вид"; case .wireGuard: return "WireGuard"; case .keePass: return "KeePass"; case .security: return "Авторизация"; case .connections: return "Подключения"; case .workspace: return "Рабочая область"; case .startup: return "Запуск"; case .updates: return "Обновления"; case .transfer: return "Перенос данных" } }
-    var icon: String { switch self { case .mcp: return "puzzlepiece.extension"; case .vault: return "externaldrive.badge.icloud"; case .appearance: return "paintbrush"; case .wireGuard: return "network.badge.shield.half.filled"; case .keePass: return "lock.rectangle.stack"; case .security: return "lock.shield"; case .connections: return "network"; case .workspace: return "rectangle.split.2x1"; case .startup: return "power"; case .updates: return "arrow.triangle.2.circlepath"; case .transfer: return "externaldrive" } }
+    var title: String { switch self { case .mcp: return "MCP"; case .appearance: return "Внешний вид"; case .wireGuard: return "WireGuard"; case .keePass: return "KeePass"; case .security: return "Авторизация"; case .connections: return "Подключения"; case .workspace: return "Рабочая область"; case .startup: return "Запуск"; case .updates: return "Обновления"; case .transfer: return "Перенос данных" } }
+    var icon: String { switch self { case .mcp: return "puzzlepiece.extension"; case .appearance: return "paintbrush"; case .wireGuard: return "network.badge.shield.half.filled"; case .keePass: return "lock.rectangle.stack"; case .security: return "lock.shield"; case .connections: return "network"; case .workspace: return "rectangle.split.2x1"; case .startup: return "power"; case .updates: return "arrow.triangle.2.circlepath"; case .transfer: return "externaldrive" } }
 }
 
 struct AppSettingsView: View {
@@ -50,8 +50,9 @@ struct AppSettingsView: View {
                         switch selectedSection {
                         case .keePass, .wireGuard: EmptyView()
                         case .mcp: MCPSettingsView(controller: store.mcpController())
-                        case .vault: VaultSettingsView(model: store.portableVault)
-                        case .security: VaultAccessSettingsView(model: store.portableVault)
+                        case .security:
+                            VaultAccessSettingsView(model: store.portableVault)
+                            VaultSettingsView(model: store.portableVault)
                         case .connections:
                             Section {
                                 Picker("Открывать SSH", selection: $consoleDestination) {

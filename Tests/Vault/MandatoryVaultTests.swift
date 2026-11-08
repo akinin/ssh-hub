@@ -65,10 +65,15 @@ final class MandatoryVaultTests: XCTestCase {
             let model = VaultWorkspace(config: root.appendingPathComponent("config"), file: file, biometrics: adapter)
             try model.createEmpty(password: "owned-fixture-master-password")
             try model.setBiometrics(true)
+            try model.renameDatabase("  Рабочая база  ")
+            XCTAssertEqual(model.databaseName, "Рабочая база")
+            XCTAssertEqual(model.url, file)
             XCTAssertTrue(model.biometricEnabled)
             let account = try XCTUnwrap(model.database).biometricAccount
             let key = try XCTUnwrap(adapter.keys[account])
             model.lock(); try await model.openWithBiometrics(); XCTAssertTrue(model.unlocked)
+            XCTAssertEqual(model.databaseName, "Рабочая база")
+            XCTAssertEqual(model.database?.biometricAccount, account)
             model.lock(); adapter.keys[account] = Data(repeating: 0, count: 32)
             do { try await model.openWithBiometrics(); XCTFail("Wrong root key accepted") } catch {}
             XCTAssertFalse(model.unlocked)
@@ -80,6 +85,12 @@ final class MandatoryVaultTests: XCTestCase {
             adapter.waiting?.signal()
             do { try await operation.value; XCTFail("Stale Touch ID result reopened database") } catch {}
             XCTAssertEqual(model.url, other); XCTAssertFalse(model.unlocked)
+            XCTAssertEqual(model.databaseName, "other")
+            try model.select(file); try model.open("owned-fixture-master-password")
+            XCTAssertEqual(model.databaseName, "Рабочая база")
+            XCTAssertThrowsError(try model.renameDatabase("   "))
+            XCTAssertThrowsError(try model.renameDatabase("Первая\nВторая"))
+            model.lock()
         }
     }
     @MainActor func testEmbeddedKeysPreferencesSecretsAndLogsSurviveDatabaseCopy() async throws {

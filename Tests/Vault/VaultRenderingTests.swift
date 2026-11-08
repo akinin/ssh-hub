@@ -8,6 +8,19 @@ private struct RenderingAccess: AppAccessStorage {
     func write(_ data: Data?) throws {}
 }
 final class VaultRenderingTests: XCTestCase {
+    @MainActor func testToolbarMenuAnchorsBelowButton() {
+        _ = NSApplication.shared
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 100))
+        let frame = NSRect(x: 200, y: 50, width: 28, height: 28)
+        for view in [NSButton(frame: frame), NSView(frame: frame)] {
+            container.addSubview(view)
+            let anchor = view.convert(ToolbarActionsMenu.popupLocation(in: view), to: container)
+            XCTAssertEqual(anchor.x, frame.minX)
+            XCTAssertLessThan(anchor.y, frame.minY)
+            view.removeFromSuperview()
+        }
+    }
+
     @MainActor func testOwnedVaultSettingsRendering() async throws {
         guard ProcessInfo.processInfo.environment["SSH_HUB_RENDER_VAULT_QA"] == "1" else { throw XCTSkip("Explicit visual QA only") }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("ssh-hub-owned-render-" + UUID().uuidString)
@@ -37,7 +50,8 @@ final class VaultRenderingTests: XCTestCase {
         session.start()
         let store = try XCTUnwrap(session.store)
         model.endpoint.enabled = true
-        try render("login", Form { VaultSettingsView(model: model) }.formStyle(.grouped).environmentObject(store))
+        try model.renameDatabase("Рабочая база")
+        try render("login", Form { VaultAccessSettingsView(model: model); VaultSettingsView(model: model) }.formStyle(.grouped).environmentObject(store))
         try model.database?.set("app/storage-version", VaultCollection.encode(1))
         model.lock()
         for _ in 0..<200 where session.closing { try await Task.sleep(for: .milliseconds(10)) }

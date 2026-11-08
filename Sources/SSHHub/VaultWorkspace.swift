@@ -113,8 +113,19 @@ struct VaultCollection: Codable, Equatable {
 }
 
 @MainActor final class VaultWorkspace: ObservableObject {
+    private struct SavedSyncKey: Codable {
+        let server: String
+        let vault: UUID
+        let key: VaultSyncKey
+
+        func matches(_ endpoint: VaultSyncEndpoint) -> Bool {
+            server == endpoint.address && vault == endpoint.vault && key.valid
+        }
+    }
+
     private(set) var config: URL
     @Published private(set) var url: URL
+    @Published private var customDatabaseName: String?
     @Published private(set) var database: PortableVault?
     @Published private(set) var unlocked = false
     @Published private(set) var requiresUpgrade = false
@@ -124,6 +135,8 @@ struct VaultCollection: Codable, Equatable {
     @Published var conflicts: [String] = []
     @Published var endpoint = VaultSyncEndpoint()
     @Published private(set) var cloudSession: VaultCloudSession?
+    @Published private var savedSyncKey: SavedSyncKey?
+    @Published private var syncKeyNeedsPassword = false
     var clientFactory: (VaultSyncEndpoint, String) throws -> any VaultSyncTransport = { try VaultSyncClient(endpoint: $0, token: $1) }
     private var pending: (VaultCollection, VaultCollection, VaultCollection, Int)?
     private var task: Task<Void, Never>?
@@ -138,6 +151,16 @@ struct VaultCollection: Codable, Equatable {
     private var terminationObserver: NSObjectProtocol?
     let required: Bool
     var exists: Bool { FileManager.default.fileExists(atPath: url.path) }
+    var databaseName: String {
+        if let customDatabaseName { return customDatabaseName }
+        let name = url.deletingPathExtension().lastPathComponent
+        return name.range(of: "^[a-f0-9]{64}$", options: .regularExpression) == nil ? name : "Основная база"
+    }
+    var syncPasswordRequired: Bool { syncKeyNeedsPassword || savedSyncKey?.matches(endpoint) != true }
+    var activeCloudSession: VaultCloudSession? {
+        guard let session = cloudSession, session.expiresAt > Date().timeIntervalSince1970 else { return nil }
+        return session
+    }
     init(config: URL, root: URL? = nil, file: URL? = nil, required: Bool = false, biometrics: VaultBiometricStorage? = nil) {
         self.config = config; self.required = required; self.biometricStorage = biometrics ?? (required ? VaultBiometricKeychain() : VaultNoBiometrics())
         let base = root ?? HubPaths.applicationSupport.appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.olshaniki.ssh-aliases").appendingPathComponent("Vaults")
@@ -155,7 +178,8 @@ struct VaultCollection: Codable, Equatable {
     func lock() {
         onWillLock?(); biometricContext?.invalidate(); biometricContext = nil
         generation = UUID(); task?.cancel(); client?.cancel(); client = nil; busy = false; pending = nil; conflicts = []
-        database?.lock(); unlocked = false; cloudSession = nil; endpoint = VaultSyncEndpoint(); error = nil; status = nil; runtimeCache.clear()
+        database?.lock(); unlocked = false; customDatabaseName = nil; cloudSession = nil; savedSyncKey = nil; syncKeyNeedsPassword = false
+        endpoint = VaultSyncEndpoint(); error = nil; status = nil; runtimeCache.clear()
         NotificationCenter.default.post(name: RecordTOTPStore.changed, object: nil)
     }
     func installBridge() {
@@ -230,8 +254,18 @@ struct VaultCollection: Codable, Equatable {
     }
     private func adoptConfig() {
         guard let database else { return }
+        customDatabaseName = (try? database.get("app/database-name")).flatMap { try? JSONDecoder().decode(String.self, from: $0) }
         if let data = try? database.get("app/config"), let path = try? JSONDecoder().decode(String.self, from: data) { config = URL(fileURLWithPath: path) }
         else if let names = try? database.names(), let name = names.first(where: { $0.hasPrefix("records/") }) { config = URL(fileURLWithPath: String(name.dropFirst(8))) }
+    }
+    func renameDatabase(_ name: String) throws {
+        guard unlocked, let database else { throw VaultError.locked }
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.count <= 100, !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+            throw VaultError.message("Введи имя базы длиной от 1 до 100 символов в одну строку.")
+        }
+        try database.set("app/database-name", VaultCollection.encode(name))
+        customDatabaseName = name
     }
     func setBiometrics(_ enabled: Bool) throws {
         guard unlocked, let database else { throw VaultError.locked }
@@ -347,6 +381,7 @@ struct VaultCollection: Codable, Equatable {
     }
     func hydrate(_ store: AliasStore) throws {
         guard let database else { throw VaultError.locked }
+        customDatabaseName = try database.get("app/database-name").map { try JSONDecoder().decode(String.self, from: $0) }
         if let value = try database.get("app/profiles") { let profiles = try JSONDecoder().decode(HubProfiles.self, from: value); guard profiles.valid else { throw VaultError.message("Некорректные профили базы.") }; store.profiles = profiles }
         if let value = try database.get("app/groups") { store.groups = try JSONDecoder().decode([String: String].self, from: value) }
         if let value = try database.get("app/appearances") { store.appearances = try JSONDecoder().decode([String: ConnectionAppearance].self, from: value) }
@@ -354,10 +389,11 @@ struct VaultCollection: Codable, Equatable {
         store.localRecords = try store.localRepository.load()
         if let value = try database.get("sync/endpoint") { endpoint = try JSONDecoder().decode(VaultSyncEndpoint.self, from: value) }
         if let value = try database.get("cloud/session") { cloudSession = try JSONDecoder().decode(VaultCloudSession.self, from: value) }
+        savedSyncKey = try database.get("sync/key").map { try JSONDecoder().decode(SavedSyncKey.self, from: $0) }
     }
     func login(password: String) {
         guard !busy, unlocked, let database, !AppAccess.shared.locked else { return }
-        busy = true; error = nil
+        busy = true; error = nil; status = nil
         let operation = generation, auth = AppAccess.shared.authorizationRevision, target = endpoint
         task = Task { @MainActor [weak self] in
             guard let self else { return }; defer { if self.generation == operation { self.busy = false } }
@@ -370,6 +406,7 @@ struct VaultCollection: Codable, Equatable {
                    old.vault != session.vault || old.address != session.server { throw VaultError.message("Эта локальная база связана с другой облачной учётной записью. Автоматический перенос данных между пользователями запрещён.") }
                 var connected = target; connected.vault = session.vault; connected.username = session.username; connected.enabled = true
                 try database.transaction { try database.set("cloud/session", VaultCollection.encode(session)); try database.set("sync/endpoint", VaultCollection.encode(connected)) }
+                if self.endpoint.address != connected.address || self.endpoint.vault != connected.vault { self.syncKeyNeedsPassword = false }
                 self.endpoint = connected; self.cloudSession = session
                 self.status = "Вход выполнен: " + session.username + ". Локальные данные сохраняются и без сервера."
             } catch { if self.generation == operation { self.error = error.localizedDescription } }
@@ -397,6 +434,12 @@ struct VaultCollection: Codable, Equatable {
             guard (try database.get("sync/base")) == nil else { throw VaultError.message("У этого хранилища уже есть история синхронизации. Для другого сервера создай отдельное хранилище; замена адреса не должна обходить проверку ревизий.") }
         }
         try database.set("sync/endpoint", VaultCollection.encode(endpoint)); status = endpoint.enabled ? "Сервер сохранён. Обмен запускается по кнопке." : "Синхронизация отключена. Локальные данные сохранены."
+    }
+    private func rememberSyncKey(_ key: VaultSyncKey, database: PortableVault) throws {
+        let saved = SavedSyncKey(server: endpoint.address, vault: endpoint.vault, key: key)
+        try database.set("sync/key", VaultCollection.encode(saved))
+        savedSyncKey = saved
+        syncKeyNeedsPassword = false
     }
     func collect(_ store: AliasStore) throws -> VaultCollection {
         guard let database, unlocked else { throw VaultError.locked }
@@ -444,7 +487,7 @@ struct VaultCollection: Codable, Equatable {
         if !objects.isEmpty { result.values["builtin"] = try VaultCollection.encode(VaultBuiltinSnapshot(config: config.standardizedFileURL.path, objects: objects)) }
         try result.validate(); return result
     }
-    func synchronize(store: AliasStore, password: String, choices: [String: Bool] = [:]) {
+    func synchronize(store: AliasStore, password: String? = nil, choices: [String: Bool] = [:]) {
         guard !busy else { return }; busy = true; error = nil; status = nil
         let operation = generation
         task = Task { @MainActor [weak self, weak store] in
@@ -452,19 +495,37 @@ struct VaultCollection: Codable, Equatable {
             defer { if self.generation == operation { self.busy = false; self.client = nil } }
             do {
                 guard self.endpoint.enabled, let db = self.database, self.unlocked, !AppAccess.shared.locked else { throw VaultError.locked }
-                try store.requireVaultIdle(); try db.unlock(password); try self.saveEndpoint()
+                guard let session = self.activeCloudSession, session.server == self.endpoint.address, session.vault == self.endpoint.vault else { throw VaultError.message("Войди в облачную учётную запись.") }
+                let authorization: VaultSyncAuthorization
+                if let password, !password.isEmpty { authorization = .password(password) }
+                else if !self.syncPasswordRequired, let saved = self.savedSyncKey { authorization = .saved(saved.key) }
+                else { throw VaultSyncPasswordRequired() }
+                try store.requireVaultIdle()
                 let auth = AppAccess.shared.authorizationRevision, local = try self.collect(store)
                 var base = try db.get("sync/base").map { try JSONDecoder().decode(VaultCollection.self, from: $0) } ?? VaultCollection()
                 try base.discardGeneratedRuntime()
                 let lastSeen = try db.get("sync/revision").map { try JSONDecoder().decode(Int.self, from: $0) } ?? 0
-                guard let session = self.cloudSession, session.server == self.endpoint.address, session.vault == self.endpoint.vault, session.expiresAt > Date().timeIntervalSince1970 else { throw VaultError.message("Войди в облачную учётную запись.") }
                 let client = try self.clientFactory(self.endpoint, session.token); self.client = client
                 let revision = try await client.head()
+                guard self.generation == operation, !AppAccess.shared.locked, auth == AppAccess.shared.authorizationRevision else { throw VaultError.locked }
                 guard revision >= lastSeen else { throw VaultError.message("На сервере более старая ревизия. Автоматическая перезапись остановлена.") }
                 var remote: VaultCollection
-                if revision == 0 { remote = VaultCollection() }
-                else { remote = try JSONDecoder().decode(VaultCollection.self, from: await client.pull(password: password, revision: revision, lastSeen: lastSeen)); try remote.discardGeneratedRuntime(); try remote.validate() }
+                let key: VaultSyncKey
+                if revision == 0 {
+                    remote = VaultCollection()
+                    switch authorization {
+                    case .password(let password): key = try VaultSyncKey(password: password)
+                    case .saved(let saved): key = saved
+                    }
+                } else {
+                    let snapshot = try await client.pull(authorization: authorization, revision: revision, lastSeen: lastSeen)
+                    key = snapshot.1
+                    remote = try JSONDecoder().decode(VaultCollection.self, from: snapshot.0)
+                    try remote.discardGeneratedRuntime(); try remote.validate()
+                }
                 guard self.generation == operation, !AppAccess.shared.locked, auth == AppAccess.shared.authorizationRevision, try self.collect(store) == local else { throw VaultError.message("Рабочая область изменилась во время обмена. Повтори синхронизацию.") }
+                // An authenticated snapshot already proves the key, even if its merge needs review.
+                if revision > 0, case .password = authorization { try self.rememberSyncKey(key, database: db) }
                 let resolvedChoices: [String: Bool]
                 if let pending = self.pending, pending.0 == base, pending.1 == local, pending.2 == remote, pending.3 == revision { resolvedChoices = choices } else { resolvedChoices = [:] }
                 var merge = VaultMerge(base: base.values, local: local.values, remote: remote.values)
@@ -474,11 +535,21 @@ struct VaultCollection: Codable, Equatable {
                 let merged = VaultCollection(format: max(local.format, remote.format), values: merge.values); try merged.validate()
                 try store.requireVaultIdle()
                 try self.apply(merged, previous: local, store: store)
-                let saved = merged == remote ? revision : try await client.push(VaultCollection.encode(merged), password: password, expected: revision)
+                let saved = merged == remote ? revision : try await client.push(VaultCollection.encode(merged), key: key, expected: revision)
                 guard self.generation == operation, !AppAccess.shared.locked, auth == AppAccess.shared.authorizationRevision, try self.collect(store).values == merged.values else { throw VaultError.message("Снимок обработан, но локальные данные уже изменились. Повтори обмен для новых изменений.") }
+                if revision == 0, saved > 0, case .password = authorization { try self.rememberSyncKey(key, database: db) }
                 try db.transaction { try db.set("sync/base", VaultCollection.encode(merged)); try db.set("sync/revision", VaultCollection.encode(saved)) }
                 self.conflicts = []; self.pending = nil; self.status = "Синхронизировано · ревизия \(saved)."
-            } catch { if self.generation == operation { self.error = error.localizedDescription } }
+            } catch {
+                if self.generation == operation {
+                    if error is VaultSyncPasswordRequired { self.syncKeyNeedsPassword = true }
+                    if error is VaultCloudAuthenticationRequired, let db = self.database {
+                        do { try db.set("cloud/session", nil); self.cloudSession = nil }
+                        catch { self.error = error.localizedDescription; return }
+                    }
+                    self.error = error.localizedDescription
+                }
+            }
         }
     }
     func conflictTitle(_ name: String) -> String {

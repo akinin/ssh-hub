@@ -30,13 +30,44 @@ struct VaultSyncManifest: Codable {
     var sha256: String
     var chunks: [String]
 }
+struct VaultSyncKey: Codable {
+    let salt: Data
+    let bytes: Data
+
+    init(password: String, salt: Data = VaultCrypto.random(16)) throws {
+        self.salt = salt
+        bytes = try VaultCrypto.derive(password, salt: salt).withUnsafeBytes { Data($0) }
+    }
+
+    var valid: Bool { salt.count == 16 && bytes.count == 32 }
+    var symmetricKey: SymmetricKey { SymmetricKey(data: bytes) }
+}
+
+enum VaultSyncAuthorization {
+    case password(String)
+    case saved(VaultSyncKey)
+
+    func key(for salt: Data) throws -> VaultSyncKey {
+        switch self {
+        case .password(let password): return try VaultSyncKey(password: password, salt: salt)
+        case .saved(let key):
+            guard key.salt == salt else { throw VaultSyncPasswordRequired() }
+            return key
+        }
+    }
+}
+
+struct VaultSyncPasswordRequired: LocalizedError {
+    var errorDescription: String? { "Введи пароль шифрования, чтобы подключить обмен для этой базы." }
+}
+
 enum VaultSyncCrypto {
     static let magic = Data("SSHHUBS1".utf8)
     static let chunkSize = 4 * 1024 * 1024
     static let maximum = 350_000_052
-    static func seal(_ data: Data, password: String, vault: UUID, expected: Int) throws -> (Data, [(String, Data)]) {
-        guard !data.isEmpty, data.count <= maximum, expected >= 0, expected < 9_007_199_254_740_990 else { throw VaultError.message("Некорректный размер снимка или ревизия.") }
-        let salt = VaultCrypto.random(16), key = try VaultCrypto.derive(password, salt: salt), snapshot = UUID().uuidString.lowercased(), scope = vault.uuidString.lowercased()
+    static func seal(_ data: Data, key syncKey: VaultSyncKey, vault: UUID, expected: Int) throws -> (Data, [(String, Data)]) {
+        guard syncKey.valid, !data.isEmpty, data.count <= maximum, expected >= 0, expected < 9_007_199_254_740_990 else { throw VaultError.message("Некорректный ключ, размер снимка или ревизия.") }
+        let key = syncKey.symmetricKey, snapshot = UUID().uuidString.lowercased(), scope = vault.uuidString.lowercased()
         var chunks: [(String, Data)] = []
         for offset in stride(from: 0, to: data.count, by: chunkSize) {
             let plain = data.subdata(in: offset..<min(offset + chunkSize, data.count))
@@ -44,23 +75,24 @@ enum VaultSyncCrypto {
             chunks.append((VaultCrypto.digest(value), value))
         }
         let manifest = VaultSyncManifest(snapshot: snapshot, revision: expected + 1, size: data.count, sha256: VaultCrypto.digest(data), chunks: chunks.map(\.0))
-        let header = magic + salt
+        // Keep the account's salt stable. AES.GCM generates a fresh nonce for every seal.
+        let header = magic + syncKey.salt
         let packet = try AES.GCM.seal(JSONEncoder().encode(manifest), using: key, authenticating: header + Data(scope.utf8)).combined!
         return (header + packet, chunks)
     }
-    static func manifest(_ packet: Data, password: String, vault: UUID) throws -> (VaultSyncManifest, SymmetricKey) {
+    static func manifest(_ packet: Data, authorization: VaultSyncAuthorization, vault: UUID) throws -> (VaultSyncManifest, VaultSyncKey) {
         guard (52...1_048_576).contains(packet.count), packet.prefix(8) == magic else { throw VaultError.message("Неподдерживаемый снимок сервера.") }
-        let key = try VaultCrypto.derive(password, salt: packet.subdata(in: 8..<24)), header = Data(packet.prefix(24))
+        let key = try authorization.key(for: packet.subdata(in: 8..<24)), header = Data(packet.prefix(24))
         let plain: Data
-        do { plain = try AES.GCM.open(AES.GCM.SealedBox(combined: packet.dropFirst(24)), using: key, authenticating: header + Data(vault.uuidString.lowercased().utf8)) }
+        do { plain = try AES.GCM.open(AES.GCM.SealedBox(combined: packet.dropFirst(24)), using: key.symmetricKey, authenticating: header + Data(vault.uuidString.lowercased().utf8)) }
         catch { throw VaultError.message("Неверный пароль синхронизации или повреждённый снимок.") }
         let value = try JSONDecoder().decode(VaultSyncManifest.self, from: plain)
         guard value.format == 1, UUID(uuidString: value.snapshot)?.uuidString.lowercased() == value.snapshot, (1...maximum).contains(value.size), value.revision > 0, value.chunks.count == (value.size + chunkSize - 1) / chunkSize,
               Set(value.chunks).count == value.chunks.count, (value.chunks + [value.sha256]).allSatisfy({ $0.count == 64 && $0.allSatisfy { "0123456789abcdef".contains($0) } }) else { throw VaultError.message("Некорректный манифест синхронизации.") }; return (value, key)
     }
-    static func open(_ packet: Data, chunks: [String: Data], password: String, vault: UUID) throws -> Data {
-        let (manifest, key) = try manifest(packet, password: password, vault: vault)
+    static func open(_ manifest: VaultSyncManifest, chunks: [String: Data], key syncKey: VaultSyncKey, vault: UUID) throws -> Data {
         guard Set(manifest.chunks) == Set(chunks.keys) else { throw VaultError.message("Не хватает блоков снимка.") }
+        let key = syncKey.symmetricKey
         var result = Data()
         for (index, name) in manifest.chunks.enumerated() {
             let data = chunks[name]!
@@ -91,8 +123,8 @@ struct VaultMerge {
 
 protocol VaultSyncTransport: AnyObject {
     func head() async throws -> Int
-    func pull(password: String, revision: Int, lastSeen: Int) async throws -> Data
-    func push(_ data: Data, password: String, expected: Int) async throws -> Int
+    func pull(authorization: VaultSyncAuthorization, revision: Int, lastSeen: Int) async throws -> (Data, VaultSyncKey)
+    func push(_ data: Data, key: VaultSyncKey, expected: Int) async throws -> Int
     func cancel()
 }
 
@@ -140,10 +172,10 @@ final class VaultSyncClient: VaultSyncTransport, @unchecked Sendable {
         }; return result
     }
     func head() async throws -> Int { guard let value = try await request("head")["revision"] as? Int, value >= 0 else { throw VaultError.message("Некорректная ревизия сервера.") }; return value }
-    func pull(password: String, revision: Int, lastSeen: Int) async throws -> Data {
+    func pull(authorization: VaultSyncAuthorization, revision: Int, lastSeen: Int) async throws -> (Data, VaultSyncKey) {
         let response = try await request("read", ["revision": revision])
         guard let n = response["revision"] as? Int, n == revision, n >= lastSeen, let encoded = response["manifest"] as? String, let packet = Data(base64Encoded: encoded), let names = response["blobs"] as? [String] else { throw VaultError.message("Ревизия сервера изменилась или была откачена назад.") }
-        let (manifest, _) = try VaultSyncCrypto.manifest(packet, password: password, vault: endpoint.vault)
+        let (manifest, key) = try VaultSyncCrypto.manifest(packet, authorization: authorization, vault: endpoint.vault)
         guard manifest.revision == n, Set(names) == Set(manifest.chunks) else { throw VaultError.message("Не совпадают ревизия или блоки снимка.") }
         var chunks: [String: Data] = [:]
         for name in manifest.chunks {
@@ -151,10 +183,10 @@ final class VaultSyncClient: VaultSyncTransport, @unchecked Sendable {
             let result = try await request("blob_get", ["digest": name])
             guard result["digest"] as? String == name, let encoded = result["data"] as? String, let data = Data(base64Encoded: encoded), data.count <= VaultSyncCrypto.chunkSize + 28 else { throw VaultError.message("Некорректный блок сервера.") }; chunks[name] = data
         }
-        return try VaultSyncCrypto.open(packet, chunks: chunks, password: password, vault: endpoint.vault)
+        return (try VaultSyncCrypto.open(manifest, chunks: chunks, key: key, vault: endpoint.vault), key)
     }
-    func push(_ data: Data, password: String, expected: Int) async throws -> Int {
-        let (packet, chunks) = try VaultSyncCrypto.seal(data, password: password, vault: endpoint.vault, expected: expected)
+    func push(_ data: Data, key: VaultSyncKey, expected: Int) async throws -> Int {
+        let (packet, chunks) = try VaultSyncCrypto.seal(data, key: key, vault: endpoint.vault, expected: expected)
         for (name, value) in chunks { try Task.checkCancellation(); _ = try await request("blob_put", ["digest": name, "data": value.base64EncodedString()]) }
         let response = try await request("commit", ["expected": expected, "manifest": packet.base64EncodedString(), "blobs": chunks.map(\.0)])
         guard let revision = response["revision"] as? Int, revision == expected + 1 else { throw VaultError.message("Сервер не подтвердил сохранение снимка.") }; return revision

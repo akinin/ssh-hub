@@ -26,6 +26,11 @@ struct ToolbarActionsMenu: NSViewRepresentable {
         return button
     }
     func updateNSView(_ view: NSButton, context: Context) { context.coordinator.actions = actions }
+    static func popupLocation(in view: NSView) -> NSPoint {
+        // NSButton uses flipped coordinates: maxY is its bottom edge.
+        let y = view.isFlipped ? view.bounds.maxY + 8 : view.bounds.minY - 8
+        return NSPoint(x: view.bounds.minX, y: y)
+    }
     @MainActor final class Coordinator: NSObject {
         var actions: [ToolbarMenuAction]
         init(actions: [ToolbarMenuAction]) { self.actions = actions }
@@ -39,7 +44,7 @@ struct ToolbarActionsMenu: NSViewRepresentable {
                 if item.responds(to: NSSelectorFromString("setPreferredImageVisibility:")) { item.setValue(1, forKey: "preferredImageVisibility") }
                 menu.addItem(item)
             }
-            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.minY - 4), in: sender)
+            menu.popUp(positioning: nil, at: ToolbarActionsMenu.popupLocation(in: sender), in: sender)
         }
         @objc func run(_ sender: NSMenuItem) {
             guard actions.indices.contains(sender.tag), actions[sender.tag].enabled else { return }

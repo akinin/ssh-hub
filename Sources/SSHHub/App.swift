@@ -1018,17 +1018,27 @@ struct MainView: View {
         }
         return result.isEmpty ? [.init(title: "Нет выбранных инструментов", enabled: false)] : result
     }
-    private var toolbarDefinitions: [CustomMenuDefinition] {
-        let definitions = CustomMenuSurface.toolbar.definitions
-        return CustomMenuLayout.visible(toolbarData, for: .toolbar).compactMap { item in definitions.first { $0.id == item.id } }
-    }
-    private var toolbarCapacity: Int { max(1, min(12, Int((toolbarWindowWidth - toolbarSidebarWidth - (compactToolbar ? 220 : 300) - 120) / 36))) }
-    private var visibleToolbarDefinitions: [CustomMenuDefinition] {
-        toolbarDefinitions.count <= toolbarCapacity ? toolbarDefinitions : Array(toolbarDefinitions.prefix(max(0, toolbarCapacity - 1)))
-    }
-    private var toolbarOverflow: [ToolbarMenuAction] {
-        toolbarDefinitions.dropFirst(visibleToolbarDefinitions.count).flatMap { definition in
+    private func toolbarOverflow(_ definitions: ArraySlice<CustomMenuDefinition>) -> [ToolbarMenuAction] {
+        definitions.flatMap { definition in
             definition.id == "tools" ? toolsMenuActions : [menuAction(definition)]
+        }
+    }
+    private var customizedToolbar: some View {
+        let groups = CustomMenuLayout.toolbarGroups(toolbarData)
+        let hasBothGroups = !groups.primary.isEmpty && !groups.secondary.isEmpty
+        let width = toolbarWindowWidth - toolbarSidebarWidth - (compactToolbar ? 220 : 300) - 120 - (hasBothGroups ? 21 : 0)
+        let capacity = max(1, min(12, Int(width / 36)))
+        let visible = groups.primary.count + groups.secondary.count <= capacity ? capacity : capacity - 1
+        let primaryCount = min(visible, groups.primary.count)
+        let secondaryCount = min(visible - primaryCount, groups.secondary.count)
+        let primaryOverflow = toolbarOverflow(groups.primary.dropFirst(primaryCount))
+        let secondaryOverflow = toolbarOverflow(groups.secondary.dropFirst(secondaryCount))
+        let overflow = primaryOverflow + (primaryOverflow.isEmpty || secondaryOverflow.isEmpty ? [] : [.divider]) + secondaryOverflow
+        return HStack(spacing: 8) {
+            ForEach(groups.primary.prefix(primaryCount)) { customizedToolbarButton($0) }
+            if primaryCount > 0 && secondaryCount > 0 { Divider().frame(height: 16).padding(.horizontal, 2) }
+            ForEach(groups.secondary.prefix(secondaryCount)) { customizedToolbarButton($0) }
+            if !overflow.isEmpty { ToolbarActionsMenu(title: "Ещё", symbol: "ellipsis", actions: overflow).frame(width: 28, height: 28) }
         }
     }
     @ViewBuilder private func customizedToolbarButton(_ definition: CustomMenuDefinition) -> some View {
@@ -1142,10 +1152,7 @@ struct MainView: View {
             if #available(macOS 26.0, *) { ToolbarSpacer(.flexible, placement: .primaryAction) }
             // One toolbar item keeps button order stable during split-view transitions.
             ToolbarItem(id: "customizedActions", placement: .primaryAction) {
-                HStack(spacing: 8) {
-                    ForEach(visibleToolbarDefinitions) { definition in customizedToolbarButton(definition) }
-                    if !toolbarOverflow.isEmpty { ToolbarActionsMenu(title: "Ещё", symbol: "ellipsis", actions: toolbarOverflow).frame(width: 28, height: 28) }
-                }.padding(.horizontal, 10).fixedSize(horizontal: true, vertical: true)
+                customizedToolbar.padding(.horizontal, 10).fixedSize(horizontal: true, vertical: true)
                     .contextMenu { Button("Настроить верхнюю панель…", systemImage: "slider.horizontal.3") { customizingToolbar = true } }
                     .onAppear { store.reloadTopologyMapIndex() }
                     .onChange(of: store.profiles.active) { _, _ in store.reloadTopologyMapIndex() }

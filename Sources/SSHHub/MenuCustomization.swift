@@ -17,9 +17,9 @@ struct MenuCustomizationView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HubSheetHeader(title: surface.title, subtitle: "Общие настройки для всех профилей", icon: surface.icon)
-            Text(surface == .record ? "Перетаскивай строки и включай нужные пункты. В меню видны только действия, доступные выбранному типу записи." : "Перетаскивай строки за название или ручку. Флажок добавляет кнопку или пункт. Изменения применятся после сохранения.")
+            Text(instructions)
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            MenuCustomizationRows(draft: $draft, definitions: surface.definitions).frame(maxHeight: .infinity)
+            MenuCustomizationRows(draft: $draft, definitions: surface.definitions, groupsToolbar: surface == .toolbar).frame(maxHeight: .infinity)
             Text("Включено: \(draft.filter { $0.visible && !$0.isDivider }.count)" + (surface == .toolbar ? ". При нехватке места остальные кнопки доступны через «Ещё»." : ""))
                 .font(.caption).foregroundStyle(.secondary)
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
@@ -36,13 +36,22 @@ struct MenuCustomizationView: View {
             }
         }.padding(20).frame(width: 600, height: 640)
     }
+    private var instructions: String {
+        switch surface {
+        case .toolbar: return "Перетаскивай строки, чтобы менять порядок. Отметь «Группа 2» у значка, чтобы перенести его в соседнюю группу справа."
+        case .record: return "Перетаскивай строки и включай нужные пункты. В меню видны только действия, доступные выбранному типу записи."
+        case .tools: return "Перетаскивай строки за название или ручку. Флажок добавляет пункт. Изменения применятся после сохранения."
+        }
+    }
 }
 struct MenuCustomizationRows: NSViewRepresentable {
     @Binding var draft: [CustomMenuItem]
     let definitions: [CustomMenuDefinition]
+    var groupsToolbar = false
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSScrollView {
         let table = DragTable(); table.headerView = nil; table.rowHeight = 40; table.intercellSpacing = .zero
+        table.controlWidth = groupsToolbar ? 146 : 60
         let column = NSTableColumn(identifier: .init("command")); column.minWidth = 1; column.resizingMask = .autoresizingMask
         table.addTableColumn(column); table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle; table.autoresizingMask = [.width]
         table.style = .plain; table.backgroundColor = .clear; table.selectionHighlightStyle = .none
@@ -67,12 +76,13 @@ struct MenuCustomizationRows: NSViewRepresentable {
         override func constrainBoundsRect(_ value: NSRect) -> NSRect { var value = super.constrainBoundsRect(value); value.origin.x = 0; return value }
     }
     private final class DragTable: NSTableView {
+        var controlWidth: CGFloat = 60
         override func canDragRows(with rowIndexes: IndexSet, at mouseDownPoint: NSPoint) -> Bool {
-            !rowIndexes.isEmpty && rowIndexes.allSatisfy { $0 >= 0 && $0 < numberOfRows } && mouseDownPoint.x < bounds.width - 60
+            !rowIndexes.isEmpty && rowIndexes.allSatisfy { $0 >= 0 && $0 < numberOfRows } && mouseDownPoint.x < bounds.width - controlWidth
         }
         override func hitTest(_ point: NSPoint) -> NSView? {
             let p = convert(point, from: superview)
-            if p.x < bounds.width - 60, row(at: p) >= 0 { return self }
+            if p.x < bounds.width - controlWidth, row(at: p) >= 0 { return self }
             return super.hitTest(point)
         }
     }
@@ -94,6 +104,17 @@ struct MenuCustomizationRows: NSViewRepresentable {
                 if item.isDivider {
                     Button { self.parent.draft.removeAll { $0.id == item.id } } label: { Image(systemName: "trash") }.help("Убрать разделитель").frame(width: 36)
                 } else {
+                    if parent.groupsToolbar {
+                        Toggle("Группа 2", isOn: Binding(
+                            get: { self.parent.draft.first { $0.id == item.id }?.secondary == true },
+                            set: { value in
+                                if let index = self.parent.draft.firstIndex(where: { $0.id == item.id }) { self.parent.draft[index].secondary = value ? true : nil }
+                            }
+                        ))
+                        .toggleStyle(.checkbox).controlSize(.small).frame(width: 80, alignment: .leading)
+                        .accessibilityLabel("Вторая группа для «" + (definition?.title ?? item.id) + "»")
+                        .help("Перенести «" + (definition?.title ?? item.id) + "» во вторую группу")
+                    }
                     Toggle("Показать " + (definition?.title ?? item.id), isOn: Binding(get: { self.parent.draft.first { $0.id == item.id }?.visible == true }, set: { value in if let index = self.parent.draft.firstIndex(where: { $0.id == item.id }) { self.parent.draft[index].visible = value } }))
                         .labelsHidden().toggleStyle(.checkbox).frame(width: 36)
                 }

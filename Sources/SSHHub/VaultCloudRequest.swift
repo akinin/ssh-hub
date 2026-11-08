@@ -1,5 +1,9 @@
 import Foundation
 
+struct VaultCloudAuthenticationRequired: LocalizedError {
+    var errorDescription: String? { "Вход не выполнен или сеанс истёк. Проверь логин и пароль и войди заново." }
+}
+
 // Native HTTPS only, system TLS validation, bounded replies, no redirects,
 // cookies, credential storage, caching or raw server diagnostics in errors.
 final class VaultCloudRequest: NSObject, URLSessionDataDelegate, @unchecked Sendable {
@@ -49,7 +53,7 @@ final class VaultCloudRequest: NSObject, URLSessionDataDelegate, @unchecked Send
         if stopped { continuation.resume(throwing: CancellationError()) }
         else if oversized { continuation.resume(throwing: VaultError.message("Ответ сервера превышает допустимый размер.")) }
         else if error != nil { continuation.resume(throwing: VaultError.message("Не удалось подключиться по HTTPS. Проверь сеть/VPN, DNS и сертификат сервера.")) }
-        else if status == 401 { continuation.resume(throwing: VaultError.message("Вход не выполнен или сеанс истёк. Проверь логин и пароль и войди заново.")) }
+        else if status == 401 { continuation.resume(throwing: VaultCloudAuthenticationRequired()) }
         else if status == 429 { continuation.resume(throwing: VaultError.message("Слишком много попыток. Повтори вход позже.")) }
         else if !(200...299).contains(status) { continuation.resume(throwing: VaultError.message("Сервер отклонил действие (HTTP \(status)).")) }
         else { continuation.resume(returning: output) }

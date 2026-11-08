@@ -54,6 +54,7 @@ struct CustomMenuDefinition: Identifiable {
 struct CustomMenuItem: Codable, Equatable, Identifiable {
     var id: String
     var visible = true
+    var secondary: Bool?
     var isDivider: Bool { id.hasPrefix("divider:") }
 }
 enum CustomMenuLayout {
@@ -67,6 +68,16 @@ enum CustomMenuLayout {
         return result
     }
     static func visible(_ data: Data, for surface: CustomMenuSurface) -> [CustomMenuItem] { items(data, for: surface).filter(\.visible) }
+    static func toolbarGroups(_ data: Data) -> (primary: [CustomMenuDefinition], secondary: [CustomMenuDefinition]) {
+        let definitions = CustomMenuSurface.toolbar.definitions
+        var primary: [CustomMenuDefinition] = [], secondary: [CustomMenuDefinition] = []
+        for item in visible(data, for: .toolbar) {
+            guard let definition = definitions.first(where: { $0.id == item.id }) else { continue }
+            if item.secondary == true { secondary.append(definition) }
+            else { primary.append(definition) }
+        }
+        return (primary, secondary)
+    }
     static func move(_ items: [CustomMenuItem], from: Int, to: Int) -> [CustomMenuItem] {
         guard items.indices.contains(from), (0...items.count).contains(to) else { return items }
         var copy = items; let value = copy.remove(at: from); copy.insert(value, at: to > from ? to - 1 : to); return copy

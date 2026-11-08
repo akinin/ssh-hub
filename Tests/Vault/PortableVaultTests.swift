@@ -53,15 +53,21 @@ final class PortableVaultTests: XCTestCase {
     }
     func testTransportEncryptionAuthenticatesRevisionVaultAndChunks() throws {
         let id = UUID(), password = "owned-fixture-master-password", data = Data(repeating: 7, count: 4 * 1024 * 1024 + 10)
-        let (manifest, pieces) = try VaultSyncCrypto.seal(data, password: password, vault: id, expected: 4)
+        let key = try VaultSyncKey(password: password)
+        let (packet, pieces) = try VaultSyncCrypto.seal(data, key: key, vault: id, expected: 4)
+        let (manifest, decodedKey) = try VaultSyncCrypto.manifest(packet, authorization: .password(password), vault: id)
         XCTAssertEqual(pieces.count, 2)
-        XCTAssertEqual(try VaultSyncCrypto.manifest(manifest, password: password, vault: id).0.revision, 5)
-        XCTAssertEqual(try VaultSyncCrypto.open(manifest, chunks: Dictionary(uniqueKeysWithValues: pieces), password: password, vault: id), data)
-        XCTAssertThrowsError(try VaultSyncCrypto.open(manifest, chunks: Dictionary(uniqueKeysWithValues: pieces), password: "wrong-test-password", vault: id))
-        XCTAssertThrowsError(try VaultSyncCrypto.manifest(manifest, password: password, vault: UUID()))
-        var tampered = manifest; tampered[tampered.count - 1] ^= 1
-        XCTAssertThrowsError(try VaultSyncCrypto.manifest(tampered, password: password, vault: id))
-        XCTAssertThrowsError(try VaultSyncCrypto.open(manifest, chunks: [pieces[0].0: pieces[1].1, pieces[1].0: pieces[0].1], password: password, vault: id))
+        XCTAssertEqual(manifest.revision, 5)
+        XCTAssertEqual(try VaultSyncCrypto.open(manifest, chunks: Dictionary(uniqueKeysWithValues: pieces), key: decodedKey, vault: id), data)
+        XCTAssertThrowsError(try VaultSyncCrypto.manifest(packet, authorization: .password("wrong-test-password"), vault: id))
+        XCTAssertThrowsError(try VaultSyncCrypto.manifest(packet, authorization: .saved(key), vault: UUID()))
+        var tampered = packet; tampered[tampered.count - 1] ^= 1
+        XCTAssertThrowsError(try VaultSyncCrypto.manifest(tampered, authorization: .saved(key), vault: id))
+        XCTAssertThrowsError(try VaultSyncCrypto.open(manifest, chunks: [pieces[0].0: pieces[1].1, pieces[1].0: pieces[0].1], key: key, vault: id))
+        let (repeated, newPieces) = try VaultSyncCrypto.seal(data, key: key, vault: id, expected: 4)
+        XCTAssertEqual(packet.prefix(24), repeated.prefix(24))
+        XCTAssertNotEqual(packet[24..<36], repeated[24..<36])
+        XCTAssertNotEqual(pieces[0].1.prefix(12), newPieces[0].1.prefix(12))
     }
 
     @MainActor func testMigrationUsesInjectedSecretsAndKeepsOriginalConfig() async throws {
@@ -179,7 +185,7 @@ final class PortableVaultTests: XCTestCase {
     @MainActor func testEncryptedSyncRoundTripConflictAndOfflineKeepsLocalData() async throws {
         let root = try temporary(); defer { HubPaths.testingRoot = nil; PortableSecretBridge.install(read: nil, write: nil); try? FileManager.default.removeItem(at: root) }
         HubPaths.testingRoot = root; AppAccess.testingInstance = AppAccess(storage: OwnedAppAccessStorage())
-        let password = "owned-fixture-master-password", cloud = OwnedCloud()
+        let password = "owned-fixture-master-password", cloudPassword = "owned-separate-cloud-password", cloud = OwnedCloud()
         let config = root.appendingPathComponent("config"); try Data("Host fixture\n HostName 127.0.0.1\n User fixture\n".utf8).write(to: config)
         let store = AliasStore(configURL: config, vaultRoot: root.appendingPathComponent("vault"))
         let model = try XCTUnwrap(store.portableVault)
@@ -189,32 +195,56 @@ final class PortableVaultTests: XCTestCase {
         let session = VaultCloudSession(server: endpoint.address, token: "synthetic-token", username: "fixture", role: "user", vault: cloud.id, expiresAt: Date().timeIntervalSince1970 + 3600)
         try model.database!.set("sync/endpoint", VaultCollection.encode(endpoint)); try model.database!.set("cloud/session", VaultCollection.encode(session))
         model.lock(); try model.unlock(password, store: store); model.clientFactory = { _, _ in cloud }
-        func sync(_ choices: [String: Bool] = [:]) async throws {
+        func sync(_ choices: [String: Bool] = [:], password: String? = nil) async throws {
             model.synchronize(store: store, password: password, choices: choices)
             for _ in 0..<1000 { if !model.busy { return }; try await Task.sleep(for: .milliseconds(10)) }
             XCTFail("Sync did not finish")
         }
-        try await sync(); XCTAssertNil(model.error); XCTAssertEqual(cloud.revision, 1)
+        XCTAssertTrue(model.syncPasswordRequired)
+        try await sync(password: cloudPassword); XCTAssertNil(model.error); XCTAssertEqual(cloud.revision, 1)
+        XCTAssertFalse(model.syncPasswordRequired)
+        let (_, key) = try VaultSyncCrypto.manifest(cloud.packet, authorization: .password(cloudPassword), vault: cloud.id)
+        model.lock(); XCTAssertTrue(model.syncPasswordRequired)
+        try model.unlock(password, store: store); XCTAssertFalse(model.syncPasswordRequired)
+        model.endpoint.vault = UUID()
+        XCTAssertTrue(model.syncPasswordRequired, "The key belongs to the original cloud account")
+        model.endpoint = endpoint
         let first = try model.collect(store)
         let recordName = try XCTUnwrap(first.values.keys.first { $0.hasPrefix("record/") })
         var remote = first, payload = try JSONDecoder().decode(VaultRecordPayload.self, from: first.values[recordName]!)
         payload.value.record.title = "Changed remotely"; remote.values[recordName] = try VaultCollection.encode(payload)
-        _ = try await cloud.push(VaultCollection.encode(remote), password: password, expected: 1)
+        _ = try await cloud.push(VaultCollection.encode(remote), key: key, expected: 1)
         try await sync(); XCTAssertNil(model.error); XCTAssertEqual(store.ordered.first?.name, "Changed remotely")
         XCTAssertEqual(try model.collect(store), remote)
         var records = store.localRecords; records[0].title = "Changed locally"
         try store.localRepository.write(records, expected: store.localRecords); store.reload()
         payload.value.record.title = "Changed again remotely"; remote.values[recordName] = try VaultCollection.encode(payload)
-        _ = try await cloud.push(VaultCollection.encode(remote), password: password, expected: cloud.revision)
+        _ = try await cloud.push(VaultCollection.encode(remote), key: key, expected: cloud.revision)
         try await sync(); XCTAssertEqual(model.conflicts, [recordName]); XCTAssertEqual(store.ordered.first?.name, "Changed locally")
         // A reviewed choice cannot silently resolve a newer remote snapshot.
         payload.value.record.title = "New remote after review"; remote.values[recordName] = try VaultCollection.encode(payload)
-        _ = try await cloud.push(VaultCollection.encode(remote), password: password, expected: cloud.revision)
+        _ = try await cloud.push(VaultCollection.encode(remote), key: key, expected: cloud.revision)
         try await sync([recordName:true]); XCTAssertEqual(model.conflicts, [recordName])
         try await sync([recordName:true]); XCTAssertNil(model.error); XCTAssertTrue(model.conflicts.isEmpty)
         XCTAssertEqual(store.ordered.first?.name, "Changed locally")
-        let stable = try model.collect(store); cloud.offline = true
+        let stable = try model.collect(store)
+        // Older clients generate a new salt for every write. A cached key must
+        // never apply the new revision until its password is confirmed again.
+        let oldClientKey = try VaultSyncKey(password: cloudPassword)
+        _ = try await cloud.push(VaultCollection.encode(stable), key: oldClientKey, expected: cloud.revision)
+        try await sync(); XCTAssertTrue(model.syncPasswordRequired); XCTAssertEqual(try model.collect(store), stable)
+        try await sync(password: password); XCTAssertNotNil(model.error); XCTAssertTrue(model.syncPasswordRequired)
+        try await sync(password: cloudPassword); XCTAssertNil(model.error); XCTAssertFalse(model.syncPasswordRequired)
+        cloud.offline = true
         try await sync(); XCTAssertNotNil(model.error); XCTAssertEqual(try model.collect(store), stable)
+        cloud.offline = false; cloud.revoked = true
+        try await sync(); XCTAssertNil(model.cloudSession); XCTAssertFalse(model.syncPasswordRequired)
+        XCTAssertNil(try model.database?.get("cloud/session"))
+        XCTAssertEqual(try model.collect(store), stable)
+        cloud.revoked = false
+        try model.database?.set("cloud/session", VaultCollection.encode(session))
+        model.lock(); try model.unlock(password, store: store)
+        try await sync(); XCTAssertNil(model.error)
         model.logout(); XCTAssertNil(model.cloudSession); XCTAssertFalse(model.endpoint.enabled); XCTAssertEqual(try model.collect(store), stable)
     }
 
@@ -226,14 +256,20 @@ private final class OwnedCloud: VaultSyncTransport, @unchecked Sendable {
     var packet = Data()
     var pieces: [String: Data] = [:]
     var offline = false
-    func head() async throws -> Int { if offline { throw VaultError.message("Owned fixture offline") }; return revision }
-    func pull(password: String, revision: Int, lastSeen: Int) async throws -> Data {
-        guard revision == self.revision, revision >= lastSeen else { throw VaultError.locked }
-        return try VaultSyncCrypto.open(packet, chunks: pieces, password: password, vault: id)
+    var revoked = false
+    func head() async throws -> Int {
+        if offline { throw VaultError.message("Owned fixture offline") }
+        if revoked { throw VaultCloudAuthenticationRequired() }
+        return revision
     }
-    func push(_ data: Data, password: String, expected: Int) async throws -> Int {
+    func pull(authorization: VaultSyncAuthorization, revision: Int, lastSeen: Int) async throws -> (Data, VaultSyncKey) {
+        guard revision == self.revision, revision >= lastSeen else { throw VaultError.locked }
+        let (manifest, key) = try VaultSyncCrypto.manifest(packet, authorization: authorization, vault: id)
+        return (try VaultSyncCrypto.open(manifest, chunks: pieces, key: key, vault: id), key)
+    }
+    func push(_ data: Data, key: VaultSyncKey, expected: Int) async throws -> Int {
         guard expected == revision, !offline else { throw VaultError.locked }
-        let sealed = try VaultSyncCrypto.seal(data, password: password, vault: id, expected: expected)
+        let sealed = try VaultSyncCrypto.seal(data, key: key, vault: id, expected: expected)
         packet = sealed.0; pieces = Dictionary(uniqueKeysWithValues: sealed.1); revision += 1; return revision
     }
     func cancel() {}

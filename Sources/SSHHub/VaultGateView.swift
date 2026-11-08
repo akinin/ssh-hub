@@ -26,7 +26,7 @@ struct VaultGateView: View {
                 }.padding(22).background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 16))
             } else if model.exists && !creating {
                 VStack(alignment: .leading, spacing: 14) {
-                    Label(model.url.lastPathComponent, systemImage: "externaldrive").font(.headline)
+                    Label(model.databaseName, systemImage: "externaldrive").font(.headline)
                     VaultSecureInput(title: "Мастер-пароль базы", prompt: "Введи мастер-пароль", text: $password)
                     if model.biometricStorage.available() { Toggle("Разблокировать эту базу через Touch ID", isOn: $rememberTouchID) }
                     HStack {
@@ -138,7 +138,7 @@ struct VaultSecureInput: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title).font(.callout.weight(.medium))
-            SecureField(prompt, text: $text).labelsHidden().textContentType(.password).textFieldStyle(.roundedBorder).controlSize(.large)
+            SecureField(title, text: $text, prompt: Text(prompt)).labelsHidden().textContentType(.password).textFieldStyle(.roundedBorder).controlSize(.large)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -149,23 +149,45 @@ struct VaultTextInput: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title).font(.callout.weight(.medium))
-            TextField(prompt, text: $text).labelsHidden().textFieldStyle(.roundedBorder).controlSize(.large)
+            TextField(title, text: $text, prompt: Text(prompt)).labelsHidden().textFieldStyle(.roundedBorder).controlSize(.large)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 struct VaultAccessSettingsView: View {
     @ObservedObject var model: VaultWorkspace
     @State private var error: String?
+    @State private var renaming = false
+    @State private var name = ""
     var body: some View {
         Section("Открытая база") {
-            Label(model.url.lastPathComponent, systemImage: "externaldrive.badge.checkmark")
-            if model.biometricStorage.available() {
-                Toggle("Разблокировка через Touch ID", isOn: Binding(get: { model.biometricEnabled }, set: { value in do { try model.setBiometrics(value) } catch { self.error = error.localizedDescription } }))
+            HStack {
+                Label(model.databaseName, systemImage: "externaldrive.badge.checkmark")
+                Spacer()
+                Button("Переименовать…") { name = model.databaseName; renaming = true }
             }
+            if model.biometricStorage.available() {
+                Toggle("Разблокировка через Touch ID", isOn: Binding(get: { model.biometricEnabled }, set: { value in perform { try model.setBiometrics(value) } }))
+            }
+            Button("Сохранить зашифрованную копию базы…", systemImage: "externaldrive.badge.timemachine") { backup() }
             Button("Закрыть и заблокировать базу", systemImage: "lock") { model.lock() }
-            Text("После закрытия базы все рабочие окна и сеансы закрываются. Для продолжения выбери базу и разблокируй её.").font(.caption).foregroundStyle(.secondary)
+            Text("Закрытие базы завершает рабочие сеансы. Для продолжения разблокируй базу.").font(.caption).foregroundStyle(.secondary)
             if let error { Text(error).foregroundStyle(.red) }
         }
+        .alert("Переименовать базу", isPresented: $renaming) {
+            TextField("Имя базы", text: $name)
+            Button("Сохранить") { perform { try model.renameDatabase(name) } }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Имя отображается в SSH Hub.")
+        }
+    }
+    private func perform(_ body: () throws -> Void) {
+        do { try body(); error = nil } catch { self.error = error.localizedDescription }
+    }
+    private func backup() {
+        let panel = NSSavePanel(); panel.title = "Резервная копия базы"; panel.prompt = "Сохранить копию"; panel.nameFieldStringValue = "SSH-Hub-копия.sqlite3"
+        panel.directoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        if panel.runModal() == .OK, let file = panel.url { perform { try model.exportBackup(to: file) } }
     }
 }
 
