@@ -51,6 +51,43 @@ final class PortableVaultTests: XCTestCase {
         let deletion = VaultMerge(base: ["a": before], local: [:], remote: ["a": before]); XCTAssertTrue(deletion.values.isEmpty); XCTAssertTrue(deletion.conflicts.isEmpty)
         XCTAssertEqual(VaultMerge(base: ["a": before], local: [:], remote: ["a": right]).conflicts, ["a"])
     }
+
+    func testInstalledSystemAliasUsesPersistentPrivateFileOutsideVault() throws {
+        let root = try temporary()
+        defer {
+            PortableSecretBridge.install(read: nil, write: nil)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let generated = root.appendingPathComponent("fixture")
+        let generator = Process()
+        generator.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
+        generator.arguments = ["-q", "-t", "ed25519", "-N", "", "-f", generated.path]
+        try generator.run()
+        generator.waitUntilExit()
+        XCTAssertEqual(generator.terminationStatus, 0)
+        let key = try VaultSSHKeys.encodeImport(generated)
+        let stored = try JSONEncoder().encode(key)
+        PortableSecretBridge.install(read: { service, id in service == "ssh-key" && id == key.id ? stored : nil }, write: nil)
+        let config = SSHConfig(url: root.appendingPathComponent("config"))
+        let original = Data("# fixture\nHost existing\n    HostName localhost\n".utf8)
+        try original.write(to: config.url)
+        var record = LocalConnectionRecord()
+        record.host = "127.0.0.1"
+        record.user = "fixture"
+        record.authentication = .key
+        record.identity = VaultSSHKeys.prefix + key.id
+        let entry = record.entry(config: config.url, privateConfig: root.appendingPathComponent("temporary"))
+        try SystemSSHAlias.install(entry, name: "owned-fixture", config: config)
+        PortableSecretBridge.install(read: nil, write: nil)
+        let installed = try XCTUnwrap(config.load().aliases.first { $0.name == "owned-fixture" })
+        let path = try XCTUnwrap(installed.value("IdentityFile"))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), key.privateData)
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int, 0o600)
+        let saved = try Data(contentsOf: config.url)
+        XCTAssertTrue(saved.suffix(original.count).elementsEqual(original))
+        XCTAssertThrowsError(try SystemSSHAlias.install(entry, name: "owned-fixture", config: config))
+        XCTAssertEqual(try Data(contentsOf: config.url), saved)
+    }
     func testTransportEncryptionAuthenticatesRevisionVaultAndChunks() throws {
         let id = UUID(), password = "owned-fixture-master-password", data = Data(repeating: 7, count: 4 * 1024 * 1024 + 10)
         let key = try VaultSyncKey(password: password)

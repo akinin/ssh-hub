@@ -23,6 +23,7 @@ struct FolderAppearanceView: View {
     @State private var expectedProfiles: HubProfiles?
     @State private var expectedGroups: [String: String] = [:]
     @State private var error: String?
+    @State private var confirmingRemoval = false
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Редактирование папки").font(.title2).bold()
@@ -30,14 +31,28 @@ struct FolderAppearanceView: View {
             TextField("Название папки", text: $name).textFieldStyle(.roundedBorder)
             FolderAppearanceFields(appearance: $appearance)
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
-            HStack { Spacer(); Button("Отмена", role: .cancel) { dismiss() }; Button("Сохранить") {
+            HStack {
+                Button("Удалить папку…", role: .destructive) { confirmingRemoval = true }
+                Spacer(); Button("Отмена", role: .cancel) { dismiss() }; Button("Сохранить") {
                 do {
                     guard !AppAccess.shared.locked, !store.endingWorkspace, expectedProfiles == store.profiles, expectedGroups == store.groups else { throw ConfigError.message("Папки изменились. Открой редактор заново.") }
                     let plan = try FolderRenamePlan(profiles: store.profiles, groups: store.groups, keys: Set(store.profileEntries.map(\.favoriteID)), old: path, name: name, appearance: appearance)
-                    store.applyFolderRename(plan); dismiss()
+                    try store.applyFolderRename(plan); dismiss()
                 } catch { self.error = error.localizedDescription }
             }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction) }
         }.padding(24).frame(width: 460).dismissOnOutsideClick().onAppear { appearance = store.folderAppearance(path); name = ConnectionTree.components(path).last ?? ""; expectedProfiles = store.profiles; expectedGroups = store.groups }
+        .confirmationDialog("Удалить папку «\(path)»?", isPresented: $confirmingRemoval, titleVisibility: .visible) {
+            Button("Удалить папку", role: .destructive) {
+                do {
+                    guard expectedProfiles == store.profiles, expectedGroups == store.groups else {
+                        throw ConfigError.message("Папки изменились. Открой редактор заново.")
+                    }
+                    try store.removeFolder(path)
+                    dismiss()
+                } catch { self.error = error.localizedDescription }
+            }
+            Button("Отмена", role: .cancel) {}
+        } message: { Text("Записи и подпапки поднимутся на уровень выше.") }
     }
 }
 

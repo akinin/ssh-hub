@@ -12,7 +12,7 @@ enum CustomMenuSurface: String, CaseIterable, Identifiable {
         switch self {
         case .toolbar: ids = ["reload", "palette", "tools", "maps", "settings", "assistant", "lock", "record", "account"]
         case .tools: ids = ["commands", "trash", "divider:network", "network", "nuclei", "lynis", "trivy", "checks", "maps", "integrations", "monitoring", "maintenance", "divider:ssh", "generateKey", "keys", "history", "tunnels"]
-        case .record: ids = ["website", "browser", "connect", "sftp", "external", "loginNotify", "dashboard", "divider:copy", "copyUsername", "copyPassword", "copyTOTP", "divider:materials", "documentation", "attachments", "edit", "appearance", "group", "favorite", "template", "duplicate", "copy", "export", "keePass", "divider:delete", "delete", "divider:create", "record", "folder"]
+        case .record: ids = ["website", "browser", "connect", "sftp", "external", "loginNotify", "dashboard", "divider:copy", "copyUsername", "copyPassword", "copyTOTP", "divider:materials", "documentation", "attachments", "edit", "appearance", "group", "favorite", "template", "duplicate", "copy", "installSystemAlias", "export", "keePass", "divider:delete", "delete", "divider:create", "record", "folder"]
         }
         let optional = definitions.map(\.id).filter { !ids.contains($0) }
         return ids.map { CustomMenuItem(id: $0, secondary: $0 == "account" ? true : nil) } + optional.map { CustomMenuItem(id: $0, visible: false) }
@@ -29,6 +29,7 @@ enum CustomMenuSurface: String, CaseIterable, Identifiable {
                 .init("licenses", "Лицензии", "key.horizontal"), .init("payments", "Оплаты", "creditcard"), .init("edit", "Редактировать", "pencil"), .init("appearance", "Оформление карточки", "photo"), .init("group", "Переместить в папку", "folder.badge.gearshape"),
                 .init("favorite", "В избранное / убрать из избранного", "star"), .init("template", "Сохранить как шаблон", "square.stack"), .init("duplicate", "Дублировать", "plus.square.on.square"),
                 .init("copy", "Копировать команду", "doc.on.doc"), .init("export", "Экспорт", "square.and.arrow.up"), .init("keePass", "Передать в KeePass", "key"),
+                .init("installSystemAlias", "Установить SSH-алиас на Mac", "terminal"),
                 .init("delete", "Удалить", "trash"), .init("record", "Новая запись", "plus"), .init("folder", "Новая папка", "folder.badge.plus")
             ]
         }

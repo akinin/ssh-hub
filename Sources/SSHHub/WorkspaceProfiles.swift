@@ -88,18 +88,21 @@ struct FolderRenamePlan {
     var groups: [String: String]
     let old: String
     let new: String
-    func path(_ value: String) -> String { value == old || value.hasPrefix(old + "/") ? new + value.dropFirst(old.count) : value }
-    init(profiles source: HubProfiles, groups sourceGroups: [String: String], keys: Set<String>, old: String, name: String, appearance: ConnectionAppearance) throws {
+    static func contains(_ path: String, in folder: String) -> Bool { path == folder || path.hasPrefix(folder + "/") }
+    func path(_ value: String) -> String { Self.contains(value, in: old) ? new + value.dropFirst(old.count) : value }
+    init(profiles source: HubProfiles, groups sourceGroups: [String: String], keys: Set<String>, old: String, name: String, appearance: ConnectionAppearance, parent: String? = nil) throws {
         self.profiles = source; self.groups = sourceGroups; self.old = ConnectionTree.normalized(old)
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, !name.contains("/"), !name.contains("\\"), name != ".", name != ".." else { throw ConfigError.message("Укажи название папки без разделителей пути.") }
-        new = (ConnectionTree.components(old).dropLast() + [name]).joined(separator: "/")
+        let destination = parent ?? ConnectionTree.components(old).dropLast().joined(separator: "/")
+        guard !Self.contains(destination, in: self.old) else { throw ConfigError.message("Нельзя переместить папку в неё саму или в её подпапку.") }
+        new = (ConnectionTree.components(destination) + [name]).joined(separator: "/")
         guard ConnectionTree.validPath(new), appearance.validation == nil, let index = source.profiles.firstIndex(where: { $0.id == source.active }) else { throw ConfigError.message("Некорректное название папки.") }
-        let paths = (source.profiles[index].folderPaths ?? []) + keys.compactMap { sourceGroups[$0] }
+        let paths = ((source.profiles[index].folderPaths ?? []) + keys.compactMap { sourceGroups[$0] }).map(ConnectionTree.normalized)
         guard paths.contains(where: { $0 == self.old || $0.hasPrefix(self.old + "/") }) else { throw ConfigError.message("Папка уже изменена или удалена.") }
         if new != self.old, paths.contains(where: { $0 == new || $0.hasPrefix(new + "/") }) { throw ConfigError.message("Папка с таким названием уже существует.") }
-        let changed = keys.filter { key in sourceGroups[key].map { $0 == self.old || $0.hasPrefix(self.old + "/") } == true }
-        for key in changed { groups[key] = path(sourceGroups[key]!) }
+        let changed = keys.filter { key in sourceGroups[key].map { Self.contains(ConnectionTree.normalized($0), in: self.old) } == true }
+        for key in changed { groups[key] = sourceGroups[key].map { path(ConnectionTree.normalized($0)) } }
         profiles.profiles[index].folderPaths = Array(Set((source.profiles[index].folderPaths ?? []).map(path) + [new])).sorted()
         profiles.profiles[index].folderAppearances = Dictionary((source.profiles[index].folderAppearances ?? [:]).map { (path($0.key), $0.value) }, uniquingKeysWith: { first, _ in first })
         profiles.profiles[index].folderAppearances = ConnectionAppearance.setting(ConnectionAppearance(logo: appearance.logo), for: new, in: profiles.profiles[index].folderAppearances ?? [:])
@@ -114,5 +117,54 @@ struct FolderRenamePlan {
             }
         }
         guard profiles.valid, groups.values.allSatisfy(AliasTransfer.validGroup) else { throw ConfigError.message("Название папки или вложенный путь превышает допустимый размер.") }
+    }
+}
+
+struct FolderRemovalPlan {
+    var profiles: HubProfiles
+    var groups: [String: String]
+    let folder: String
+    let parent: String
+
+    func path(_ value: String) -> String {
+        guard FolderRenamePlan.contains(value, in: folder) else { return value }
+        return ConnectionTree.normalized(parent + value.dropFirst(folder.count))
+    }
+
+    init(profiles: HubProfiles, groups: [String: String], keys: Set<String>, folder: String) throws {
+        self.profiles = profiles
+        self.groups = groups
+        self.folder = ConnectionTree.normalized(folder)
+        parent = ConnectionTree.components(folder).dropLast().joined(separator: "/")
+        guard ConnectionTree.validPath(folder),
+              let index = profiles.profiles.firstIndex(where: { $0.id == profiles.active }) else {
+            throw ConfigError.message("Папка недоступна.")
+        }
+        let explicit = profiles.profiles[index].folderPaths ?? []
+        let paths = (explicit + keys.compactMap { groups[$0] }).map(ConnectionTree.normalized)
+        guard paths.contains(where: { FolderRenamePlan.contains($0, in: self.folder) }) else {
+            throw ConfigError.message("Папка уже изменена или удалена.")
+        }
+        let children = Set(paths.filter { $0.hasPrefix(self.folder + "/") }.compactMap {
+            ConnectionTree.components(String($0.dropFirst(self.folder.count))).first
+        })
+        for child in children {
+            let destination = [parent, child].filter { !$0.isEmpty }.joined(separator: "/")
+            if paths.contains(where: { !FolderRenamePlan.contains($0, in: self.folder) && FolderRenamePlan.contains($0, in: destination) }) {
+                throw ConfigError.message("В родительской папке уже есть «\(child)». Переименуй одну из папок перед удалением.")
+            }
+        }
+        for key in keys {
+            guard let group = groups[key].map(ConnectionTree.normalized), FolderRenamePlan.contains(group, in: self.folder) else { continue }
+            let target = path(group)
+            self.groups[key] = target.isEmpty ? nil : target
+        }
+        self.profiles.profiles[index].folderPaths = Array(Set(explicit.filter { $0 != self.folder }.map(path))).sorted()
+        let styles = profiles.profiles[index].folderAppearances ?? [:]
+        self.profiles.profiles[index].folderAppearances = Dictionary(
+            styles.filter { $0.key != self.folder }.map { (path($0.key), $0.value) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        guard self.profiles.valid else { throw ConfigError.message("Не удалось сохранить папки профиля.") }
     }
 }

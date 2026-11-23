@@ -16,6 +16,8 @@ import ConsoleSupport
     var rawAliases: [SSHAlias] = []
     @Published var recordEditor: RecordEditorTarget?
     @Published var deletingRecord: SSHAlias?
+    @Published var deletingFolder: FolderStyleTarget?
+    @Published var installingSystemAlias: SSHAlias?
     var undoCredentialChange: CredentialBindingChange?
     @Published var undoRecordChange: LocalRecordChange?
     let attachmentsRepository = AttachmentsRepository()
@@ -1100,9 +1102,11 @@ struct MainView: View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
-                    Image(systemName: "terminal.fill").font(.title2).foregroundStyle(.blue)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("SSH Hub").font(.headline).lineLimit(1)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Image(nsImage: HubWordmark.sidebarImage())
+                            .resizable()
+                            .frame(width: HubWordmark.sidebarWidth, height: HubWordmark.sidebarHeight)
+                            .accessibilityLabel("SSH Hub")
                         Text(store.countText).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer()
@@ -1185,6 +1189,7 @@ struct MainView: View {
         }
         .sheet(isPresented: $customizingToolbar) { MenuCustomizationView(surface: .toolbar) }
         .sheet(item: $store.stylingFolder) { FolderAppearanceView(path: $0.path).environmentObject(store) }
+        .sheet(item: $store.installingSystemAlias) { SystemSSHAliasView(entry: $0).environmentObject(store) }
         .sheet(isPresented: $store.creatingFolder) { CreateFolderView().environmentObject(store) }
         .sheet(isPresented: $store.creatingAlias) { RecordChooserView().environmentObject(store) }
         .sheet(item: $store.recordEditor) { target in RecordEditorView(kind: target.record?.kind ?? target.template?.recordKind ?? target.seed?.kind ?? .ssh, original: target.record, template: target.template, blueprint: target.blueprint, seed: target.seed).environmentObject(store) }
@@ -1246,6 +1251,15 @@ struct MainView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             if !store.creatingAlias && store.editingAlias == nil && store.duplicatingAlias == nil && store.recordEditor == nil && store.batchTarget == nil { store.reload() }
         }
+        .confirmationDialog("Удалить папку «\(store.deletingFolder?.path ?? "")»?", isPresented: Binding(get: { store.deletingFolder != nil }, set: { if !$0 { store.deletingFolder = nil } }), titleVisibility: .visible) {
+            if let folder = store.deletingFolder {
+                Button("Удалить папку", role: .destructive) {
+                    do { try store.removeFolder(folder.path) }
+                    catch { store.error = error.localizedDescription }
+                }
+            }
+            Button("Отмена", role: .cancel) {}
+        } message: { Text("Записи и подпапки поднимутся на уровень выше.") }
         .confirmationDialog("Удалить запись?", isPresented: Binding(get: { store.deletingRecord != nil }, set: { if !$0 { store.deletingRecord = nil } }), titleVisibility: .visible) {
             if let entry = store.deletingRecord { Button("Удалить запись", role: .destructive) { store.deletingRecord = nil; store.deleteRecord(entry) } }
             Button("Отмена", role: .cancel) { store.deletingRecord = nil }
@@ -1320,6 +1334,9 @@ struct AliasDetail: View {
                         }.padding(.top, 12)
                     }
                     HStack { Text(entry.command).font(.system(.caption, design: .monospaced)).textSelection(.enabled); Spacer(); Button { store.copy(entry.command) } label: { Image(systemName: "doc.on.doc") }.help("Копировать команду SSH") }.padding(12).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+                    if entry.localID != nil {
+                        Button("Установить SSH-алиас на Mac…", systemImage: "terminal") { store.installingSystemAlias = entry }
+                    }
                 }
                 if entry.recordKind?.isWeb == true, store.appearance(entry).checkCertificate == true { RecordCertificateDetails(entry: entry, monitor: store.certificates) }
                 Text(entry.localID == nil ? "SSH-алиас из " + entry.source.path.replacingOccurrences(of: NSHomeDirectory(), with: "~") : entry.sshAlias == nil ? "Запись хранится в SSH Hub." : "Запись связана с SSH-алиасом «" + (entry.sshAlias ?? "") + "».").font(.caption).foregroundStyle(.secondary)

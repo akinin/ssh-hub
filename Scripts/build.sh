@@ -217,7 +217,7 @@ cp Vendor/SwiftTerm/LICENSE "$app_dir/Contents/Resources/SwiftTerm-LICENSE.txt"
 zsh ./Scripts/build-universal.sh "$build_dir" "$sdk_dir"
 cp Resources/Info.plist "$app_dir/Contents/Info.plist"
 rm -f "$app_dir/Contents/Resources/SSHHub-CodeSigning.cer"
-swiftc -module-cache-path "$build_dir/module-cache" Tools/Icon.swift -o "$build_dir/make-icon" -framework AppKit
+swiftc -module-cache-path "$build_dir/module-cache" Sources/SSHHub/HubWordmark.swift Tools/Icon.swift -o "$build_dir/make-icon" -framework AppKit
 "$build_dir/make-icon" "$build_dir/AppIcon.iconset"
 iconutil -c icns "$build_dir/AppIcon.iconset" -o "$app_dir/Contents/Resources/AppIcon.icns"
 xattr -cr "$app_dir"

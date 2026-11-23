@@ -13,14 +13,61 @@ extension AliasStore {
     }
     private var sidebarOrderKey: String { "sidebarOrder.v1." + profilesKey + "." + profiles.active.uuidString }
     var sidebarOrder: [String: [String]] { HubPreferences.shared.dictionary(forKey: sidebarOrderKey) as? [String: [String]] ?? [:] }
-    func applyFolderRename(_ plan: FolderRenamePlan) {
+    func applyFolderRename(_ plan: FolderRenamePlan, before anchor: String? = nil, reorder: Bool = false) throws {
         let remapID: (String) -> String = { $0.hasPrefix("folder:") ? "folder:" + plan.path(String($0.dropFirst(7))) : $0 }
-        let collapsed = collapsedFolderIDs.map(remapID)
-        let order = Dictionary(sidebarOrder.map { (plan.path($0.key), $0.value.map(remapID)) }, uniquingKeysWith: { first, _ in first })
-        profiles = plan.profiles; groups = plan.groups
-        persistProfiles(); HubPreferences.shared.set(groups, forKey: "aliasGroups.v1")
+        var collapsed = collapsedFolderIDs.map(remapID)
+        var order = Dictionary(sidebarOrder.map { (plan.path($0.key), $0.value.map(remapID)) }, uniquingKeysWith: { first, _ in first })
+        if reorder {
+            let parent = ConnectionTree.components(plan.new).dropLast().joined(separator: "/")
+            let id = "folder:" + plan.new
+            let paths = plan.profiles.profiles.first { $0.id == plan.profiles.active }?.folderPaths ?? []
+            let tree = ConnectionTree.build(entries: profileEntries, groups: plan.groups, folders: paths, order: order, title: title)
+            let siblings = ConnectionTree.siblings(in: tree, parent: parent).map(\.orderID)
+            for key in Array(order.keys) { order[key]?.removeAll { $0 == id } }
+            order[parent] = ConnectionTree.movedOrder(siblings, moving: id, before: anchor)
+            collapsed.removeAll { $0 == "folder:" + parent }
+        }
+        try persistFolderLayout(plan.profiles, groups: plan.groups, order: order, collapsed: collapsed)
+        if groupFilter.hasPrefix("group:") { groupFilter = "group:" + plan.path(String(groupFilter.dropFirst(6))) }
+    }
+    func removeFolder(_ path: String) throws {
+        let plan = try FolderRemovalPlan(profiles: profiles, groups: groups, keys: Set(profileEntries.map(\.favoriteID)), folder: path)
+        let removedID = "folder:" + plan.folder
+        func remapID(_ id: String) -> String? {
+            if id == removedID { return nil }
+            return id.hasPrefix("folder:") ? "folder:" + plan.path(String(id.dropFirst(7))) : id
+        }
+        let previousOrder = sidebarOrder
+        var order: [String: [String]] = [:]
+        for (parent, ids) in previousOrder where parent != plan.folder {
+            order[plan.path(parent)] = ids.compactMap(remapID)
+        }
+        let parentOrder = previousOrder[plan.parent] ?? []
+        let promoted = (previousOrder[plan.folder] ?? []).compactMap(remapID)
+        order[plan.parent] = parentOrder.contains(removedID)
+            ? parentOrder.flatMap { $0 == removedID ? promoted : [$0] }
+            : parentOrder + promoted
+        try persistFolderLayout(plan.profiles, groups: plan.groups, order: order, collapsed: collapsedFolderIDs.compactMap(remapID))
+        if groupFilter.hasPrefix("group:") {
+            let target = plan.path(String(groupFilter.dropFirst(6)))
+            groupFilter = target.isEmpty ? "all" : "group:" + target
+        }
+    }
+    private func persistFolderLayout(_ profiles: HubProfiles, groups: [String: String], order: [String: [String]], collapsed: [String]) throws {
+        guard !AppAccess.shared.locked, !endingWorkspace, profiles.valid else { throw VaultError.locked }
+        let profilesData = try VaultCollection.encode(profiles)
+        guard profilesData.count <= 20_000_000 else { throw ConfigError.message("Настройки профилей слишком большие.") }
+        if PortableSecretBridge.active {
+            try PortableSecretBridge.atomic {
+                try PortableSecretBridge.write("app", "profiles", profilesData)
+                try PortableSecretBridge.write("app", "groups", VaultCollection.encode(groups))
+            }
+        } else {
+            HubPreferences.shared.set(profilesData, forKey: profilesKey)
+            HubPreferences.shared.set(groups, forKey: "aliasGroups.v1")
+        }
+        self.profiles = profiles; self.groups = groups
         collapsedFolderIDs = collapsed; HubPreferences.shared.set(order, forKey: sidebarOrderKey)
-        if groupFilter != "all" { groupFilter = plan.path(groupFilter) }
         sidebarRevision += 1
     }
     func moveSidebarEntry(_ entry: SSHAlias, to folder: String, before anchor: String?) {
@@ -82,7 +129,7 @@ struct ConnectionTreeView: NSViewRepresentable {
         outline.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         outline.autoresizesOutlineColumn = true
         outline.backgroundColor = .clear
-        outline.registerForDraggedTypes([Coordinator.dragType])
+        outline.registerForDraggedTypes([Coordinator.dragType, Coordinator.folderDragType])
         outline.setDraggingSourceOperationMask(.move, forLocal: true)
         outline.setDraggingSourceOperationMask([], forLocal: false)
         outline.dataSource = context.coordinator; outline.delegate = context.coordinator
@@ -97,6 +144,7 @@ struct ConnectionTreeView: NSViewRepresentable {
     func updateNSView(_ nsView: NSScrollView, context: Context) { _ = selectionColor; _ = reminderStyleData; _ = rowBadgeData; context.coordinator.density = InterfaceDensity(rawValue: densityValue) ?? .normal; context.coordinator.refresh() }
     @MainActor final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
         static let dragType = NSPasteboard.PasteboardType("com.olshaniki.ssh-hub.sidebar-record")
+        static let folderDragType = NSPasteboard.PasteboardType("com.olshaniki.ssh-hub.sidebar-folder")
         let store: AliasStore
         var density = InterfaceDensity.normal
         weak var outline: NSOutlineView?
@@ -171,14 +219,26 @@ struct ConnectionTreeView: NSViewRepresentable {
         func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any { (item as? TreeItem)?.children[index] ?? roots[index] }
         func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool { (item as? TreeItem)?.node.isFolder == true }
         func outlineView(_ outlineView: NSOutlineView, pasteboardWriterForItem item: Any) -> NSPasteboardWriting? {
-            guard outlineView.numberOfSelectedRows <= 1, store.query.isEmpty, store.groupFilter == "all", let entry = (item as? TreeItem)?.node.entry else { return nil }
-            let value = NSPasteboardItem(); value.setString(entry.favoriteID, forType: Self.dragType); return value
+            guard outlineView.numberOfSelectedRows <= 1, store.query.isEmpty, store.groupFilter == "all", let node = (item as? TreeItem)?.node else { return nil }
+            let value = NSPasteboardItem()
+            if let entry = node.entry { value.setString(entry.favoriteID, forType: Self.dragType) }
+            else { value.setString(store.profiles.active.uuidString + "/" + node.id.dropFirst(7), forType: Self.folderDragType) }
+            return value
+        }
+        private func localDrag(_ info: NSDraggingInfo) -> Bool {
+            guard let source = info.draggingSource as? NSOutlineView else { return false }
+            return source === outline && store.query.isEmpty && store.groupFilter == "all"
         }
         private func draggedEntry(_ info: NSDraggingInfo) -> SSHAlias? {
-            guard let source = info.draggingSource as? NSOutlineView, source === outline,
-                  store.query.isEmpty, store.groupFilter == "all",
+            guard localDrag(info),
                   let key = info.draggingPasteboard.string(forType: Self.dragType) else { return nil }
             return store.profileEntries.first { $0.favoriteID == key }
+        }
+        private func draggedFolder(_ info: NSDraggingInfo) -> String? {
+            let prefix = store.profiles.active.uuidString + "/"
+            guard localDrag(info), let value = info.draggingPasteboard.string(forType: Self.folderDragType), value.hasPrefix(prefix) else { return nil }
+            let path = String(value.dropFirst(prefix.count))
+            return folderItem(path, items: roots) == nil ? nil : path
         }
         private func folderItem(_ path: String, items: [TreeItem]) -> TreeItem? {
             for item in items where item.node.isFolder {
@@ -188,23 +248,41 @@ struct ConnectionTreeView: NSViewRepresentable {
             return nil
         }
         func outlineView(_ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo, proposedItem item: Any?, proposedChildIndex index: Int) -> NSDragOperation {
-            guard draggedEntry(info) != nil else { return [] }
+            let folder = draggedFolder(info)
+            guard folder != nil || draggedEntry(info) != nil else { return [] }
+            var destination = (item as? TreeItem).map { String($0.node.id.dropFirst(7)) } ?? ""
             if let target = item as? TreeItem, let entry = target.node.entry {
                 let path = ConnectionTree.normalized(store.group(entry)), parent = folderItem(path, items: roots)
                 let siblings = parent?.children ?? roots
                 guard let position = siblings.firstIndex(where: { $0.node.id == target.node.id }) else { return [] }
                 outlineView.setDropItem(parent, dropChildIndex: position)
+                destination = path
+            }
+            if let folder {
+                guard let name = ConnectionTree.components(folder).last else { return [] }
+                let target = [destination, name].filter { !$0.isEmpty }.joined(separator: "/")
+                guard !FolderRenamePlan.contains(destination, in: folder), ConnectionTree.validPath(target),
+                      target == folder || folderItem(target, items: roots) == nil else { return [] }
             }
             return .move
         }
         func outlineView(_ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo, item: Any?, childIndex index: Int) -> Bool {
-            guard let entry = draggedEntry(info) else { return false }
             let parent = item as? TreeItem
             guard parent == nil || parent?.node.isFolder == true else { return false }
             let path = parent.map { String($0.node.id.dropFirst("folder:".count)) } ?? ""
             let siblings = parent?.children ?? roots
             let anchor = index >= 0 && index < siblings.count ? siblings[index].node.orderID : nil
-            store.moveSidebarEntry(entry, to: path, before: anchor); refresh(); return true
+            if let folder = draggedFolder(info), let name = ConnectionTree.components(folder).last {
+                if anchor == "folder:" + folder { return false }
+                do {
+                    let plan = try FolderRenamePlan(profiles: store.profiles, groups: store.groups, keys: Set(store.profileEntries.map(\.favoriteID)), old: folder, name: name, appearance: store.folderAppearance(folder), parent: path)
+                    try store.applyFolderRename(plan, before: anchor, reorder: true)
+                } catch { store.error = error.localizedDescription; return false }
+            } else if let entry = draggedEntry(info) {
+                store.moveSidebarEntry(entry, to: path, before: anchor)
+            } else { return false }
+            refresh()
+            return true
         }
         func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
             guard let item = item as? TreeItem else { return nil }
@@ -297,8 +375,8 @@ struct ConnectionTreeView: NSViewRepresentable {
             for badge in collapsible where views.contains(where: { $0 === badge }) { stack.setVisibilityPriority(.detachOnlyIfNecessary, for: badge) }
             stack.translatesAutoresizingMaskIntoConstraints = false; icon.translatesAutoresizingMaskIntoConstraints = false
             cell.addSubview(stack); cell.imageView = icon; cell.textField = text
-            let preferredTrailing = stack.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4); preferredTrailing.priority = .defaultHigh
-            NSLayoutConstraint.activate([preferredTrailing, stack.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -4), stack.widthAnchor.constraint(lessThanOrEqualToConstant: max(60, 300 - CGFloat(outlineView.level(forItem: item)) * 14)), icon.widthAnchor.constraint(equalToConstant: 16), icon.heightAnchor.constraint(equalToConstant: 16),
+            cell.rowContents = stack
+            NSLayoutConstraint.activate([stack.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -4), icon.widthAnchor.constraint(equalToConstant: 16), icon.heightAnchor.constraint(equalToConstant: 16),
                 stack.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2), stack.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
             return cell
         }
@@ -341,7 +419,8 @@ struct ConnectionTreeView: NSViewRepresentable {
             func add(_ title: String, _ action: String) {
                 let symbols = ["connect": "play.circle", "sftp": "folder", "loginNotify": "bell.badge", "external": "arrow.up.forward.square", "website": "macwindow", "browser": "arrow.up.forward.square", "dashboard": "rectangle.grid.2x2", "documentation": "doc.richtext", "attachments": "paperclip", "edit": "pencil", "appearance": "photo", "group": "folder.badge.gearshape", "favorite": "star", "template": "square.stack", "duplicate": "plus.square.on.square", "copy": "doc.on.doc", "copyUsername": "person.crop.rectangle", "copyPassword": "key", "copyTOTP": "lock.rotation", "export": "square.and.arrow.up", "delete": "trash", "record": "plus", "folder": "folder.badge.plus", "licenses": "key.horizontal", "payments": "creditcard", "folderLogo": "pencil", "subfolder": "folder.badge.plus"]
                 let item = NSMenuItem(title: title, action: #selector(menuAction(_:)), keyEquivalent: "")
-                item.image = NSImage(systemSymbolName: symbols[action] ?? "circle", accessibilityDescription: nil)
+                let symbol = action == "installSystemAlias" ? "terminal" : action == "removeFolder" ? "trash" : symbols[action] ?? "circle"
+                item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
                 // Public macOS 27 API: .visible == 1. Keep the stable macOS 26 SDK build compatible with older systems.
                 if item.responds(to: NSSelectorFromString("setPreferredImageVisibility:")) { item.setValue(1, forKey: "preferredImageVisibility") }
                 item.target = self; item.representedObject = action; menu.addItem(item)
@@ -363,8 +442,13 @@ struct ConnectionTreeView: NSViewRepresentable {
                     add(store.isFavorite(entry) ? "Убрать из избранного" : "В избранное", "favorite")
                     if entry.canSSH { add("Сохранить как шаблон", "template") }
                     add("Дублировать…", "duplicate"); if entry.canSSH { add("Копировать команду", "copy") }; add("Экспорт…", "export"); add("Передать в KeePass…", "keePass")
+                    if entry.canSSH, entry.localID != nil { add("Установить SSH-алиас на Mac…", "installSystemAlias") }
                     menu.addItem(.separator()); add("Удалить…", "delete")
-                } else { add("Новая запись…", "record"); menu.addItem(.separator()); add("Редактировать…", "folderLogo"); add("Вложенная папка…", "subfolder") }
+                } else {
+                    add("Новая запись…", "record"); menu.addItem(.separator())
+                    add("Редактировать…", "folderLogo"); add("Вложенная папка…", "subfolder")
+                    menu.addItem(.separator()); add("Удалить папку…", "removeFolder")
+                }
             }
             if contextItem?.node.isFolder != true { if menu.items.count > 0 { menu.addItem(.separator()) }; add("Новая запись…", "record") }
             add("Новая папка…", "folder")
@@ -397,6 +481,7 @@ struct ConnectionTreeView: NSViewRepresentable {
                 case "template": store.saveTemplate(from: entry)
                 case "duplicate": store.duplicate(entry)
                 case "copy": store.copy(entry.command)
+                case "installSystemAlias": store.installingSystemAlias = entry
                 case "copyUsername": store.copyCredential(entry, password: false)
                 case "copyPassword": store.copyCredential(entry, password: true)
                 case "copyTOTP": store.copyTOTP(entry)
@@ -409,6 +494,7 @@ struct ConnectionTreeView: NSViewRepresentable {
                 let path = String(item.node.id.dropFirst("folder:".count))
                 if action == "folderLogo" { store.stylingFolder = FolderStyleTarget(path: path) }
                 if action == "subfolder" { store.folderParent = path; store.creatingFolder = true }
+                if action == "removeFolder" { store.deletingFolder = FolderStyleTarget(path: path) }
             }
         }
     }

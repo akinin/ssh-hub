@@ -248,5 +248,19 @@ extension WorkspaceTests {
         try require(plan.profiles.profiles[1].folderPaths == profiles.profiles[1].folderPaths && plan.profiles.profiles[0].folderPaths?.contains("Renamed/Child") == true, "independent profile folders are not renamed")
         do { _ = try FolderRenamePlan(profiles: profiles, groups: groups, keys: ["first"], old: "Parent", name: "Occupied", appearance: .init()); throw ConfigError.message("FAIL: collision accepted") } catch ConfigError.message(let text) { try require(!text.hasPrefix("FAIL:"), "folder collision rejected") }
         do { _ = try FolderRenamePlan(profiles: profiles, groups: groups, keys: ["first"], old: "Parent", name: "../Bad", appearance: .init()); throw ConfigError.message("FAIL: invalid name accepted") } catch ConfigError.message(let text) { try require(!text.hasPrefix("FAIL:"), "folder invalid path rejected") }
+        let moved = try FolderRenamePlan(profiles: profiles, groups: groups, keys: ["first", "shared"],
+                                         old: "Parent", name: "Parent", appearance: .init(), parent: "Occupied")
+        try require(moved.groups["first"] == "Occupied/Parent/Child", "nesting a folder moves its records and descendants")
+        do {
+            _ = try FolderRenamePlan(profiles: profiles, groups: groups, keys: ["first"], old: "Parent", name: "Parent", appearance: .init(), parent: "Parent/Child")
+            throw ConfigError.message("FAIL: moving into a descendant was accepted")
+        } catch ConfigError.message(let text) { try require(!text.hasPrefix("FAIL:"), "folder cycle rejected") }
+        let deleted = try FolderRemovalPlan(profiles: moved.profiles, groups: moved.groups,
+                                            keys: ["first", "shared"], folder: "Occupied/Parent/Child")
+        try require(deleted.groups["first"] == "Occupied/Parent" && deleted.groups["shared"] == "Occupied/Parent",
+                    "deletion keeps records and moves them to the parent")
+        let promoted = try FolderRemovalPlan(profiles: profiles, groups: groups, keys: ["first", "shared"], folder: "Parent")
+        try require(promoted.groups["first"] == "Child" && promoted.profiles.profiles[0].folderPaths?.contains("Child") == true
+                    && promoted.profiles.profiles[1].folderPaths == profiles.profiles[1].folderPaths, "deletion promotes subfolders in the active profile")
     }
 }

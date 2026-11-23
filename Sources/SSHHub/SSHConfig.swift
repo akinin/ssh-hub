@@ -442,7 +442,9 @@ struct AliasDraft {
         return nil
     }
 
-    var block: String {
+    var block: String { renderBlock(resolveVaultIdentity: true) }
+
+    func renderBlock(resolveVaultIdentity: Bool) -> String {
         var result = "Host \(trimmedName)\n"
         if !inheritedFields.contains("hostname") { result += "    HostName \(SSHConfig.configQuote(trimmedHost))\n" }
         if !inheritedFields.contains("user") { result += "    User \(SSHConfig.configQuote(user.trimmingCharacters(in: .whitespaces)))\n" }
@@ -454,6 +456,7 @@ struct AliasDraft {
         if manageAuthentication { for (key, value) in authentication.options { result += "    \(key) \(value)\n" } }
         if !jump.isEmpty { result += "    ProxyJump \(jump)\n" }
         result += rawOptions.map { "    " + $0 + "\n" }.joined()
+        guard resolveVaultIdentity else { return result }
         return result.components(separatedBy: "\n").map { line in
             let parts = SSHConfig.tokens(line)
             guard parts.first?.lowercased() == "identityfile", let value = parts.dropFirst().first, PortableSecretBridge.active || value.hasPrefix("/__ssh_hub_key__/") else { return line }
@@ -586,7 +589,7 @@ final class SSHConfig {
         return block + "\n" + boundary + original
     }
 
-    @discardableResult func create(_ draft: AliasDraft, expectedData: Data) throws -> URL? {
+    @discardableResult func create(_ draft: AliasDraft, expectedData: Data, resolveVaultIdentity: Bool = true) throws -> URL? {
         let fm = FileManager.default
         if !fm.fileExists(atPath: sshDirectory.path) {
             try fm.createDirectory(at: sshDirectory, withIntermediateDirectories: true,
@@ -624,7 +627,7 @@ final class SSHConfig {
             try backupHandle.close()
             backup = backupURL
         }
-        let newData = Data(Self.inserting(draft.block, into: original).utf8)
+        let newData = Data(Self.inserting(draft.renderBlock(resolveVaultIdentity: resolveVaultIdentity), into: original).utf8)
         // Stage with restricted permissions before replacing the destination.
         let staged = target.deletingLastPathComponent().appendingPathComponent(".ssh-config-" + UUID().uuidString)
         guard fm.createFile(atPath: staged.path, contents: newData, attributes: [.posixPermissions: 0o600]) else {

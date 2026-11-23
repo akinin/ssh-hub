@@ -27,7 +27,14 @@ final class RecordReminderRowView: NSTableRowView {
     var style = RecordReminderAppearance()
     private var path: NSBezierPath {
         var rect = bounds.insetBy(dx: 12, dy: 1)
-        rect.size.width = max(0, min(rect.width, 320))
+        if let cell = subviews.compactMap({ $0 as? RecordReminderCellView }).first, let contents = cell.rowContents {
+            let content = contents.arrangedSubviews.filter { $0.superview != nil && !$0.isHidden }
+                .reduce(NSRect.null) { $0.union($1.convert($1.bounds, to: self)) }
+            guard !content.isNull, content.width > 0 else { return NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6) }
+            let right = min(content.maxX + 8, bounds.maxX - 4)
+            rect.origin.x = max(bounds.minX + 4, content.minX - 8)
+            rect.size.width = max(0, right - rect.minX)
+        }
         return NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
     }
     override func drawBackground(in dirtyRect: NSRect) {
@@ -54,6 +61,7 @@ final class RecordReminderKindBadge: NSStackView {
     }
 }
 final class RecordReminderCellView: NSTableCellView {
+    weak var rowContents: NSStackView?
     var reminderBadges: [RecordReminderKindBadge] = [] { didSet { updateReminder() } }
     var reminderTint: NSColor? { didSet { updateReminder() } }
     override var backgroundStyle: NSView.BackgroundStyle { didSet { updateReminder() } }

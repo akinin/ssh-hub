@@ -59,6 +59,13 @@ final class VaultRenderingTests: XCTestCase {
         for _ in 0..<200 where session.closing { try await Task.sleep(for: .milliseconds(10)) }
         session.start()
         let store = try XCTUnwrap(session.store)
+        var record = LocalConnectionRecord()
+        record.title = "Тестовый сервер"
+        record.host = "127.0.0.1"
+        try store.commitRecord(record, expected: [], appearance: .init(), group: "Серверы", ssh: nil, template: nil)
+        store.selected = store.profileEntries.first?.id
+        try render("compact-selection", ConnectionTreeView().environmentObject(store)
+            .background(Color(nsColor: .windowBackgroundColor)), width: 360, height: 160)
         model.endpoint.enabled = true
         try model.renameDatabase("Рабочая база")
         try render("login", Form { VaultAccessSettingsView(model: model); VaultSettingsView(model: model) }.formStyle(.grouped).environmentObject(store))
