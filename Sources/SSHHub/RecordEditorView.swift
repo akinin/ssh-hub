@@ -260,6 +260,23 @@ extension AliasStore {
         query = ""; groupFilter = "all"; showDashboard(entry)
         notice = record.aliasName == nil ? "Запись сохранена в SSH Hub." : "Запись и SSH-алиас сохранены."
     }
+    func duplicateCredentialSource(_ source: SSHAlias, target: SSHAlias, expected: RecordCredentialChoice) throws -> SSHAlias {
+        guard !AppAccess.shared.locked, !endingWorkspace, portableVault?.unlocked == true else { throw VaultError.locked }
+        guard source.favoriteID != target.favoriteID, RecordCredentialChoice.supports(target),
+              let current = profileEntries.first(where: { $0.favoriteID == source.favoriteID }),
+              SSHPasswordStore.sameEndpoint(source, current), SSHPasswordStore.sameEndpoint(current, target),
+              credentialVault().document.choice(for: current.favoriteID) == expected else {
+            throw ConfigError.message("Адрес или учётные данные исходной записи изменились. Создай копию заново или выбери её учётные данные вручную.")
+        }
+        return current
+    }
+    func copyRecordPassword(from source: SSHAlias, to target: SSHAlias) throws {
+        let current = try duplicateCredentialSource(source, target: target, expected: .record)
+        guard let password = try SSHPasswordStore.storedPassword(for: current, config: config.url) else {
+            throw ConfigError.message("Пароль исходной записи больше не сохранён. Введи пароль для копии или отключи его сохранение.")
+        }
+        try SSHPasswordStore.importPassword(password, for: target, config: config.url)
+    }
     func deleteRecord(_ entry: SSHAlias) {
         do {
             guard let id = entry.localID else { return }
@@ -321,6 +338,7 @@ struct RecordEditorView: View {
     @State private var visualWebLogin = false
     @State private var advancedWebLogin = false
     @State private var credentialEdit = RecordCredentialEdit()
+    @State private var inheritedCredential: RecordCredentialChoice?
     @State private var record = LocalConnectionRecord()
     @State private var appearance = ConnectionAppearance()
     @State private var group = ""
@@ -357,13 +375,22 @@ struct RecordEditorView: View {
         guard let entry = keyHistoryEntry, entry.user == candidate.user else { return nil }
         return entry
     }
+    private var duplicateEndpointMatches: Bool {
+        guard let template else { return false }
+        let destination = candidate.entry(config: store.config.url, privateConfig: store.config.url)
+        return SSHPasswordStore.sameEndpoint(template, destination)
+    }
     private var reusePassword: Bool {
-        guard let original else { return false }
-        return storedPassword && original.host.caseInsensitiveCompare(candidate.host) == .orderedSame && original.user == candidate.user && original.port == candidate.port && original.website == candidate.website && original.transport?.domain == candidate.transport?.domain
+        guard storedPassword else { return false }
+        if let original { return original.host.caseInsensitiveCompare(candidate.host) == .orderedSame && original.user == candidate.user && original.port == candidate.port && original.website == candidate.website && original.transport?.domain == candidate.transport?.domain }
+        return duplicateEndpointMatches
     }
     private var usesSharedCredential: Bool { credentialEdit.choice.isExternal }
     private var validation: String? {
         if !ready { return "Загрузка записи…" }; if let error = totp.validation { return error }
+        if let inheritedCredential, credentialEdit.choice == inheritedCredential, !duplicateEndpointMatches {
+            return "Адрес или пользователь изменился. Выбери данные для входа в копию."
+        }
         if kind == .ssh || kind.hasPassword || kind.isWeb, let issue = credentialEdit.validation(vault: store.credentialVault()) { return issue }
         if let error = appearance.validation ?? candidate.validation { return error }
         if !AliasTransfer.validGroup(group) { return "Путь папки — до 40 символов, без переносов строк." }
@@ -382,7 +409,7 @@ struct RecordEditorView: View {
         return sections
     }
     var body: some View {
-        RecordEditorShell(title: original == nil ? "Новая запись · " + kind.title : "Редактирование записи", subtitle: kind.title + " · параметры и материалы", icon: kind.icon, sections: editorSections, selection: $editorSection, back: back) {
+        RecordEditorShell(title: template != nil ? "Дублирование записи" : original == nil ? "Новая запись · " + kind.title : "Редактирование записи", subtitle: kind.title + " · параметры и материалы", icon: kind.icon, sections: editorSections, selection: $editorSection, back: back) {
             switch editorSection {
             case .general:
                 ConnectionAppearanceFields(appearance: $appearance, fallback: "Название записи", website: record.website)
@@ -426,6 +453,11 @@ struct RecordEditorView: View {
                 Button(original == nil ? "Создать запись" : "Сохранить") { save() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(validation != nil)
             }
         }.dismissOnOutsideClick().onAppear { load() }.onDisappear { password = ""; totp.clear() }
+            .onChange(of: duplicateEndpointMatches) { _, matches in
+                guard !matches, let inheritedCredential else { return }
+                if credentialEdit.choice == inheritedCredential { credentialEdit.choice = .record }
+                self.inheritedCredential = nil
+            }
         .sheet(isPresented: $visualWebLogin) {
             if let url = URL(string: target.website ?? ""), WebLoginOrigin(url) != nil {
                 WebLoginPickerView(entry: target, config: store.config.url, gateway: store.profileEntries.first { $0.favoriteID == target.transport?.tunnel?.sshID && $0.canSSH }) { settings.wrappedValue.webLoginSelectors = $0 }
@@ -549,7 +581,15 @@ struct RecordEditorView: View {
         RecordCredentialFields(vault: store.credentialVault(), workspace: store.kdbx!, choice: $credentialEdit.choice, username: $record.user)
     }
     private var passwordDate: Date? { savedEntry.flatMap { SSHPasswordStore.changedAt(for: $0, config: store.config.url) } }
-    private var passwordReader: (() throws -> String?)? { guard reusePassword && !removePassword, let savedEntry else { return nil }; return { try SSHPasswordStore.storedPassword(for: savedEntry, config: store.config.url) } }
+    private var passwordReader: (() throws -> String?)? {
+        guard reusePassword, !removePassword else { return nil }
+        if let savedEntry { return { try SSHPasswordStore.storedPassword(for: savedEntry, config: store.config.url) } }
+        guard let template else { return nil }
+        return {
+            let source = try store.duplicateCredentialSource(template, target: target, expected: .record)
+            return try SSHPasswordStore.storedPassword(for: source, config: store.config.url)
+        }
+    }
     @ViewBuilder private var fields: some View {
         RecordSSHConnectionFields(host: $record.host, appearance: $appearance, user: $record.user, port: $record.port, jump: $record.jump, authentication: $record.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: reusePassword, identifier: "record", usesExternalCredentials: usesSharedCredential, changedAt: passwordDate, savedPassword: passwordReader, passwordEntry: credentialEdit.choice == credentialEdit.original ? installationEntry : nil)
     }
@@ -590,12 +630,28 @@ struct RecordEditorView: View {
                 let known = Set(["hostname", "user", "port", "identityfile", "identitiesonly", "proxyjump", "pubkeyauthentication", "preferredauthentications", "passwordauthentication", "kbdinteractiveauthentication"])
                 record.extraOptions = template.options.filter { !known.contains($0.key.lowercased()) && !["include", "host", "match"].contains($0.key.lowercased()) }
                 appearance = store.appearance(template); appearance.name = store.title(template) + " · копия"; group = store.group(template)
+                if kind == .ssh {
+                    let sourceAlias = template.recordAlias ?? template.originIdentity?.name ?? (template.localID == nil ? template.name : nil)
+                    createAlias = sourceAlias != nil
+                    if let sourceAlias {
+                        aliasName = AliasDraft.duplicateName(for: sourceAlias, existing: store.aliasNameReservations())
+                    }
+                }
             }
             if original == nil, let seed {
                 appearance.name = seed.title; record.host = seed.host; record.user = seed.user; record.port = seed.port; record.website = seed.website
             }
             let vault = store.credentialVault()
             credentialEdit = RecordCredentialEdit(key: savedEntry?.favoriteID, document: vault.document, scope: vault.repository.scope)
+            if let template, RecordCredentialChoice.supports(template) {
+                let choice = vault.document.choice(for: template.favoriteID)
+                if choice.isExternal {
+                    inheritedCredential = choice
+                    credentialEdit.choice = choice
+                } else {
+                    storedPassword = SSHPasswordStore.hasStoredPassword(for: template, config: store.config.url)
+                }
+            }
             ready = true
         } catch { self.error = error.localizedDescription }
     }
@@ -618,8 +674,12 @@ struct RecordEditorView: View {
             try licenseFiles.prepare(appearance.reminders)
             undoTOTP = try totp.prepare(target: target, original: savedEntry, config: store.config.url)
             try beforeSave?()
+            if let template, let inheritedCredential, credentialEdit.choice == inheritedCredential {
+                _ = try store.duplicateCredentialSource(template, target: target, expected: inheritedCredential)
+            }
             if kind == .ssh || kind.hasPassword || kind.isWeb { bindingChange = try store.applyCredentialEdit(credentialEdit, target: target.favoriteID) }
-            let changePassword = !usesSharedCredential && ( removePassword || ((kind.isWeb || kind == .ssh || kind.hasPassword) && ((!keepPassword && reusePassword) || (keepPassword && !password.isEmpty))))
+            let changePassword = !usesSharedCredential && ((original != nil && (removePassword || (!keepPassword && reusePassword))) ||
+                ((kind.isWeb || kind == .ssh || kind.hasPassword) && keepPassword && !removePassword && !password.isEmpty))
             if changePassword {
                 previousPassword = try SSHPasswordStore.storedPassword(for: target, config: store.config.url)
                 try SSHPasswordStore.set(keepPassword && !removePassword && !password.isEmpty ? password : nil, for: target, config: store.config.url); credentialChanged = true
@@ -636,7 +696,11 @@ struct RecordEditorView: View {
                 var document = ConnectionDocument(); document.draft = blueprint.documentation; document.save()
                 try DocumentationRepository().write(document, for: target.favoriteID)
             }
-            try store.commitRecord(candidate, expected: expected, appearance: appearance, group: group, ssh: ssh, template: template)
+            let copyPassword: (() throws -> Void)?
+            if let template, reusePassword, keepPassword, !removePassword, !usesSharedCredential, password.isEmpty {
+                copyPassword = { try store.copyRecordPassword(from: template, to: target) }
+            } else { copyPassword = nil }
+            try store.commitRecord(candidate, expected: expected, appearance: appearance, group: group, ssh: ssh, template: template, prepare: copyPassword)
             recordCommitted = true
             store.undoCredentialChange = bindingChange
             if let saved = store.aliases.first(where: { $0.localID == candidate.id }), saved.availabilityEndpoint != nil { store.availability.apply(entry: saved, enabled: monitorEnabled, interval: monitorInterval, available: store.aliases) }

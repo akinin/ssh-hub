@@ -56,8 +56,41 @@ enum ConnectionTree {
         return []
     }
     static func movedOrder(_ ids: [String], moving id: String, before anchor: String?) -> [String] {
-        var result = Array(NSOrderedSet(array: ids.filter { $0 != id })) as? [String] ?? []
-        result.insert(id, at: anchor.flatMap { result.firstIndex(of: $0) } ?? result.count)
+        movedOrder(ids, moving: [id], before: anchor)
+    }
+
+    static func movedOrder(_ ids: [String], moving records: [String], before anchor: String?) -> [String] {
+        let moving = Set(records)
+        let nextSibling = anchor.flatMap { anchor in
+            ids.drop(while: { $0 != anchor }).first { !moving.contains($0) }
+        }
+        var seen = moving
+        var result = ids.filter { seen.insert($0).inserted }
+        result.insert(contentsOf: records, at: nextSibling.flatMap { result.firstIndex(of: $0) } ?? result.count)
         return result
+    }
+
+    static func recordMove(_ keys: Set<String>, to destination: String, before anchor: String?, in tree: [ConnectionTreeNode],
+                           groups: [String: String], order: [String: [String]]) -> (groups: [String: String], order: [String: [String]], first: SSHAlias)? {
+        var records: [SSHAlias] = []
+        func collect(_ nodes: [ConnectionTreeNode]) {
+            for node in nodes {
+                if let entry = node.entry {
+                    if keys.contains(entry.favoriteID) { records.append(entry) }
+                } else { collect(node.children) }
+            }
+        }
+        collect(tree)
+        guard let first = records.first, Set(records.map(\.favoriteID)) == keys, records.count == keys.count else { return nil }
+
+        var updatedGroups = groups
+        var updatedOrder = order
+        for source in Set(keys.map { normalized(groups[$0] ?? "") }) where source != destination {
+            updatedOrder[source] = siblings(in: tree, parent: source).map(\.orderID).filter { !keys.contains($0) }
+        }
+        let destinationOrder = siblings(in: tree, parent: destination).map(\.orderID)
+        updatedOrder[destination] = movedOrder(destinationOrder, moving: records.map(\.favoriteID), before: anchor)
+        for key in keys { updatedGroups[key] = destination.isEmpty ? nil : destination }
+        return (updatedGroups, updatedOrder, first)
     }
 }

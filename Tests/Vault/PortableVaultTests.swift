@@ -88,6 +88,55 @@ final class PortableVaultTests: XCTestCase {
         XCTAssertThrowsError(try SystemSSHAlias.install(entry, name: "owned-fixture", config: config))
         XCTAssertEqual(try Data(contentsOf: config.url), saved)
     }
+    @MainActor func testDuplicateRecordCopiesItsSavedPasswordAtomically() throws {
+        let root = try temporary()
+        defer {
+            PortableSecretBridge.install(read: nil, write: nil)
+            HubPaths.testingRoot = nil
+            AppAccess.testingInstance = nil
+            try? FileManager.default.removeItem(at: root)
+        }
+        HubPaths.testingRoot = root
+        AppAccess.testingInstance = AppAccess(storage: OwnedAppAccessStorage(), databaseGate: true)
+        let config = root.appendingPathComponent("config")
+        let model = VaultWorkspace(config: config, file: root.appendingPathComponent("vault.sqlite3"))
+        model.installBridge()
+        let session = HubSession(vault: model)
+        try model.createEmpty(password: "owned-duplicate-master-password")
+        session.start()
+        let store = try XCTUnwrap(session.store)
+        var original = LocalConnectionRecord()
+        original.host = "127.0.0.1"
+        original.user = "fixture"
+        original.title = "Original"
+        original.authentication = .key
+        try store.commitRecord(original, expected: [], appearance: .init(), group: "", ssh: nil, template: nil)
+        let source = try XCTUnwrap(store.profileEntries.first)
+        try SSHPasswordStore.set("owned-fixture-source-secret", for: source, config: config)
+
+        var copy = original
+        copy.id = UUID()
+        copy.title = "Duplicate"
+        let target = copy.entry(config: config, privateConfig: config)
+        let expected = try store.localRepository.load()
+        func save(expected: [LocalConnectionRecord]) throws {
+            try store.commitRecord(copy, expected: expected, appearance: .init(), group: "", ssh: nil, template: source,
+                                   prepare: { try store.copyRecordPassword(from: source, to: target) })
+        }
+        XCTAssertThrowsError(try save(expected: []), "A stale form must not leave behind a password")
+        XCTAssertNil(try SSHPasswordStore.storedPassword(for: target, config: config))
+        var moved = target
+        moved.options = [SSHOption(key: "HostName", value: "192.0.2.1")]
+        XCTAssertThrowsError(try store.copyRecordPassword(from: source, to: moved))
+        try save(expected: expected)
+        let saved = try XCTUnwrap(store.profileEntries.first { $0.localID == copy.id })
+        XCTAssertEqual(saved.authentication, .key)
+        XCTAssertEqual(try SSHPasswordStore.storedPassword(for: saved, config: config), "owned-fixture-source-secret")
+        try SSHPasswordStore.set("owned-fixture-changed-copy", for: saved, config: config)
+        XCTAssertEqual(try SSHPasswordStore.storedPassword(for: source, config: config), "owned-fixture-source-secret")
+        model.lock()
+    }
+
     func testTransportEncryptionAuthenticatesRevisionVaultAndChunks() throws {
         let id = UUID(), password = "owned-fixture-master-password", data = Data(repeating: 7, count: 4 * 1024 * 1024 + 10)
         let key = try VaultSyncKey(password: password)

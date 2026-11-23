@@ -59,6 +59,24 @@ struct HubNotice: View {
     }
 }
 
+struct RecordEditPencil: Shape {
+    func path(in rect: CGRect) -> Path {
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * rect.width, y: rect.minY + y * rect.height)
+        }
+        var path = Path()
+        path.move(to: point(0.12, 0.90))
+        path.addLine(to: point(0.20, 0.61))
+        path.addLine(to: point(0.68, 0.13))
+        path.addQuadCurve(to: point(0.94, 0.39), control: point(0.99, 0.02))
+        path.addLine(to: point(0.45, 0.87))
+        path.closeSubpath()
+        path.move(to: point(0.59, 0.23))
+        path.addLine(to: point(0.84, 0.49))
+        return path
+    }
+}
+
 struct RecordActionTile: View {
     let title: String
     let detail: String

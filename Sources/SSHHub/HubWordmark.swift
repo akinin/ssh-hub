@@ -36,6 +36,23 @@ enum HubWordmark {
                  in: CGRect(x: 140, y: 9, width: 132, height: 58), context: context)
     }
 
+    static func drawDockMark(in rect: CGRect, context: CGContext) {
+        let scale = min(rect.width / 152, rect.height / 100)
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.translateBy(x: rect.midX - 76 * scale, y: rect.midY - 50 * scale)
+        context.scaleBy(x: scale, y: scale)
+
+        let badge = CGRect(x: 68, y: 0, width: 84, height: 100)
+        context.setFillColor(CGColor(srgbRed: 1, green: 154.0 / 255, blue: 20.0 / 255, alpha: 1))
+        context.addPath(CGPath(roundedRect: badge, cornerWidth: 16, cornerHeight: 16, transform: nil))
+        context.fillPath()
+        drawText("s", color: CGColor(gray: 1, alpha: 1),
+                 in: CGRect(x: 0, y: 10, width: 64, height: 70), context: context)
+        drawText("h", color: CGColor(gray: 0, alpha: 1),
+                 in: CGRect(x: 80, y: 10, width: 61, height: 80), context: context)
+    }
+
     private static func drawText(_ text: String, color: CGColor, in rect: CGRect, context: CGContext) {
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [
             NSAttributedString.Key(rawValue: kCTFontAttributeName as String): typeface,

@@ -10,16 +10,10 @@ enum IconGenerator {
             guard let context = NSGraphicsContext.current?.cgContext else { return false }
             let body = CGRect(x: 70, y: 70, width: 884, height: 884)
             let shape = CGPath(roundedRect: body, cornerWidth: 190, cornerHeight: 190, transform: nil)
-            context.setFillColor(HubWordmark.graphite)
+            context.setFillColor(CGColor(gray: 0, alpha: 1))
             context.addPath(shape)
             context.fillPath()
-
-            let edge = CGPath(roundedRect: body.insetBy(dx: 3, dy: 3), cornerWidth: 187, cornerHeight: 187, transform: nil)
-            context.setStrokeColor(CGColor(gray: 0.33, alpha: 1))
-            context.setLineWidth(6)
-            context.addPath(edge)
-            context.strokePath()
-            HubWordmark.draw(in: body.insetBy(dx: 62, dy: 0), context: context)
+            HubWordmark.drawDockMark(in: body.insetBy(dx: 108, dy: 0), context: context)
             return true
         }
         for size in [16, 32, 128, 256, 512] {

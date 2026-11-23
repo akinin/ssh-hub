@@ -3,13 +3,13 @@ import AppKit
 import Combine
 
 extension AliasStore {
+    private var collapsedFoldersKey: String { "collapsedFolders.v2." + profilesKey + "." + profiles.active.uuidString }
     var collapsedFolderIDs: [String] {
         get {
-            let key = "collapsedFolders.v2." + profilesKey + "." + profiles.active.uuidString
-            let data = HubPreferences.shared.data(forKey: key) ?? HubPreferences.shared.data(forKey: "collapsedFolders.v1") ?? Data()
+            let data = HubPreferences.shared.data(forKey: collapsedFoldersKey) ?? HubPreferences.shared.data(forKey: "collapsedFolders.v1") ?? Data()
             return (try? JSONDecoder().decode([String].self, from: data)) ?? []
         }
-        set { HubPreferences.shared.set(try? JSONEncoder().encode(newValue), forKey: "collapsedFolders.v2." + profilesKey + "." + profiles.active.uuidString) }
+        set { HubPreferences.shared.set(try? JSONEncoder().encode(newValue), forKey: collapsedFoldersKey) }
     }
     private var sidebarOrderKey: String { "sidebarOrder.v1." + profilesKey + "." + profiles.active.uuidString }
     var sidebarOrder: [String: [String]] { HubPreferences.shared.dictionary(forKey: sidebarOrderKey) as? [String: [String]] ?? [:] }
@@ -70,15 +70,36 @@ extension AliasStore {
         collapsedFolderIDs = collapsed; HubPreferences.shared.set(order, forKey: sidebarOrderKey)
         sidebarRevision += 1
     }
-    func moveSidebarEntry(_ entry: SSHAlias, to folder: String, before anchor: String?) {
-        let destination = ConnectionTree.normalized(folder), source = ConnectionTree.normalized(group(entry))
-        guard profileEntries.contains(where: { $0.favoriteID == entry.favoriteID }), destination.isEmpty || ConnectionTree.validPath(destination), anchor != entry.favoriteID else { return }
-        let tree = ConnectionTree.build(entries: profileEntries, groups: groups, folders: folders, order: sidebarOrder, title: title)
-        var order = sidebarOrder
-        order[source] = ConnectionTree.siblings(in: tree, parent: source).map(\.orderID).filter { $0 != entry.favoriteID }
-        order[destination] = ConnectionTree.movedOrder(ConnectionTree.siblings(in: tree, parent: destination).map(\.orderID), moving: entry.favoriteID, before: anchor)
-        HubPreferences.shared.set(order, forKey: sidebarOrderKey)
-        setGroup(destination, for: entry); sidebarRevision += 1; reveal(entry)
+    func moveSidebarRecords(_ keys: Set<String>, to folder: String, before anchor: String?) throws {
+        guard !AppAccess.shared.locked, !endingWorkspace else { throw VaultError.locked }
+        let destination = ConnectionTree.normalized(folder)
+        let order = sidebarOrder
+        let tree = ConnectionTree.build(entries: profileEntries, groups: groups, folders: folders, order: order, title: title)
+        guard destination.isEmpty || ConnectionTree.validPath(destination),
+              let move = ConnectionTree.recordMove(keys, to: destination, before: anchor, in: tree, groups: groups, order: order) else {
+            throw ConfigError.message("Выбранные записи или папка изменились. Перетащи записи ещё раз.")
+        }
+        let collapsed = collapsedFolderIDs.filter { id in
+            !id.hasPrefix("folder:") || !FolderRenamePlan.contains(destination, in: String(id.dropFirst("folder:".count)))
+        }
+        let collapsedData = try JSONEncoder().encode(collapsed)
+        if PortableSecretBridge.active {
+            let orderData = try PropertyListSerialization.data(fromPropertyList: move.order, format: .binary, options: 0)
+            let folderData = try PropertyListSerialization.data(fromPropertyList: collapsedData, format: .binary, options: 0)
+            try PortableSecretBridge.atomic {
+                try PortableSecretBridge.write("app", "groups", VaultCollection.encode(move.groups))
+                try PortableSecretBridge.write("preferences", sidebarOrderKey, orderData)
+                try PortableSecretBridge.write("preferences", collapsedFoldersKey, folderData)
+            }
+        } else {
+            HubPreferences.shared.set(move.groups, forKey: "aliasGroups.v1")
+            HubPreferences.shared.set(move.order, forKey: sidebarOrderKey)
+            HubPreferences.shared.set(collapsedData, forKey: collapsedFoldersKey)
+        }
+        groups = move.groups
+        if !aliases.contains(where: { $0.id == selected && keys.contains($0.favoriteID) }) { selected = move.first.id }
+        selectedRecordKeys = keys
+        sidebarRevision += 1
     }
     func moveSidebarOrder(from old: String, to new: String) {
         guard old != new else { return }
@@ -219,20 +240,32 @@ struct ConnectionTreeView: NSViewRepresentable {
         func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any { (item as? TreeItem)?.children[index] ?? roots[index] }
         func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool { (item as? TreeItem)?.node.isFolder == true }
         func outlineView(_ outlineView: NSOutlineView, pasteboardWriterForItem item: Any) -> NSPasteboardWriting? {
-            guard outlineView.numberOfSelectedRows <= 1, store.query.isEmpty, store.groupFilter == "all", let node = (item as? TreeItem)?.node else { return nil }
+            guard store.query.isEmpty, store.groupFilter == "all", let node = (item as? TreeItem)?.node else { return nil }
+            let count = outlineView.numberOfSelectedRows
+            let prefix = store.profiles.active.uuidString + "/"
             let value = NSPasteboardItem()
-            if let entry = node.entry { value.setString(entry.favoriteID, forType: Self.dragType) }
-            else { value.setString(store.profiles.active.uuidString + "/" + node.id.dropFirst(7), forType: Self.folderDragType) }
+            if let entry = node.entry {
+                guard count <= 1 || count == store.selectedRecordKeys.count else { return nil }
+                value.setString(prefix + entry.favoriteID, forType: Self.dragType)
+            } else {
+                guard count <= 1 else { return nil }
+                value.setString(prefix + node.id.dropFirst("folder:".count), forType: Self.folderDragType)
+            }
             return value
         }
         private func localDrag(_ info: NSDraggingInfo) -> Bool {
             guard let source = info.draggingSource as? NSOutlineView else { return false }
             return source === outline && store.query.isEmpty && store.groupFilter == "all"
         }
-        private func draggedEntry(_ info: NSDraggingInfo) -> SSHAlias? {
-            guard localDrag(info),
-                  let key = info.draggingPasteboard.string(forType: Self.dragType) else { return nil }
-            return store.profileEntries.first { $0.favoriteID == key }
+        private func draggedRecordKeys(_ info: NSDraggingInfo) -> Set<String>? {
+            guard localDrag(info), let items = info.draggingPasteboard.pasteboardItems, !items.isEmpty else { return nil }
+            let prefix = store.profiles.active.uuidString + "/"
+            let keys = Set(items.compactMap { item -> String? in
+                guard let value = item.string(forType: Self.dragType), value.hasPrefix(prefix) else { return nil }
+                return String(value.dropFirst(prefix.count))
+            })
+            guard keys.count == items.count, keys.allSatisfy({ store.profiles.contains($0) }) else { return nil }
+            return keys
         }
         private func draggedFolder(_ info: NSDraggingInfo) -> String? {
             let prefix = store.profiles.active.uuidString + "/"
@@ -249,7 +282,7 @@ struct ConnectionTreeView: NSViewRepresentable {
         }
         func outlineView(_ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo, proposedItem item: Any?, proposedChildIndex index: Int) -> NSDragOperation {
             let folder = draggedFolder(info)
-            guard folder != nil || draggedEntry(info) != nil else { return [] }
+            guard folder != nil || draggedRecordKeys(info) != nil else { return [] }
             var destination = (item as? TreeItem).map { String($0.node.id.dropFirst(7)) } ?? ""
             if let target = item as? TreeItem, let entry = target.node.entry {
                 let path = ConnectionTree.normalized(store.group(entry)), parent = folderItem(path, items: roots)
@@ -278,8 +311,9 @@ struct ConnectionTreeView: NSViewRepresentable {
                     let plan = try FolderRenamePlan(profiles: store.profiles, groups: store.groups, keys: Set(store.profileEntries.map(\.favoriteID)), old: folder, name: name, appearance: store.folderAppearance(folder), parent: path)
                     try store.applyFolderRename(plan, before: anchor, reorder: true)
                 } catch { store.error = error.localizedDescription; return false }
-            } else if let entry = draggedEntry(info) {
-                store.moveSidebarEntry(entry, to: path, before: anchor)
+            } else if let keys = draggedRecordKeys(info) {
+                do { try store.moveSidebarRecords(keys, to: path, before: anchor) }
+                catch { store.error = error.localizedDescription; return false }
             } else { return false }
             refresh()
             return true

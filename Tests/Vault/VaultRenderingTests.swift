@@ -7,6 +7,27 @@ private struct RenderingAccess: AppAccessStorage {
     func read() throws -> Data? { nil }
     func write(_ data: Data?) throws {}
 }
+@MainActor private final class SidebarDragFixture: NSObject, NSDraggingInfo {
+    let draggingPasteboard = NSPasteboard.withUniqueName()
+    var draggingSource: Any?
+    var draggingDestinationWindow: NSWindow? { nil }
+    var draggingSourceOperationMask: NSDragOperation { .move }
+    var draggingLocation: NSPoint { .zero }
+    var draggedImageLocation: NSPoint { .zero }
+    nonisolated var draggedImage: NSImage? { nil }
+    var draggingSequenceNumber: Int { 0 }
+    var draggingFormation: NSDraggingFormation = .default
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 0
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    nonisolated override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+    func resetSpringLoading() {}
+    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?,
+                                classes classArray: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any],
+                                using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+}
+
 final class VaultRenderingTests: XCTestCase {
     @MainActor func testToolbarMenuAnchorsBelowButton() {
         _ = NSApplication.shared
@@ -19,6 +40,66 @@ final class VaultRenderingTests: XCTestCase {
             XCTAssertLessThan(anchor.y, frame.minY)
             view.removeFromSuperview()
         }
+    }
+
+    @MainActor func testNativeSidebarDropKeepsSelectionTogether() throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ssh-hub-sidebar-drop-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer {
+            PortableSecretBridge.install(read: nil, write: nil)
+            HubPaths.testingRoot = nil
+            AppAccess.testingInstance = nil
+            try? FileManager.default.removeItem(at: root)
+        }
+        HubPaths.testingRoot = root
+        AppAccess.testingInstance = AppAccess(storage: RenderingAccess(), databaseGate: true)
+        let model = VaultWorkspace(config: root.appendingPathComponent("config"), file: root.appendingPathComponent("vault.sqlite3"))
+        model.installBridge()
+        let session = HubSession(vault: model)
+        try model.createEmpty(password: "owned-sidebar-drag-password")
+        session.start()
+        let store = try XCTUnwrap(session.store)
+        XCTAssertTrue(store.addFolder("Before"))
+        XCTAssertTrue(store.addFolder("Target"))
+        for name in ["First", "Second"] {
+            var record = LocalConnectionRecord()
+            record.host = "127.0.0.1"
+            record.title = name
+            try store.commitRecord(record, expected: store.localRepository.load(), appearance: .init(),
+                                   group: "Before", ssh: nil, template: nil)
+        }
+
+        let outline = NSOutlineView()
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("fixture"))
+        outline.addTableColumn(column)
+        outline.outlineTableColumn = column
+        outline.allowsMultipleSelection = true
+        let coordinator = ConnectionTreeView.Coordinator(store: store)
+        coordinator.outline = outline
+        outline.dataSource = coordinator
+        outline.delegate = coordinator
+        coordinator.refresh()
+        let source = coordinator.outlineView(outline, child: 0, ofItem: nil)
+        let destination = coordinator.outlineView(outline, child: 1, ofItem: nil)
+        let first = coordinator.outlineView(outline, child: 0, ofItem: source)
+        let second = coordinator.outlineView(outline, child: 1, ofItem: source)
+        let keys = Set(store.profileEntries.map(\.favoriteID))
+        outline.selectRowIndexes(IndexSet([outline.row(forItem: first), outline.row(forItem: second)]), byExtendingSelection: false)
+        XCTAssertEqual(store.selectedRecordKeys, keys)
+
+        let drag = SidebarDragFixture()
+        defer { drag.draggingPasteboard.releaseGlobally() }
+        drag.draggingSource = outline
+        let writers = try [second, first].map { try XCTUnwrap(coordinator.outlineView(outline, pasteboardWriterForItem: $0)) }
+        XCTAssertTrue(drag.draggingPasteboard.writeObjects(writers))
+        XCTAssertEqual(coordinator.outlineView(outline, validateDrop: drag, proposedItem: destination, proposedChildIndex: NSOutlineViewDropOnItemIndex), .move)
+        XCTAssertTrue(coordinator.outlineView(outline, acceptDrop: drag, item: destination, childIndex: NSOutlineViewDropOnItemIndex))
+        XCTAssertEqual(store.selectedRecordKeys, keys)
+        XCTAssertEqual(outline.numberOfSelectedRows, 2)
+        XCTAssertEqual(store.sidebarOrder["Target"], store.profileEntries.map(\.favoriteID))
+        XCTAssertEqual(Set(store.profileEntries.map(store.group)), ["Target"])
+        model.lock()
     }
 
     @MainActor func testOwnedVaultSettingsRendering() async throws {

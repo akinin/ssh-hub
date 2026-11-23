@@ -51,10 +51,16 @@ enum SSHPasswordStore {
         return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
     }
     static func account(for entry: SSHAlias, config: URL) -> String {
-        var fields = [config.standardizedFileURL.path, (entry.originIdentity?.name.lowercased() ?? entry.localID?.uuidString ?? entry.name.lowercased()), entry.user, entry.host.lowercased(), entry.port]
+        let fields = [config.standardizedFileURL.path, entry.originIdentity?.name.lowercased() ?? entry.localID?.uuidString ?? entry.name.lowercased()]
+        return (fields + endpoint(for: entry)).map { Data($0.utf8).base64EncodedString() }.joined(separator: ":")
+    }
+    static func sameEndpoint(_ first: SSHAlias, _ second: SSHAlias) -> Bool {
+        endpoint(for: first) == endpoint(for: second)
+    }
+    private static func endpoint(for entry: SSHAlias) -> [String] {
+        var fields = [entry.user, entry.host.lowercased(), entry.port]
         if !entry.canSSH { fields += [entry.recordKind?.rawValue ?? "", entry.website ?? "", entry.transport?.domain ?? ""] }
         return fields
-            .map { Data($0.utf8).base64EncodedString() }.joined(separator: ":")
     }
     private static func query(_ account: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]

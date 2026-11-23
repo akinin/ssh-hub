@@ -104,6 +104,17 @@ import Foundation
         try require(ConnectionTree.siblings(in: orderedTree, parent: "Дом").map(\.orderID) == reordered, "manual sibling order independent of alphabetical titles")
         let orderRoundTrip = try JSONDecoder().decode([String: [String]].self, from: JSONEncoder().encode(["Дом": reordered]))
         try require(orderRoundTrip["Дом"] == reordered && ConnectionTree.siblings(in: orderedTree, parent: "Пустая").isEmpty, "manual order persistence and empty folder")
+        let mixed = [first.favoriteID: "Дом", second.favoriteID: "Работа", third.favoriteID: "Дом"]
+        let moveTree = ConnectionTree.build(entries: [first, second, third], groups: mixed, folders: ["Дом", "Работа"],
+                                            order: ["Дом": [third.favoriteID, first.favoriteID]], title: { $0.name })
+        let dragged: Set<String> = [second.favoriteID, third.favoriteID]
+        let moved = ConnectionTree.recordMove(dragged, to: "Дом", before: first.favoriteID, in: moveTree, groups: mixed, order: [:])
+        try require(moved?.order["Дом"] == [third.favoriteID, second.favoriteID, first.favoriteID], "multi-record move uses the visible source order")
+        try require(moved?.order["Работа"] == [] && moved?.groups[second.favoriteID] == "Дом", "move updates both folders")
+        try require(ConnectionTree.movedOrder(ids, moving: Array(ids.prefix(2)), before: ids[1]) == ids, "drop onto own selection preserves adjacent order")
+        let rootMove = ConnectionTree.recordMove(dragged, to: "", before: "folder:Работа", in: moveTree, groups: mixed, order: [:])
+        try require(rootMove?.groups[third.favoriteID] == nil && rootMove?.order[""] == ["folder:Дом", third.favoriteID, second.favoriteID, "folder:Работа"], "multi-record drop into root")
+        try require(ConnectionTree.recordMove(dragged.union(["stale"]), to: "", before: nil, in: moveTree, groups: mixed, order: [:]) == nil, "stale selection cannot move partially")
         let launch = ConsoleLaunch.ssh(SSHAlias(name: "-danger", source: file, line: 1), config: file)
         try require(Array(launch.arguments.suffix(2)) == ["--", "-danger"], "alias cannot inject SSH options")
         try require(!launch.arguments.contains(where: { $0.contains("StrictHostKeyChecking=no") || $0.contains("UserKnownHostsFile=/dev/null") }), "host-key checking preserved")
