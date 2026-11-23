@@ -1422,6 +1422,7 @@ struct AliasDetail: View {
                                     } else { Image(systemName: action == .favorite && store.isFavorite(entry) ? "star.fill" : action.icon) }
                                 }.foregroundStyle(action == .favorite && store.isFavorite(entry) ? .yellow : style.tint)
                                     .frame(width: 28, height: 28)
+                                    .contentShape(Rectangle())
                             }
                                 .disabled(action == .check && store.checkingID != nil).help(action.title).accessibilityLabel(action.title)
                         }
@@ -1553,7 +1554,7 @@ struct CreateAliasView: View {
     private var connectionFields: some View {
         VStack(alignment: .leading, spacing: 16) {
             RecordCredentialFields(vault: store.credentialVault(), workspace: store.kdbx!, choice: $credentialEdit.choice, username: $draft.user)
-            RecordSSHConnectionFields(host: $draft.host, appearance: $appearance, user: $draft.user, port: $draft.port, jump: $draft.jump, legacyKeyExchange: $draft.legacyKeyExchange, authentication: $draft.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: canReuseSavedPassword, identifier: "alias", usesExternalCredentials: credentialEdit.choice.isExternal, changedAt: editing.map { SSHPasswordStore.changedAt(for: $0.entry, config: store.config.url) } ?? nil, savedPassword: canReuseSavedPassword ? { try SSHPasswordStore.storedPassword(for: editing!.entry, config: store.config.url) } : nil, passwordEntry: credentialEdit.choice == credentialEdit.original ? installationEntry : nil)
+            RecordSSHConnectionFields(host: $draft.host, appearance: $appearance, user: $draft.user, port: $draft.port, jump: $draft.jump, legacySSHCompatibility: $draft.legacySSHCompatibility, authentication: $draft.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: canReuseSavedPassword, identifier: "alias", usesExternalCredentials: credentialEdit.choice.isExternal, changedAt: editing.map { SSHPasswordStore.changedAt(for: $0.entry, config: store.config.url) } ?? nil, savedPassword: canReuseSavedPassword ? { try SSHPasswordStore.storedPassword(for: editing!.entry, config: store.config.url) } : nil, passwordEntry: credentialEdit.choice == credentialEdit.original ? installationEntry : nil)
             Divider()
             if editing != nil {
                 RecordSSHAliasFields(enabled: $aliasEnabled, name: $draft.name, identifier: "aliasName")

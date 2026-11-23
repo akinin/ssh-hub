@@ -391,14 +391,24 @@ extension SSHAlias {
     }
 }
 
-enum SSHLegacyKeyExchange {
-    static let option = SSHOption(key: "KexAlgorithms", value: "+diffie-hellman-group14-sha1")
-    static var directive: String { option.key + " " + option.value }
+enum SSHLegacyCompatibility {
+    static let keyExchange = SSHOption(key: "KexAlgorithms", value: "+diffie-hellman-group14-sha1")
+    static let hostSignature = SSHOption(key: "HostKeyAlgorithms", value: "+ssh-rsa")
+    // Marks the app's reversible override while retaining any user-authored HostKeyAlgorithms.
+    private static let hostSignatureComment = "# SSH Hub legacy SSH"
 
-    static func isKey(_ key: String) -> Bool { key.caseInsensitiveCompare(option.key) == .orderedSame }
-    static func isDirective(_ line: String) -> Bool {
+    static var keyExchangeDirective: String { keyExchange.key + " " + keyExchange.value }
+    static var hostSignatureDirective: String { hostSignature.key + " " + hostSignature.value + " " + hostSignatureComment }
+
+    static func isKeyExchangeKey(_ key: String) -> Bool { key.caseInsensitiveCompare(keyExchange.key) == .orderedSame }
+    static func isKeyExchangeDirective(_ line: String) -> Bool {
         let parts = SSHConfig.tokens(line)
-        return parts.count == 2 && isKey(parts[0]) && parts[1] == option.value
+        return parts.count == 2 && isKeyExchangeKey(parts[0]) && parts[1] == keyExchange.value
+    }
+    static func isManagedHostSignature(_ line: String) -> Bool {
+        guard line.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix(hostSignatureComment) else { return false }
+        let parts = SSHConfig.tokens(line)
+        return parts.count == 2 && parts[0].caseInsensitiveCompare(hostSignature.key) == .orderedSame && parts[1] == hostSignature.value
     }
 }
 
@@ -411,7 +421,7 @@ struct AliasDraft {
     var jump = ""
     var authentication: SSHAuthentication = .automatic
     var rawOptions: [String] = []
-    var legacyKeyExchange = false
+    var legacySSHCompatibility = false
     var manageIdentitiesOnly = true
     var manageAuthentication = true
     var inheritedFields: Set<String> = []
@@ -455,7 +465,10 @@ struct AliasDraft {
     }
 
     var renderedRawOptions: [String] {
-        legacyKeyExchange ? rawOptions.filter { !SSHLegacyKeyExchange.isDirective($0) } : rawOptions
+        rawOptions.filter {
+            !SSHLegacyCompatibility.isManagedHostSignature($0) &&
+            (!legacySSHCompatibility || !SSHLegacyCompatibility.isKeyExchangeDirective($0))
+        }
     }
 
     var block: String { renderBlock(resolveVaultIdentity: true) }
@@ -471,7 +484,10 @@ struct AliasDraft {
         }
         if manageAuthentication { for (key, value) in authentication.options { result += "    \(key) \(value)\n" } }
         if !jump.isEmpty { result += "    ProxyJump \(jump)\n" }
-        if legacyKeyExchange { result += "    " + SSHLegacyKeyExchange.directive + "\n" }
+        if legacySSHCompatibility {
+            result += "    " + SSHLegacyCompatibility.keyExchangeDirective + "\n"
+            result += "    " + SSHLegacyCompatibility.hostSignatureDirective + "\n"
+        }
         result += renderedRawOptions.map { "    " + $0 + "\n" }.joined()
         guard resolveVaultIdentity else { return result }
         return result.components(separatedBy: "\n").map { line in

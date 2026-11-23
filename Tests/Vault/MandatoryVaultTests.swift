@@ -239,9 +239,9 @@ extension MandatoryVaultTests {
             let repository = LocalConnectionRepository(config: model.config)
             var gateway = LocalConnectionRecord(); gateway.title = "Gateway"; gateway.aliasName = "owned-gateway"; gateway.host = "192.0.2.1"; gateway.user = "fixture"
             var target = LocalConnectionRecord(); target.title = "Target"; target.aliasName = "renamed-target"; target.originIdentity = SSHRecordIdentity(source: model.config, name: "previous-target"); target.host = "192.0.2.2"; target.user = "fixture"; target.jump = "owned-gateway"
-            target.legacyKeyExchange = true
+            target.rawSSHOptions = ["KexAlgorithms +diffie-hellman-group14-sha1"] // Existing 3.25.2 record
             try repository.write([gateway, target], expected: []); let initialRecords = try repository.load()
-            XCTAssertTrue(try XCTUnwrap(initialRecords.last).legacyKeyExchange)
+            XCTAssertTrue(try XCTUnwrap(initialRecords.last).legacySSHCompatibility)
             let file = repository.privateConfig(target.id)
             let entry = target.entry(config: model.config, privateConfig: file)
             func resolve(_ name: String, using updatedFile: URL? = nil) throws -> String {
@@ -253,23 +253,31 @@ extension MandatoryVaultTests {
             let config = try resolve(entry.sshTarget)
             XCTAssertTrue(config.contains("hostname 192.0.2.2\n"), config); XCTAssertTrue(config.contains("proxyjump owned-gateway\n"), config)
             XCTAssertTrue(config.contains("identityagent none\n")); XCTAssertTrue(config.contains("identityfile none\n")); XCTAssertFalse(config.contains("/.ssh/id_"))
-            func exchanges(_ text: String) -> [Substring] {
-                text.split(separator: "\n").first(where: { $0.hasPrefix("kexalgorithms ") })?
-                    .dropFirst("kexalgorithms ".count).split(separator: ",") ?? []
+            func algorithms(_ text: String, for key: String = "kexalgorithms") -> [Substring] {
+                let prefix = key + " "
+                return text.split(separator: "\n").first(where: { $0.hasPrefix(prefix) })?
+                    .dropFirst(prefix.count).split(separator: ",") ?? []
             }
             let gatewayConfig = try resolve("owned-gateway")
             XCTAssertTrue(gatewayConfig.contains("hostname 192.0.2.1\n"))
-            let defaults = exchanges(gatewayConfig)
-            let enabled = exchanges(config)
+            let defaults = algorithms(gatewayConfig)
+            let enabled = algorithms(config)
             XCTAssertFalse(defaults.isEmpty)
             XCTAssertFalse(defaults.contains("diffie-hellman-group14-sha1"))
             XCTAssertEqual(Set(enabled), Set(defaults).union(["diffie-hellman-group14-sha1"]))
             XCTAssertEqual(enabled.last, "diffie-hellman-group14-sha1")
+            let gatewaySignatures = Set(algorithms(gatewayConfig, for: "hostkeyalgorithms"))
+            XCTAssertFalse(gatewaySignatures.contains("ssh-rsa"))
+            XCTAssertEqual(Set(algorithms(config, for: "hostkeyalgorithms")), gatewaySignatures.union(["ssh-rsa"]))
+            XCTAssertEqual(algorithms(config, for: "pubkeyacceptedalgorithms"), algorithms(gatewayConfig, for: "pubkeyacceptedalgorithms"))
+            XCTAssertEqual(config.split(separator: "\n").first { $0.hasPrefix("stricthostkeychecking ") },
+                           gatewayConfig.split(separator: "\n").first { $0.hasPrefix("stricthostkeychecking ") })
 
-            target.legacyKeyExchange = false
+            target.legacySSHCompatibility = false
             try repository.write([gateway, target], expected: initialRecords); _ = try repository.load()
             let disabled = try resolve(entry.sshTarget, using: repository.privateConfig(target.id))
-            XCTAssertEqual(exchanges(disabled), defaults)
+            XCTAssertEqual(algorithms(disabled), defaults)
+            XCTAssertEqual(Set(algorithms(disabled, for: "hostkeyalgorithms")), gatewaySignatures)
             model.lock(); XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
         }
     }

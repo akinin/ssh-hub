@@ -29,7 +29,7 @@ extension AliasDraft {
         identity = entry.value("IdentityFile") ?? ""
         jump = entry.value("ProxyJump") ?? ""
         authentication = entry.authentication
-        legacyKeyExchange = entry.value(SSHLegacyKeyExchange.option.key) == SSHLegacyKeyExchange.option.value
+        legacySSHCompatibility = entry.value(SSHLegacyCompatibility.keyExchange.key) == SSHLegacyCompatibility.keyExchange.value
     }
 }
 
@@ -139,18 +139,22 @@ extension SSHConfig {
                 body.insert("    " + key + " " + configQuote(new) + "\n", at: 0)
             }
         }
-        if draft.legacyKeyExchange != original.legacyKeyExchange {
-            if draft.legacyKeyExchange {
-                let lineEnding = block.lines[block.range.lowerBound].hasSuffix("\r\n") ? "\r\n" : "\n"
-                body.insert("    " + SSHLegacyKeyExchange.directive + lineEnding, at: 0)
+        let lineEnding = block.lines[block.range.lowerBound].hasSuffix("\r\n") ? "\r\n" : "\n"
+        if draft.legacySSHCompatibility != original.legacySSHCompatibility {
+            if draft.legacySSHCompatibility {
+                body.insert("    " + SSHLegacyCompatibility.keyExchangeDirective + lineEnding, at: 0)
             } else {
                 body = body.compactMap { line in
-                    guard SSHLegacyKeyExchange.isDirective(line) else { return line }
+                    guard SSHLegacyCompatibility.isKeyExchangeDirective(line) else { return line }
                     let suffix = header(line, names: []).split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
                     guard suffix.count == 2 else { return nil }
                     return String(line.prefix { $0 == " " || $0 == "\t" }) + "#" + suffix[1]
                 }
             }
+        }
+        body.removeAll(where: SSHLegacyCompatibility.isManagedHostSignature)
+        if draft.legacySSHCompatibility {
+            body.insert("    " + SSHLegacyCompatibility.hostSignatureDirective + lineEnding, at: 0)
         }
         return header(block.lines[block.range.lowerBound], names: [draft.trimmedName]) + body.joined()
     }

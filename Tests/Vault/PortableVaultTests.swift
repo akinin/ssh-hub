@@ -76,12 +76,13 @@ final class PortableVaultTests: XCTestCase {
         record.user = "fixture"
         record.authentication = .key
         record.identity = VaultSSHKeys.prefix + key.id
-        record.legacyKeyExchange = true
+        record.legacySSHCompatibility = true
         let entry = record.entry(config: config.url, privateConfig: root.appendingPathComponent("temporary"))
         try SystemSSHAlias.install(entry, name: "owned-fixture", config: config)
         PortableSecretBridge.install(read: nil, write: nil)
         let installed = try XCTUnwrap(config.load().aliases.first { $0.name == "owned-fixture" })
         XCTAssertEqual(installed.value("KexAlgorithms"), "+diffie-hellman-group14-sha1")
+        XCTAssertEqual(installed.value("HostKeyAlgorithms"), "+ssh-rsa")
         let path = try XCTUnwrap(installed.value("IdentityFile"))
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), key.privateData)
         XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int, 0o600)

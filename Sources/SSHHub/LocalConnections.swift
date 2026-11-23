@@ -25,26 +25,26 @@ struct LocalConnectionRecord: Codable, Identifiable, Equatable {
     var preserveIdentitiesOnly: Bool?
     var preservedAuthentication: SSHAuthentication?
     var inheritedSSHValues: [String: String]?
-    var legacyKeyExchange: Bool {
+    var legacySSHCompatibility: Bool {
         get {
             if let raw = rawSSHOptions?.lazy.map(SSHConfig.tokens).first(where: { parts in
-                parts.first.map(SSHLegacyKeyExchange.isKey) == true
+                parts.first.map(SSHLegacyCompatibility.isKeyExchangeKey) == true
             }) {
-                return raw.dropFirst().joined(separator: " ") == SSHLegacyKeyExchange.option.value
+                return raw.dropFirst().joined(separator: " ") == SSHLegacyCompatibility.keyExchange.value
             }
-            return extraOptions.first { SSHLegacyKeyExchange.isKey($0.key) }?.value == SSHLegacyKeyExchange.option.value
+            return extraOptions.first { SSHLegacyCompatibility.isKeyExchangeKey($0.key) }?.value == SSHLegacyCompatibility.keyExchange.value
         }
         set {
-            var options = (rawSSHOptions ?? []).filter { !SSHLegacyKeyExchange.isDirective($0) }
-            if newValue { options.insert(SSHLegacyKeyExchange.directive, at: 0) }
+            var options = (rawSSHOptions ?? []).filter { !SSHLegacyCompatibility.isKeyExchangeDirective($0) }
+            if newValue { options.insert(SSHLegacyCompatibility.keyExchangeDirective, at: 0) }
             rawSSHOptions = options.isEmpty ? nil : options
-            extraOptions.removeAll { SSHLegacyKeyExchange.isKey($0.key) && $0.value == SSHLegacyKeyExchange.option.value }
+            extraOptions.removeAll { SSHLegacyCompatibility.isKeyExchangeKey($0.key) && $0.value == SSHLegacyCompatibility.keyExchange.value }
         }
     }
 
     var transportExtraOptions: [SSHOption] {
-        guard legacyKeyExchange else { return extraOptions }
-        return extraOptions.filter { !SSHLegacyKeyExchange.isKey($0.key) || $0.value != SSHLegacyKeyExchange.option.value }
+        guard legacySSHCompatibility else { return extraOptions }
+        return extraOptions.filter { !SSHLegacyCompatibility.isKeyExchangeKey($0.key) || $0.value != SSHLegacyCompatibility.keyExchange.value }
     }
 
     mutating func preserveOptions(from snapshot: AliasEditSnapshot, draft: AliasDraft) throws {
@@ -52,7 +52,8 @@ struct LocalConnectionRecord: Codable, Identifiable, Equatable {
         var consumed = Set<String>()
         let managed = Set(["hostname", "user", "port", "identityfile", "proxyjump"])
         rawSSHOptions = text.components(separatedBy: .newlines).dropFirst().filter { line in
-            guard let key = SSHConfig.tokens(line).first?.lowercased() else { return false }
+            guard !SSHLegacyCompatibility.isManagedHostSignature(line),
+                  let key = SSHConfig.tokens(line).first?.lowercased() else { return false }
             if managed.contains(key), consumed.insert(key).inserted { return false }
             return true
         }
@@ -74,7 +75,7 @@ struct LocalConnectionRecord: Codable, Identifiable, Equatable {
     var draft: AliasDraft {
         var value = AliasDraft(); value.name = aliasName ?? "connection"
         value.host = host; value.user = user; value.port = port; value.identity = identity; value.jump = jump; value.authentication = authentication
-        value.legacyKeyExchange = legacyKeyExchange
+        value.legacySSHCompatibility = legacySSHCompatibility
         let authenticationKeys = Set(["pubkeyauthentication", "preferredauthentications", "passwordauthentication", "kbdinteractiveauthentication"])
         value.manageAuthentication = preservedAuthentication != authentication
         value.rawOptions = (rawSSHOptions ?? []).filter { !value.manageAuthentication || !authenticationKeys.contains(SSHConfig.tokens($0).first?.lowercased() ?? "") }
@@ -126,9 +127,9 @@ struct LocalConnectionRecord: Codable, Identifiable, Equatable {
             let draft = self.draft
             if draft.manageAuthentication { options += authentication.options.map { SSHOption(key: $0.0, value: $0.1) } }
             var raw = draft.renderedRawOptions.map { line in let parts = SSHConfig.tokens(line); return SSHOption(key: parts[0], value: parts.dropFirst().joined(separator: " ")) }
-            if draft.legacyKeyExchange {
-                options.append(SSHLegacyKeyExchange.option)
-            } else if let index = raw.firstIndex(where: { SSHLegacyKeyExchange.isKey($0.key) }) {
+            if draft.legacySSHCompatibility {
+                options.append(SSHLegacyCompatibility.keyExchange)
+            } else if let index = raw.firstIndex(where: { SSHLegacyCompatibility.isKeyExchangeKey($0.key) }) {
                 // The private config writes raw directives before extra options.
                 options.append(raw.remove(at: index))
             }

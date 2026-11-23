@@ -62,7 +62,7 @@ struct RecordSSHConnectionFields: View {
     @Binding var user: String
     @Binding var port: String
     @Binding var jump: String
-    @Binding var legacyKeyExchange: Bool
+    @Binding var legacySSHCompatibility: Bool
     @Binding var authentication: SSHAuthentication
     @Binding var password: String
     @Binding var keepPassword: Bool
@@ -109,11 +109,11 @@ struct RecordSSHConnectionFields: View {
             if let copyError { Text(copyError).font(.caption).foregroundStyle(.red) }
             RecordFieldRow("Порт") { TextField("22", text: $port).accessibilityIdentifier(identifier + "Port") }
             SSHJumpPicker(jump: $jump, entries: store.jumpAliases.filter { $0.host != host || $0.user != user || $0.port != port })
-            Toggle("Совместимость со старым SSH", isOn: $legacyKeyExchange).toggleStyle(.switch)
-                .help("Добавляет DH group14 с SHA‑1 к алгоритмам обмена ключами этой записи.")
-                .accessibilityIdentifier(identifier + "LegacyKeyExchange")
-            if legacyKeyExchange {
-                Text("Разрешён устаревший обмен ключами DH group14 с SHA‑1.").font(.caption).foregroundStyle(.secondary)
+            Toggle("Совместимость со старым SSH", isOn: $legacySSHCompatibility).toggleStyle(.switch)
+                .help("Разрешает DH group14 с SHA‑1 и подпись ключа сервера ssh-rsa для этой записи.")
+                .accessibilityIdentifier(identifier + "LegacySSHCompatibility")
+            if legacySSHCompatibility {
+                Text("Разрешены обмен ключами DH group14 с SHA‑1 и подпись ключа сервера ssh-rsa.").font(.caption).foregroundStyle(.secondary)
             }
         }.textFieldStyle(.roundedBorder)
             .onAppear { if keyOnly { keepPassword = true; removePassword = false } }
@@ -598,7 +598,7 @@ struct RecordEditorView: View {
         }
     }
     @ViewBuilder private var fields: some View {
-        RecordSSHConnectionFields(host: $record.host, appearance: $appearance, user: $record.user, port: $record.port, jump: $record.jump, legacyKeyExchange: $record.legacyKeyExchange, authentication: $record.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: reusePassword, identifier: "record", usesExternalCredentials: usesSharedCredential, changedAt: passwordDate, savedPassword: passwordReader, passwordEntry: credentialEdit.choice == credentialEdit.original ? installationEntry : nil)
+        RecordSSHConnectionFields(host: $record.host, appearance: $appearance, user: $record.user, port: $record.port, jump: $record.jump, legacySSHCompatibility: $record.legacySSHCompatibility, authentication: $record.authentication, password: $password, keepPassword: $keepPassword, removePassword: $removePassword, reusePassword: reusePassword, identifier: "record", usesExternalCredentials: usesSharedCredential, changedAt: passwordDate, savedPassword: passwordReader, passwordEntry: credentialEdit.choice == credentialEdit.original ? installationEntry : nil)
     }
     private func load() {
         do {

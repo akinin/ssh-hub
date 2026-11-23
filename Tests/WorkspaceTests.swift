@@ -4,22 +4,25 @@ import Foundation
     static func require(_ value: @autoclosure () -> Bool, _ message: String) throws {
         if !value() { throw ConfigError.message("FAIL: " + message) }
     }
-    static func legacyKeyExchange(in root: URL) throws {
+    static func legacySSHCompatibility(in root: URL) throws {
         let file = root.appendingPathComponent("legacy-config")
-        let original = "Host switch peer\n HostName 192.0.2.1\n KexAlgorithms curve25519-sha256 # existing\n"
+        let original = "Host switch peer\n HostName 192.0.2.1\n KexAlgorithms curve25519-sha256 # existing\n HostKeyAlgorithms ssh-ed25519 # existing signature\n"
         try original.write(to: file, atomically: true, encoding: .utf8)
         let config = SSHConfig(url: file)
         let before = try config.load().aliases[0]
         var draft = AliasDraft(entry: before)
-        draft.legacyKeyExchange = true
+        draft.legacySSHCompatibility = true
         _ = try config.update(config.editSnapshot(before), draft: draft)
         let enabled = try config.load().aliases
         try require(enabled.first?.value("KexAlgorithms") == "+diffie-hellman-group14-sha1", "legacy exchange applies to the selected host")
         try require(enabled.last?.value("KexAlgorithms") == "curve25519-sha256", "other aliases in the original block retain their algorithms")
-        draft = AliasDraft(entry: enabled[0]); draft.legacyKeyExchange = false
+        try require(enabled.first?.value("HostKeyAlgorithms") == "+ssh-rsa", "legacy signatures apply to the selected host")
+        try require(enabled.last?.value("HostKeyAlgorithms") == "ssh-ed25519", "other aliases retain their host signatures")
+        draft = AliasDraft(entry: enabled[0]); draft.legacySSHCompatibility = false
         _ = try config.update(config.editSnapshot(enabled[0]), draft: draft)
         let disabled = try config.load()
         try require(disabled.aliases.first?.value("KexAlgorithms") == "curve25519-sha256", "disabling restores existing custom algorithms")
+        try require(disabled.aliases.first?.value("HostKeyAlgorithms") == "ssh-ed25519", "disabling restores existing custom host signatures")
         try require(String(decoding: disabled.data, as: UTF8.self).contains("# existing"), "legacy mode retains existing comments")
     }
 
@@ -55,7 +58,7 @@ import Foundation
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("ssh-hub-workspace-test-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        try legacyKeyExchange(in: root)
+        try legacySSHCompatibility(in: root)
         let commandRepository = SavedCommandsRepository(root: root.appendingPathComponent("commands"))
         let command = SavedConsoleCommand(title: "Каталог", text: "pwd")
         var commandSet = SavedCommandSet(commands: [command])
