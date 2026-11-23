@@ -76,10 +76,12 @@ final class PortableVaultTests: XCTestCase {
         record.user = "fixture"
         record.authentication = .key
         record.identity = VaultSSHKeys.prefix + key.id
+        record.legacyKeyExchange = true
         let entry = record.entry(config: config.url, privateConfig: root.appendingPathComponent("temporary"))
         try SystemSSHAlias.install(entry, name: "owned-fixture", config: config)
         PortableSecretBridge.install(read: nil, write: nil)
         let installed = try XCTUnwrap(config.load().aliases.first { $0.name == "owned-fixture" })
+        XCTAssertEqual(installed.value("KexAlgorithms"), "+diffie-hellman-group14-sha1")
         let path = try XCTUnwrap(installed.value("IdentityFile"))
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), key.privateData)
         XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int, 0o600)
@@ -117,6 +119,8 @@ final class PortableVaultTests: XCTestCase {
         var copy = original
         copy.id = UUID()
         copy.title = "Duplicate"
+        copy.host = "192.0.2.1"
+        copy.port = "2222"
         let target = copy.entry(config: config, privateConfig: config)
         let expected = try store.localRepository.load()
         func save(expected: [LocalConnectionRecord]) throws {
@@ -125,12 +129,17 @@ final class PortableVaultTests: XCTestCase {
         }
         XCTAssertThrowsError(try save(expected: []), "A stale form must not leave behind a password")
         XCTAssertNil(try SSHPasswordStore.storedPassword(for: target, config: config))
-        var moved = target
-        moved.options = [SSHOption(key: "HostName", value: "192.0.2.1")]
-        XCTAssertThrowsError(try store.copyRecordPassword(from: source, to: moved))
+        var differentLogin = target
+        differentLogin.options.insert(SSHOption(key: "User", value: "another-user"), at: 0)
+        XCTAssertThrowsError(try store.copyRecordPassword(from: source, to: differentLogin))
+        var staleSource = source
+        staleSource.options.insert(SSHOption(key: "HostName", value: "192.0.2.2"), at: 0)
+        XCTAssertThrowsError(try store.copyRecordPassword(from: staleSource, to: target))
         try save(expected: expected)
         let saved = try XCTUnwrap(store.profileEntries.first { $0.localID == copy.id })
         XCTAssertEqual(saved.authentication, .key)
+        XCTAssertEqual(saved.host, "192.0.2.1")
+        XCTAssertEqual(saved.port, "2222")
         XCTAssertEqual(try SSHPasswordStore.storedPassword(for: saved, config: config), "owned-fixture-source-secret")
         try SSHPasswordStore.set("owned-fixture-changed-copy", for: saved, config: config)
         XCTAssertEqual(try SSHPasswordStore.storedPassword(for: source, config: config), "owned-fixture-source-secret")

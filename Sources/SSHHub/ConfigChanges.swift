@@ -29,6 +29,7 @@ extension AliasDraft {
         identity = entry.value("IdentityFile") ?? ""
         jump = entry.value("ProxyJump") ?? ""
         authentication = entry.authentication
+        legacyKeyExchange = entry.value(SSHLegacyKeyExchange.option.key) == SSHLegacyKeyExchange.option.value
     }
 }
 
@@ -136,6 +137,19 @@ extension SSHConfig {
             } else if !new.isEmpty {
                 // New explicit values must precede Include and any inherited defaults.
                 body.insert("    " + key + " " + configQuote(new) + "\n", at: 0)
+            }
+        }
+        if draft.legacyKeyExchange != original.legacyKeyExchange {
+            if draft.legacyKeyExchange {
+                let lineEnding = block.lines[block.range.lowerBound].hasSuffix("\r\n") ? "\r\n" : "\n"
+                body.insert("    " + SSHLegacyKeyExchange.directive + lineEnding, at: 0)
+            } else {
+                body = body.compactMap { line in
+                    guard SSHLegacyKeyExchange.isDirective(line) else { return line }
+                    let suffix = header(line, names: []).split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+                    guard suffix.count == 2 else { return nil }
+                    return String(line.prefix { $0 == " " || $0 == "\t" }) + "#" + suffix[1]
+                }
             }
         }
         return header(block.lines[block.range.lowerBound], names: [draft.trimmedName]) + body.joined()

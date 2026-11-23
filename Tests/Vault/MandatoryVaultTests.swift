@@ -239,11 +239,13 @@ extension MandatoryVaultTests {
             let repository = LocalConnectionRepository(config: model.config)
             var gateway = LocalConnectionRecord(); gateway.title = "Gateway"; gateway.aliasName = "owned-gateway"; gateway.host = "192.0.2.1"; gateway.user = "fixture"
             var target = LocalConnectionRecord(); target.title = "Target"; target.aliasName = "renamed-target"; target.originIdentity = SSHRecordIdentity(source: model.config, name: "previous-target"); target.host = "192.0.2.2"; target.user = "fixture"; target.jump = "owned-gateway"
-            try repository.write([gateway, target], expected: []); _ = try repository.load()
+            target.legacyKeyExchange = true
+            try repository.write([gateway, target], expected: []); let initialRecords = try repository.load()
+            XCTAssertTrue(try XCTUnwrap(initialRecords.last).legacyKeyExchange)
             let file = repository.privateConfig(target.id)
             let entry = target.entry(config: model.config, privateConfig: file)
-            func resolve(_ name: String) throws -> String {
-                let process = Process(), output = Pipe(); process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh"); process.arguments = ["-G", "-F", file.path, name]; process.standardOutput = output; process.standardError = FileHandle.nullDevice
+            func resolve(_ name: String, using updatedFile: URL? = nil) throws -> String {
+                let process = Process(), output = Pipe(); process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh"); process.arguments = ["-G", "-F", (updatedFile ?? file).path, name]; process.standardOutput = output; process.standardError = FileHandle.nullDevice
                 try process.run(); let data = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit(); XCTAssertEqual(process.terminationStatus, 0)
                 return String(decoding: data, as: UTF8.self)
             }
@@ -251,7 +253,23 @@ extension MandatoryVaultTests {
             let config = try resolve(entry.sshTarget)
             XCTAssertTrue(config.contains("hostname 192.0.2.2\n"), config); XCTAssertTrue(config.contains("proxyjump owned-gateway\n"), config)
             XCTAssertTrue(config.contains("identityagent none\n")); XCTAssertTrue(config.contains("identityfile none\n")); XCTAssertFalse(config.contains("/.ssh/id_"))
-            XCTAssertTrue(try resolve("owned-gateway").contains("hostname 192.0.2.1\n"))
+            func exchanges(_ text: String) -> [Substring] {
+                text.split(separator: "\n").first(where: { $0.hasPrefix("kexalgorithms ") })?
+                    .dropFirst("kexalgorithms ".count).split(separator: ",") ?? []
+            }
+            let gatewayConfig = try resolve("owned-gateway")
+            XCTAssertTrue(gatewayConfig.contains("hostname 192.0.2.1\n"))
+            let defaults = exchanges(gatewayConfig)
+            let enabled = exchanges(config)
+            XCTAssertFalse(defaults.isEmpty)
+            XCTAssertFalse(defaults.contains("diffie-hellman-group14-sha1"))
+            XCTAssertEqual(Set(enabled), Set(defaults).union(["diffie-hellman-group14-sha1"]))
+            XCTAssertEqual(enabled.last, "diffie-hellman-group14-sha1")
+
+            target.legacyKeyExchange = false
+            try repository.write([gateway, target], expected: initialRecords); _ = try repository.load()
+            let disabled = try resolve(entry.sshTarget, using: repository.privateConfig(target.id))
+            XCTAssertEqual(exchanges(disabled), defaults)
             model.lock(); XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
         }
     }

@@ -57,6 +57,9 @@ enum SSHPasswordStore {
     static func sameEndpoint(_ first: SSHAlias, _ second: SSHAlias) -> Bool {
         endpoint(for: first) == endpoint(for: second)
     }
+    static func sameLogin(_ first: SSHAlias, _ second: SSHAlias) -> Bool {
+        (first.recordKind ?? .ssh) == (second.recordKind ?? .ssh) && first.user == second.user
+    }
     private static func endpoint(for entry: SSHAlias) -> [String] {
         var fields = [entry.user, entry.host.lowercased(), entry.port]
         if !entry.canSSH { fields += [entry.recordKind?.rawValue ?? "", entry.website ?? "", entry.transport?.domain ?? ""] }

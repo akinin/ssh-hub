@@ -391,6 +391,17 @@ extension SSHAlias {
     }
 }
 
+enum SSHLegacyKeyExchange {
+    static let option = SSHOption(key: "KexAlgorithms", value: "+diffie-hellman-group14-sha1")
+    static var directive: String { option.key + " " + option.value }
+
+    static func isKey(_ key: String) -> Bool { key.caseInsensitiveCompare(option.key) == .orderedSame }
+    static func isDirective(_ line: String) -> Bool {
+        let parts = SSHConfig.tokens(line)
+        return parts.count == 2 && isKey(parts[0]) && parts[1] == option.value
+    }
+}
+
 struct AliasDraft {
     var name = ""
     var host = ""
@@ -400,6 +411,7 @@ struct AliasDraft {
     var jump = ""
     var authentication: SSHAuthentication = .automatic
     var rawOptions: [String] = []
+    var legacyKeyExchange = false
     var manageIdentitiesOnly = true
     var manageAuthentication = true
     var inheritedFields: Set<String> = []
@@ -442,6 +454,10 @@ struct AliasDraft {
         return nil
     }
 
+    var renderedRawOptions: [String] {
+        legacyKeyExchange ? rawOptions.filter { !SSHLegacyKeyExchange.isDirective($0) } : rawOptions
+    }
+
     var block: String { renderBlock(resolveVaultIdentity: true) }
 
     func renderBlock(resolveVaultIdentity: Bool) -> String {
@@ -455,7 +471,8 @@ struct AliasDraft {
         }
         if manageAuthentication { for (key, value) in authentication.options { result += "    \(key) \(value)\n" } }
         if !jump.isEmpty { result += "    ProxyJump \(jump)\n" }
-        result += rawOptions.map { "    " + $0 + "\n" }.joined()
+        if legacyKeyExchange { result += "    " + SSHLegacyKeyExchange.directive + "\n" }
+        result += renderedRawOptions.map { "    " + $0 + "\n" }.joined()
         guard resolveVaultIdentity else { return result }
         return result.components(separatedBy: "\n").map { line in
             let parts = SSHConfig.tokens(line)

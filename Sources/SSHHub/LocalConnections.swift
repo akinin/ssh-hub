@@ -25,6 +25,28 @@ struct LocalConnectionRecord: Codable, Identifiable, Equatable {
     var preserveIdentitiesOnly: Bool?
     var preservedAuthentication: SSHAuthentication?
     var inheritedSSHValues: [String: String]?
+    var legacyKeyExchange: Bool {
+        get {
+            if let raw = rawSSHOptions?.lazy.map(SSHConfig.tokens).first(where: { parts in
+                parts.first.map(SSHLegacyKeyExchange.isKey) == true
+            }) {
+                return raw.dropFirst().joined(separator: " ") == SSHLegacyKeyExchange.option.value
+            }
+            return extraOptions.first { SSHLegacyKeyExchange.isKey($0.key) }?.value == SSHLegacyKeyExchange.option.value
+        }
+        set {
+            var options = (rawSSHOptions ?? []).filter { !SSHLegacyKeyExchange.isDirective($0) }
+            if newValue { options.insert(SSHLegacyKeyExchange.directive, at: 0) }
+            rawSSHOptions = options.isEmpty ? nil : options
+            extraOptions.removeAll { SSHLegacyKeyExchange.isKey($0.key) && $0.value == SSHLegacyKeyExchange.option.value }
+        }
+    }
+
+    var transportExtraOptions: [SSHOption] {
+        guard legacyKeyExchange else { return extraOptions }
+        return extraOptions.filter { !SSHLegacyKeyExchange.isKey($0.key) || $0.value != SSHLegacyKeyExchange.option.value }
+    }
+
     mutating func preserveOptions(from snapshot: AliasEditSnapshot, draft: AliasDraft) throws {
         let text = try SSHConfig.editedPreview(snapshot, draft: draft)
         var consumed = Set<String>()
@@ -52,6 +74,7 @@ struct LocalConnectionRecord: Codable, Identifiable, Equatable {
     var draft: AliasDraft {
         var value = AliasDraft(); value.name = aliasName ?? "connection"
         value.host = host; value.user = user; value.port = port; value.identity = identity; value.jump = jump; value.authentication = authentication
+        value.legacyKeyExchange = legacyKeyExchange
         let authenticationKeys = Set(["pubkeyauthentication", "preferredauthentications", "passwordauthentication", "kbdinteractiveauthentication"])
         value.manageAuthentication = preservedAuthentication != authentication
         value.rawOptions = (rawSSHOptions ?? []).filter { !value.manageAuthentication || !authenticationKeys.contains(SSHConfig.tokens($0).first?.lowercased() ?? "") }
@@ -100,9 +123,17 @@ struct LocalConnectionRecord: Codable, Identifiable, Equatable {
         if alias == nil {
             if !identity.isEmpty { options.append(SSHOption(key: "IdentityFile", value: identity)); if preserveIdentitiesOnly != true { options.append(SSHOption(key: "IdentitiesOnly", value: "yes")) } }
             if !jump.isEmpty { options.append(SSHOption(key: "ProxyJump", value: jump)) }
+            let draft = self.draft
             if draft.manageAuthentication { options += authentication.options.map { SSHOption(key: $0.0, value: $0.1) } }
-            options += extraOptions
-            options += draft.rawOptions.map { line in let parts = SSHConfig.tokens(line); return SSHOption(key: parts[0], value: parts.dropFirst().joined(separator: " ")) }
+            var raw = draft.renderedRawOptions.map { line in let parts = SSHConfig.tokens(line); return SSHOption(key: parts[0], value: parts.dropFirst().joined(separator: " ")) }
+            if draft.legacyKeyExchange {
+                options.append(SSHLegacyKeyExchange.option)
+            } else if let index = raw.firstIndex(where: { SSHLegacyKeyExchange.isKey($0.key) }) {
+                // The private config writes raw directives before extra options.
+                options.append(raw.remove(at: index))
+            }
+            options += transportExtraOptions
+            options += raw
         }
         return SSHAlias(name: aliasName ?? title, source: config, line: 0, options: options,
                         localID: id, connectionFile: alias == nil ? privateConfig : nil, recordKind: kind, website: website, recordAlias: aliasName, serial: serial, transport: transport, originIdentity: originIdentity, preparedSSHTarget: alias == nil && PortableSecretBridge.active ? (aliasName ?? originIdentity?.name ?? "connection") : nil)
@@ -156,7 +187,7 @@ struct LocalConnectionRepository {
         // Only app-private transport files are written here. ~/.ssh/config is changed solely by an explicit alias operation.
         for record in records where record.kind == .ssh {
             var local = record.draft; local.name = record.originIdentity?.name ?? "connection"
-            let extras = record.extraOptions.map { "    \($0.key) \(SSHConfig.configQuote($0.value))\n" }.joined()
+            let extras = record.transportExtraOptions.map { "    \($0.key) \(SSHConfig.configQuote($0.value))\n" }.joined()
             let text = local.block + extras + "\nHost *\nInclude \(SSHConfig.configQuote(config.path))\nInclude /etc/ssh/ssh_config\n"
             let url = privateConfig(record.id)
             try Data(text.utf8).write(to: url, options: .atomic)
@@ -177,7 +208,7 @@ struct LocalConnectionRepository {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         func block(_ record: LocalConnectionRecord, name: String) -> String {
             var local = record.draft; local.name = name
-            let extras = record.extraOptions.map { "    \($0.key) \(SSHConfig.configQuote($0.key.lowercased() == "identityfile" ? PortableSecretBridge.identity($0.value) : $0.value))\n" }.joined()
+            let extras = record.transportExtraOptions.map { "    \($0.key) \(SSHConfig.configQuote($0.key.lowercased() == "identityfile" ? PortableSecretBridge.identity($0.value) : $0.value))\n" }.joined()
             let noDefaultIdentity = (record.identity.isEmpty && !record.extraOptions.contains { $0.key.lowercased() == "identityfile" } && !record.draft.rawOptions.contains { SSHConfig.tokens($0).first?.lowercased() == "identityfile" }) ? "    IdentityFile none\n" : ""
             return local.block + extras + noDefaultIdentity + "    IdentityAgent none\n"
         }
