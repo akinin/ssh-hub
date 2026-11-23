@@ -110,10 +110,10 @@ struct RecordSSHConnectionFields: View {
             RecordFieldRow("Порт") { TextField("22", text: $port).accessibilityIdentifier(identifier + "Port") }
             SSHJumpPicker(jump: $jump, entries: store.jumpAliases.filter { $0.host != host || $0.user != user || $0.port != port })
             Toggle("Совместимость со старым SSH", isOn: $legacySSHCompatibility).toggleStyle(.switch)
-                .help("Разрешает DH group14 с SHA‑1 и подпись ключа сервера ssh-rsa для этой записи.")
+                .help("Разрешает DH group14 с SHA‑1, подпись ключа сервера ssh-rsa и шифр aes128-cbc для этой записи.")
                 .accessibilityIdentifier(identifier + "LegacySSHCompatibility")
             if legacySSHCompatibility {
-                Text("Разрешены обмен ключами DH group14 с SHA‑1 и подпись ключа сервера ssh-rsa.").font(.caption).foregroundStyle(.secondary)
+                Text("Разрешены DH group14 с SHA‑1, подпись ключа сервера ssh-rsa и шифр aes128-cbc.").font(.caption).foregroundStyle(.secondary)
             }
         }.textFieldStyle(.roundedBorder)
             .onAppear { if keyOnly { keepPassword = true; removePassword = false } }

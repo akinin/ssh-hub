@@ -52,7 +52,7 @@ struct LocalConnectionRecord: Codable, Identifiable, Equatable {
         var consumed = Set<String>()
         let managed = Set(["hostname", "user", "port", "identityfile", "proxyjump"])
         rawSSHOptions = text.components(separatedBy: .newlines).dropFirst().filter { line in
-            guard !SSHLegacyCompatibility.isManagedHostSignature(line),
+            guard !SSHLegacyCompatibility.isManagedDirective(line),
                   let key = SSHConfig.tokens(line).first?.lowercased() else { return false }
             if managed.contains(key), consumed.insert(key).inserted { return false }
             return true

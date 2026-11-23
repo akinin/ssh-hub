@@ -393,22 +393,26 @@ extension SSHAlias {
 
 enum SSHLegacyCompatibility {
     static let keyExchange = SSHOption(key: "KexAlgorithms", value: "+diffie-hellman-group14-sha1")
-    static let hostSignature = SSHOption(key: "HostKeyAlgorithms", value: "+ssh-rsa")
-    // Marks the app's reversible override while retaining any user-authored HostKeyAlgorithms.
-    private static let hostSignatureComment = "# SSH Hub legacy SSH"
+    private static let managedOptions = [
+        SSHOption(key: "HostKeyAlgorithms", value: "+ssh-rsa"),
+        SSHOption(key: "Ciphers", value: "+aes128-cbc")
+    ]
+    // Marks reversible overrides separately from any user-authored directives.
+    private static let managedComment = "# SSH Hub legacy SSH"
 
     static var keyExchangeDirective: String { keyExchange.key + " " + keyExchange.value }
-    static var hostSignatureDirective: String { hostSignature.key + " " + hostSignature.value + " " + hostSignatureComment }
+    static let managedDirectives = managedOptions.map { $0.key + " " + $0.value + " " + managedComment }
 
     static func isKeyExchangeKey(_ key: String) -> Bool { key.caseInsensitiveCompare(keyExchange.key) == .orderedSame }
     static func isKeyExchangeDirective(_ line: String) -> Bool {
         let parts = SSHConfig.tokens(line)
         return parts.count == 2 && isKeyExchangeKey(parts[0]) && parts[1] == keyExchange.value
     }
-    static func isManagedHostSignature(_ line: String) -> Bool {
-        guard line.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix(hostSignatureComment) else { return false }
+    static func isManagedDirective(_ line: String) -> Bool {
+        guard line.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix(managedComment) else { return false }
         let parts = SSHConfig.tokens(line)
-        return parts.count == 2 && parts[0].caseInsensitiveCompare(hostSignature.key) == .orderedSame && parts[1] == hostSignature.value
+        guard parts.count == 2 else { return false }
+        return managedOptions.contains { parts[0].caseInsensitiveCompare($0.key) == .orderedSame && parts[1] == $0.value }
     }
 }
 
@@ -466,7 +470,7 @@ struct AliasDraft {
 
     var renderedRawOptions: [String] {
         rawOptions.filter {
-            !SSHLegacyCompatibility.isManagedHostSignature($0) &&
+            !SSHLegacyCompatibility.isManagedDirective($0) &&
             (!legacySSHCompatibility || !SSHLegacyCompatibility.isKeyExchangeDirective($0))
         }
     }
@@ -486,7 +490,7 @@ struct AliasDraft {
         if !jump.isEmpty { result += "    ProxyJump \(jump)\n" }
         if legacySSHCompatibility {
             result += "    " + SSHLegacyCompatibility.keyExchangeDirective + "\n"
-            result += "    " + SSHLegacyCompatibility.hostSignatureDirective + "\n"
+            result += SSHLegacyCompatibility.managedDirectives.map { "    " + $0 + "\n" }.joined()
         }
         result += renderedRawOptions.map { "    " + $0 + "\n" }.joined()
         guard resolveVaultIdentity else { return result }

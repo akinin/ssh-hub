@@ -152,9 +152,9 @@ extension SSHConfig {
                 }
             }
         }
-        body.removeAll(where: SSHLegacyCompatibility.isManagedHostSignature)
+        body.removeAll(where: SSHLegacyCompatibility.isManagedDirective)
         if draft.legacySSHCompatibility {
-            body.insert("    " + SSHLegacyCompatibility.hostSignatureDirective + lineEnding, at: 0)
+            body.insert(contentsOf: SSHLegacyCompatibility.managedDirectives.map { "    " + $0 + lineEnding }, at: 0)
         }
         return header(block.lines[block.range.lowerBound], names: [draft.trimmedName]) + body.joined()
     }

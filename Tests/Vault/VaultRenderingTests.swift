@@ -29,6 +29,26 @@ private struct RenderingAccess: AppAccessStorage {
 }
 
 final class VaultRenderingTests: XCTestCase {
+    @MainActor func testPastePreviewLoadsIconFromItsBundle() throws {
+        _ = NSApplication.shared
+        let bundleURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".bundle")
+        defer { try? FileManager.default.removeItem(at: bundleURL) }
+        let resources = bundleURL.appendingPathComponent("Contents/Resources")
+        try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
+        let info = ["CFBundleIdentifier": "com.olshaniki.sshhub.paste-icon-fixture", "CFBundlePackageType": "BNDL"]
+        try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+            .write(to: bundleURL.appendingPathComponent("Contents/Info.plist"))
+        let representation = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        representation.setColor(.systemOrange, atX: 3, y: 3)
+        let iconURL = resources.appendingPathComponent("AppIcon.icns")
+        // NSImage detects the encoded image format from the file contents.
+        try XCTUnwrap(representation.representation(using: .png, properties: [:])).write(to: iconURL)
+        let bundle = try XCTUnwrap(Bundle(url: bundleURL))
+        let alert = HubTerminalView.pasteAlert("Предпросмотр вставки", message: "Тестовый сеанс", bundle: bundle)
+        XCTAssertEqual(try XCTUnwrap(alert.icon?.tiffRepresentation), try XCTUnwrap(NSImage(contentsOf: iconURL)?.tiffRepresentation))
+    }
+
     @MainActor func testToolbarMenuAnchorsBelowButton() {
         _ = NSApplication.shared
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 100))

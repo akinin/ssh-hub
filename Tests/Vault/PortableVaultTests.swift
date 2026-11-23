@@ -83,6 +83,7 @@ final class PortableVaultTests: XCTestCase {
         let installed = try XCTUnwrap(config.load().aliases.first { $0.name == "owned-fixture" })
         XCTAssertEqual(installed.value("KexAlgorithms"), "+diffie-hellman-group14-sha1")
         XCTAssertEqual(installed.value("HostKeyAlgorithms"), "+ssh-rsa")
+        XCTAssertEqual(installed.value("Ciphers"), "+aes128-cbc")
         let path = try XCTUnwrap(installed.value("IdentityFile"))
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), key.privateData)
         XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int, 0o600)

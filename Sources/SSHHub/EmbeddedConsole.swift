@@ -41,15 +41,26 @@ final class HubTerminalView: LocalProcessTerminalView {
         }
         return super.performKeyEquivalent(with: event)
     }
+    static func pasteAlert(_ title: String, message: String, bundle: Bundle = .main) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        if let iconURL = bundle.url(forResource: "AppIcon", withExtension: "icns"),
+           let icon = NSImage(contentsOf: iconURL) {
+            alert.icon = icon
+        }
+        return alert
+    }
     override func paste(_ sender: Any) {
         guard canPaste?() == true, let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { return }
         guard TerminalPastePolicy.valid(text) else {
-            let alert = NSAlert(); alert.messageText = "Вставка недоступна"; alert.informativeText = "Текст больше 1 МиБ или содержит управляющие символы, кроме табуляции и переводов строк."; alert.runModal(); return
+            Self.pasteAlert("Вставка недоступна", message: "Текст больше 1 МиБ или содержит управляющие символы, кроме табуляции и переводов строк.").runModal()
+            return
         }
         var approved = text
         if TerminalPastePolicy.needsReview(text) {
             let destination = pasteDestination?() ?? "Терминал"
-            let alert = NSAlert(); alert.messageText = "Предпросмотр вставки"; alert.informativeText = destination + "\nМожно исправить или удалить строки. Переводы строк могут сразу выполнить команды после подтверждения."
+            let alert = Self.pasteAlert("Предпросмотр вставки", message: destination + "\nМожно исправить или удалить строки. Переводы строк могут сразу выполнить команды после подтверждения.")
             let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 620, height: 300)); scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = false
             let preview = NSTextView(frame: scroll.bounds); preview.isEditable = true; preview.isRichText = false; preview.allowsUndo = true; preview.isAutomaticQuoteSubstitutionEnabled = false; preview.isAutomaticDashSubstitutionEnabled = false; preview.isAutomaticTextReplacementEnabled = false; preview.isAutomaticSpellingCorrectionEnabled = false; preview.isVerticallyResizable = true; preview.isHorizontallyResizable = false; preview.font = .monospacedSystemFont(ofSize: 12, weight: .regular); preview.string = text
             preview.textContainer?.widthTracksTextView = true; preview.autoresizingMask = [.width]; scroll.documentView = preview; alert.accessoryView = scroll; alert.window.initialFirstResponder = preview
@@ -57,7 +68,8 @@ final class HubTerminalView: LocalProcessTerminalView {
             guard alert.runModal() == .alertSecondButtonReturn, canPaste?() == true, pasteDestination?() == destination else { return }
             approved = preview.string
             guard TerminalPastePolicy.valid(approved) else {
-                let error = NSAlert(); error.messageText = "Вставка отменена"; error.informativeText = "Отредактированный текст пуст, больше 1 МиБ или содержит недопустимые управляющие символы."; error.runModal(); return
+                Self.pasteAlert("Вставка отменена", message: "Отредактированный текст пуст, больше 1 МиБ или содержит недопустимые управляющие символы.").runModal()
+                return
             }
         }
         guard canPaste?() == true else { return }

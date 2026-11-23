@@ -269,6 +269,9 @@ extension MandatoryVaultTests {
             let gatewaySignatures = Set(algorithms(gatewayConfig, for: "hostkeyalgorithms"))
             XCTAssertFalse(gatewaySignatures.contains("ssh-rsa"))
             XCTAssertEqual(Set(algorithms(config, for: "hostkeyalgorithms")), gatewaySignatures.union(["ssh-rsa"]))
+            let gatewayCiphers = Set(algorithms(gatewayConfig, for: "ciphers"))
+            XCTAssertFalse(gatewayCiphers.contains("aes128-cbc"))
+            XCTAssertEqual(Set(algorithms(config, for: "ciphers")), gatewayCiphers.union(["aes128-cbc"]))
             XCTAssertEqual(algorithms(config, for: "pubkeyacceptedalgorithms"), algorithms(gatewayConfig, for: "pubkeyacceptedalgorithms"))
             XCTAssertEqual(config.split(separator: "\n").first { $0.hasPrefix("stricthostkeychecking ") },
                            gatewayConfig.split(separator: "\n").first { $0.hasPrefix("stricthostkeychecking ") })
@@ -278,6 +281,7 @@ extension MandatoryVaultTests {
             let disabled = try resolve(entry.sshTarget, using: repository.privateConfig(target.id))
             XCTAssertEqual(algorithms(disabled), defaults)
             XCTAssertEqual(Set(algorithms(disabled, for: "hostkeyalgorithms")), gatewaySignatures)
+            XCTAssertEqual(Set(algorithms(disabled, for: "ciphers")), gatewayCiphers)
             model.lock(); XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
         }
     }

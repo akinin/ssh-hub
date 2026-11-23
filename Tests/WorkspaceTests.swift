@@ -6,7 +6,7 @@ import Foundation
     }
     static func legacySSHCompatibility(in root: URL) throws {
         let file = root.appendingPathComponent("legacy-config")
-        let original = "Host switch peer\n HostName 192.0.2.1\n KexAlgorithms curve25519-sha256 # existing\n HostKeyAlgorithms ssh-ed25519 # existing signature\n"
+        let original = "Host switch peer\n HostName 192.0.2.1\n KexAlgorithms curve25519-sha256 # existing\n HostKeyAlgorithms ssh-ed25519 # existing signature\n Ciphers aes256-ctr # existing cipher\n"
         try original.write(to: file, atomically: true, encoding: .utf8)
         let config = SSHConfig(url: file)
         let before = try config.load().aliases[0]
@@ -18,11 +18,14 @@ import Foundation
         try require(enabled.last?.value("KexAlgorithms") == "curve25519-sha256", "other aliases in the original block retain their algorithms")
         try require(enabled.first?.value("HostKeyAlgorithms") == "+ssh-rsa", "legacy signatures apply to the selected host")
         try require(enabled.last?.value("HostKeyAlgorithms") == "ssh-ed25519", "other aliases retain their host signatures")
+        try require(enabled.first?.value("Ciphers") == "+aes128-cbc", "legacy cipher applies to the selected host")
+        try require(enabled.last?.value("Ciphers") == "aes256-ctr", "other aliases retain their ciphers")
         draft = AliasDraft(entry: enabled[0]); draft.legacySSHCompatibility = false
         _ = try config.update(config.editSnapshot(enabled[0]), draft: draft)
         let disabled = try config.load()
         try require(disabled.aliases.first?.value("KexAlgorithms") == "curve25519-sha256", "disabling restores existing custom algorithms")
         try require(disabled.aliases.first?.value("HostKeyAlgorithms") == "ssh-ed25519", "disabling restores existing custom host signatures")
+        try require(disabled.aliases.first?.value("Ciphers") == "aes256-ctr", "disabling restores existing custom ciphers")
         try require(String(decoding: disabled.data, as: UTF8.self).contains("# existing"), "legacy mode retains existing comments")
     }
 
